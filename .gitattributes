@@ -1,0 +1,36 @@
+# 行尾一律锁定为 LF，不随平台与 core.autocrlf 漂移。
+#
+# 为什么必须钉死：本项目要求**产物字节稳定**——selfdigest 的摘要表按文件字节算，
+# dist/ 与 src/ 也要逐字节比对。若检出时被转成 CRLF，哈希全变、比对全红，
+# 而且症状表现为"文件名都对但内容不一致"，极难定位。
+# Windows 上 git 默认 core.autocrlf=true，所以这里必须显式覆盖。
+
+* text=auto eol=lf
+
+# 显式声明为文本（走上面的 eol=lf）
+*.js    text eol=lf
+*.mjs   text eol=lf
+*.cjs   text eol=lf
+*.json  text eol=lf
+*.md    text eol=lf
+*.html  text eol=lf
+*.css   text eol=lf
+*.toml  text eol=lf
+*.yml   text eol=lf
+*.yaml  text eol=lf
+
+# 二进制，禁止任何行尾处理
+*.png   binary
+*.jpg   binary
+*.jpeg  binary
+*.gif   binary
+*.ico   binary
+*.webp  binary
+*.wasm  binary
+*.woff  binary
+*.woff2  binary
+*.ttf   binary
+
+# 锁文件与 diff 友好性
+package-lock.json  text eol=lf
+*.lic  binary

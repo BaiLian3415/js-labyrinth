@@ -1,0 +1,53 @@
+# 构建产物与本地状态，不随仓库分发
+
+# 网页构建产物（npm run build:web 生成）
+dist/
+
+# 目录模式混淆的输出（README 里 node host/cli.js ./src ./dist-src 那个示例）
+dist-src/
+
+# 本地许可证与发卡计数器
+license.lic
+license.lic.tmp
+.keygen-state.json
+.keygen-state.json.lock
+
+# pass 转储（DSH_DUMP_PASSES=1 时生成）
+_phase_*.js
+
+# 排查时随手写的本地脚本，一律下划线开头，不进仓库
+_*.mjs
+_*.cjs
+
+# 密钥与本地环境。
+# **签发私钥**：Ed25519 种子，base64。泄露等于发卡权泄露——拿它可以签出任意套餐、
+# 任意有效期的卡密，而所有验签方都持有对应公钥，一定通过。它绝不能进仓库、
+# 绝不能进 dist/、绝不能进 Worker 的静态资源。放这里 + 环境变量 JSLB_SIGNING_KEY。
+# 生产环境请只走环境变量或密钥管理服务，文件副本用完即删。
+.jslb-signing-key
+
+# 部署方自己的公钥覆盖（可选）。公钥不敏感，但不同部署用不同密钥对时不该入库。
+.env
+.env.*
+!.env.example
+.dev.vars
+.dev.vars.*
+
+# AI 会话记忆（.workbuddy-ai/memory/）。
+# 里面有项目约定与踩坑记录，但也有**已签发的卡密原文**，所以默认不入库。
+# 想把它当团队文档共享，就删掉这两行——删之前先把卡密那几行挪走。
+.workbuddy-ai/
+
+# 依赖与系统文件
+node_modules/
+.wrangler/
+.DS_Store
+Thumbs.db
+
+# 日志与打包残留
+*.log
+npm-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+*.tgz
+coverage/

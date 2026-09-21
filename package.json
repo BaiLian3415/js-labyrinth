@@ -1,0 +1,65 @@
+{
+  "name": "jslabyrinth",
+  "version": "0.1Alpha",
+  "description": "JsLabyrinth — 可在 Node 与 Cloudflare Workers/Pages 运行的 JS 混淆器（含网页 GUI）",
+  "type": "module",
+  "main": "./src/index.js",
+  "exports": {
+    ".": "./src/index.js",
+    "./obfuscate": "./src/obfuscate.js",
+    "./html": "./src/html.js",
+    "./plan": "./src/plan.js",
+    "./license-codec": "./src/license-codec.js",
+    "./license-web": "./src/license-web.js",
+    "./platform": "./src/platform.js",
+    "./worker": "./host/worker.js",
+    "./package.json": "./package.json"
+  },
+  "bin": {
+    "jslabyrinth": "./host/cli.js",
+    "JsLabyrinth": "./host/cli.js"
+  },
+  "files": [
+    "src",
+    "host",
+    "web",
+    "functions",
+    "tools",
+    "wrangler.toml",
+    "README.md"
+  ],
+  "scripts": {
+    "obfuscate": "node host/cli.js",
+    "keygen": "node tools/issue/keygen.js",
+    "signingkey": "node tools/issue/signingkey.js",
+    "keyrotate": "node tools/issue/keyrotate.js",
+    "selfdigest": "node tools/issue/selfdigest.js --write",
+    "selfdigest:check": "node tools/issue/selfdigest.js --check",
+    "hashtest": "node tools/test/hashtest.js",
+    "selftest": "node tools/test/selftest.js",
+    "webfp": "node tools/test/webfp.js",
+    "bench": "node tools/test/bench.js",
+    "semantics": "node tools/test/semantics.js",
+    "test": "node tools/test/selftest.js",
+    "build:web": "node tools/build/build-web.js",
+    "serve": "node tools/build/serve.js",
+    "verify": "node tools/build/verify-deploy.js https://jslb.lllm.dpdns.org/",
+    "dev": "npx wrangler dev",
+    "deploy": "npx wrangler deploy",
+    "pages:deploy": "npm run build:web && npx wrangler pages deploy dist"
+  },
+  "keywords": [
+    "obfuscator",
+    "obfuscation",
+    "javascript",
+    "protect",
+    "cloudflare-workers",
+    "cloudflare-pages",
+    "webassembly"
+  ],
+  "license": "UNLICENSED",
+  "private": true,
+  "engines": {
+    "node": ">=18.17"
+  }
+}
