@@ -33,7 +33,7 @@ macOS/Linux 通用。零依赖是本项目硬要求，所以 **wrangler 不入 `
 
 ```toml
 name = "jslabyrinth"                    # Worker 名
-main = "host/worker.js"                 # 入口（不 import 任何 node: 内建，无需 nodejs_compat）
+main = "worker/index.js"                 # 入口（不 import 任何 node: 内建，无需 nodejs_compat）
 compatibility_date = "2025-04-01"
 
 [assets]
@@ -166,7 +166,7 @@ chmod 600 .dev.vars
    JSLB_SIGNING_KEY=<base64 种子> node tools/issue/keygen.js --plan pro --days 365
    ```
    缺私钥时会明确报错并给出设置方法，不会静默签出一张验不过的卡。
-3. `.jslb-signing-key`、`.keygen-state.json`、`license.lic`、`.dev.vars`、`.env`、
+3. `.jslb-signing-key`、`.keygen-state.json`、`.dev.vars`、`.env`、
    `.workbuddy-ai/` 都已在 `.gitignore` 里。**提交前扫一遍**：
    ```bash
    grep -rIn "JSLB_SIGNING_KEY\|B64_PRIVATE" --exclude-dir=node_modules --exclude-dir=dist .
@@ -196,18 +196,18 @@ GET https://jslb.lllm.dpdns.org/src/license-secret.js   → 200，但里面只�
 
 - **机器绑定分两层，卡密那层才是边界。** 卡密里的绑定段是机器码的 HMAC 摘要，且在
   Ed25519 签名载荷内 ⇒ 拿别人的卡密到自己机器上激活一定失败，改不了绑。而本地记录里的
-  `machine` 字段与令牌用了派生自公钥的对称密钥，那层只防"把 `license.lic` 拷到另一台
+  `machine` 字段与令牌用了派生自公钥的对称密钥，那层只防"把本地许可证记录拷到另一台
   机器"，**不是**边界。
-- **本机记录令牌仍是 HMAC-SHA256，密钥由公钥派生（即公开）。** 它绑定机器码、
-  到期时间与用量，作用是"手改 `license.lic` 会被发现"，**不是安全边界**——
-  有源码的人能自己重算。之所以必须留在本地，是因为用量每次递增都要重签
-  （`license-web.consumeRun()`），那里只有用户本机，拿不到签发私钥。
+- **本地记录令牌仍是 HMAC-SHA256，密钥由公钥派生（即公开）。** 它绑定机器码、
+  到期时间与用量，作用是"手改记录会被发现"，**不是安全边界**——
+  有源码的人能自己重算。之所以必须留在本地（浏览器 localStorage / KV），是因为用量每次
+  递增都要重签（`license-web.consumeRun()`），拿不到签发私钥。
   但它改不动**套餐**：套餐来自卡密签名，而那层是 Ed25519。
 - **到期时间由卡密里已签名的签发日推出**，不采信记录里的 `issuedAt`/`expiresAt`。
   所以本地改记录也续不了期。
 - **网页端的「机器码」是设备特征，不是唯一硬件标识。** 浏览器拿不到唯一硬件 id，只能用
   平台/核心数/屏幕/GPU 渲染器/时区/语言这组特征派生，**同型号同配置的机器会算出同一个
-  机器码**。所以网页端的绑定是"设备特征级"的，比 Node 的硬件指纹弱一档。要一对一，只能把
+  机器码**。所以绑定是"设备特征级"的，比硬件指纹弱一档。要一对一，只能把
   签发与验签都搬到服务端（本项目刻意不这么做——混淆在浏览器内跑，验签也跟着在浏览器内，
   这是同一个取舍）。好的一面：清站点数据、换浏览器、进隐私模式都**不会**换机器码，已激活
   的卡不会因清缓存失效。
@@ -274,7 +274,7 @@ BigInt 都会中招。
 所以逐文件混淆不会破坏跨文件引用。整库 52 个文件全部可混淆（此前 `src/i18n.js`
 因 `isRefByIdent` 的 ESM 说明符误判失败，已修）。
 
-**鉴权下发（第 1 层）的细节。** `host/worker.js` 里：`JSLB_GATE_CORE = "true"` 时，
+**鉴权下发（第 1 层）的细节。** `worker/index.js` 里：`JSLB_GATE_CORE = "true"` 时，
 下面六个入口走 Worker 校验，未激活一律 403：
 
 ```

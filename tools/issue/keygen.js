@@ -443,10 +443,14 @@ function dateFromDay(day) {
 /**
  * 本机机器码，24 字符 base32。
  *
- * 算法必须与 host/license-node.js 的 machineId() 逐字段一致，否则 --machine
- * 打出来的码签成卡后在本机激活会失败。这里刻意**不 import license-node.js**
- * ——那个模块带了反调试探针与陷阱逻辑，一加载就会检测调试器、跑自校验，签发
- * 工具不该被这些副作用牵连。代价是同一套指纹逻辑有两份实现，改动时必须同步。
+ * 供 `--machine` 打印当前机器的码，便于签发时把卡密绑到指定机器。
+ *
+ * 历史上这里必须与 host/license-node.js 的 machineId() 逐字段一致（那个模块
+ * 已在转向纯云端后删除）。现在**唯一的同类实现是网页侧的 src/license-web.js**：
+ * 它用 navigator / screen / WebGL 等浏览器指纹，与本函数的 os.* 来源不同，
+ * 因此两者算出的码**本来就不相等**——这是设计如此：Node 侧绑的是开发机，
+ * 网页侧绑的是浏览器所在设备。给用户签卡请以网页端显示的设备码为准
+ * （`--bind` 拿到的就应该是那个码）。
  *
  * @returns {string} 机器码
  */
@@ -495,8 +499,9 @@ function bindArg(raw) {
   const s = String(raw == null ? '' : raw).trim().toUpperCase().replace(/[^0-9A-Z]/g, '');
   if (s.length !== 24 || !codec.isB32Text(s)) {
     console.error(`选项 --bind 需要 24 个 Crockford base32 字符的机器码，收到 "${raw}"`);
-    console.error('用 node tools/issue/keygen.js --machine 可打印本机机器码；');
-    console.error('用户的机器码从界面「机器码」一栏读取，或让用户运行同一命令。');
+    console.error('用户的机器码应从网页界面「机器码」一栏读取（这是签卡时的权威来源）。');
+    console.error('--machine 打印的是**本机 Node 环境**的指纹，仅供开发调试；');
+    console.error('它与浏览器算出的机器码本来就不同，不要拿它当用户的码签发。');
     process.exit(1);
   }
   return s;

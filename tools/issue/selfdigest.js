@@ -13,8 +13,8 @@
  * normalize 会把文本里所有 64 位 hex 串抹成 0，为的是避免摘要表引用自身，
  * 不然每写一次表摘要就变一次，永远收敛不了。
  *
- * 改过 src/license.js、src/license-codec.js、src/license-secret.js 之后要重跑
- * 本工具并提交新的摘要表，否则 CLI 会判定自身被篡改。
+ * 改过 src/license-core.js、src/license-codec.js、src/license-secret.js、src/plan.js
+ * 或 src/plans.js 之后要重跑本工具并提交新的摘要表，否则会判定自身被篡改。
  */
 
 import fs from 'node:fs';
@@ -25,9 +25,8 @@ import { fileURLToPath } from 'node:url';
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const SECRET_PATH = path.join(ROOT, 'src', 'license-secret.js');
 
-/** 顺序必须和 host/license-node.js 里的 SELF_FILES 一致。 */
+/** 顺序必须和 src/license-secret.js 里 SELF_DIGESTS 的顺序一致。 */
 const SELF_FILES = [
-  'host/license-node.js',
   'src/license-core.js',
   'src/license-codec.js',
   'src/license-secret.js',

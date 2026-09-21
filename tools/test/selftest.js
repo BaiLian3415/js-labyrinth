@@ -222,32 +222,6 @@ section('HTML 内联脚本');
   ok(r.html === null && r.info.obfuscated === 0, '无内联脚本时返回 null');
 }
 
-// ---------------------------------------------------------------- 目录模式
-
-section('目录批量');
-{
-  const { obfuscateDirectory } = await import('../../host/directory.js');
-  const inDir = path.join(TMP, 'dir-in');
-  const outDir = path.join(TMP, 'dir-out');
-  fs.mkdirSync(path.join(inDir, 'sub'), { recursive: true });
-  fs.mkdirSync(path.join(inDir, 'node_modules', 'x'), { recursive: true });
-  fs.writeFileSync(path.join(inDir, 'a.js'), 'console.log("a");\n');
-  fs.writeFileSync(path.join(inDir, 'sub', 'b.mjs'), 'console.log("b");\n');
-  fs.writeFileSync(path.join(inDir, 'sub', 'keep.txt'), 'text file\n');
-  fs.writeFileSync(path.join(inDir, 'node_modules', 'x', 'skip.js'), 'console.log("skip");\n');
-
-  const r = obfuscateDirectory(inDir, outDir, { preset: 'low', seed: 1 }, null);
-  ok(r.ok === 2 && r.failed === 0, '递归混淆两个 JS 文件', JSON.stringify({ ok: r.ok, failed: r.failed }));
-  ok(fs.existsSync(path.join(outDir, 'a.js')) && fs.existsSync(path.join(outDir, 'sub', 'b.mjs')),
-    '输出目录镜像源结构');
-  ok(!fs.existsSync(path.join(outDir, 'node_modules')), 'node_modules 默认跳过');
-  ok(!fs.existsSync(path.join(outDir, 'sub', 'keep.txt')), '非 JS 文件默认不复制');
-  ok(runNode(fs.readFileSync(path.join(outDir, 'a.js'), 'utf8'), 'dir-a.js').includes('a'), '目录产物可执行');
-
-  const r2 = obfuscateDirectory(inDir, outDir + '2', { preset: 'low', seed: 1, dirCopyOthers: true }, null);
-  ok(r2.copied >= 1 && fs.existsSync(path.join(outDir + '2', 'sub', 'keep.txt')), 'dirCopyOthers 复制非 JS 文件');
-}
-
 // ---------------------------------------------------------------- 闸门
 
 section('套餐闸门与提示');
@@ -645,7 +619,7 @@ section('一次性额度包与解除激活');
 
 section('Cloudflare Worker 路由');
 {
-  const worker = (await import('../../host/worker.js')).default;
+  const worker = (await import('../../worker/index.js')).default;
   // 注入测试公钥：签卡要用私钥，而真私钥不随源码分发（这正是非对称的意义），
   // 所以测试自己造一对，把公钥通过 JSLB_PUBLIC_KEY 交给 Worker。走的代码路径
   // 与线上完全一致，只是密钥不同。
@@ -1113,7 +1087,8 @@ section('VM 保护与用户标识符冲突');
 
 section('其他');
 {
-  ok(typeof i18n.t('help', { plans: '' }) === 'string' && i18n.t('help').length > 100, '帮助文本可渲染');
+  // CLI 已随转向纯云端一并移除，help 文本不再存在；改为校验界面用到的文案可渲染。
+  ok(typeof i18n.t('guiRun') === 'string' && i18n.t('guiRun').length > 0, '界面文案可渲染');
   const before = i18n.getLang();
   i18n.setLang('en');
   ok(i18n.t('guiRun') === 'Obfuscate', '可切到英文');
@@ -1310,7 +1285,7 @@ if (process.env.JSLB_SKIP_LIVE === '1') {
       '线上 /api/plans 返回非空套餐表',
       plansBody ? Object.keys(plansBody).join(',') : plans.text.slice(0, 120));
     // 网页版策略要求激活卡密：未激活一律拒绝，这一点必须在线上成立。
-    // 注意策略挂在 body.web 下（不是顶层），见 host/worker.js 的 /api/plans。
+    // 注意策略挂在 body.web 下（不是顶层），见 worker/index.js 的 /api/plans。
     ok(!!(plansBody && plansBody.web && plansBody.web.requireLicense === true),
       '线上策略 web.requireLicense=true（未激活即拒绝）',
       plansBody && plansBody.web ? JSON.stringify(plansBody.web).slice(0, 160) : '');

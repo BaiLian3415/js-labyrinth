@@ -1,7 +1,7 @@
 {
   "name": "jslabyrinth",
   "version": "0.1Alpha",
-  "description": "JsLabyrinth — 可在 Node 与 Cloudflare Workers/Pages 运行的 JS 混淆器（含网页 GUI）",
+  "description": "JsLabyrinth — 运行在 Cloudflare Workers/Pages 上的 JS 混淆器（含网页 GUI）",
   "type": "module",
   "main": "./src/index.js",
   "exports": {
@@ -12,24 +12,19 @@
     "./license-codec": "./src/license-codec.js",
     "./license-web": "./src/license-web.js",
     "./platform": "./src/platform.js",
-    "./worker": "./host/worker.js",
+    "./worker": "./worker/index.js",
     "./package.json": "./package.json"
-  },
-  "bin": {
-    "jslabyrinth": "./host/cli.js",
-    "JsLabyrinth": "./host/cli.js"
   },
   "files": [
     "src",
-    "host",
     "web",
+    "worker",
     "functions",
     "tools",
     "wrangler.toml",
     "README.md"
   ],
   "scripts": {
-    "obfuscate": "node host/cli.js",
     "keygen": "node tools/issue/keygen.js",
     "signingkey": "node tools/issue/signingkey.js",
     "keyrotate": "node tools/issue/keyrotate.js",

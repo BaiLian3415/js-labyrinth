@@ -24,7 +24,7 @@ const B64_PUBLIC_KEY = '6gXmaKGn+dQw8jVtvmp7VWBYAA+hS+vEKHgrBstPW54=';
 const B64_MACHINE_SALT = 'SnNMYWJ5cmludGgvTGljZW5zZS92MTo6bWFjaGluZTo6c2FsdDo6MmYxOWM0';
 
 /**
- * 自身文件的期望摘要表，每条 64 位 hex，顺序与 host/license-node.js 的 SELF_FILES 一致。
+ * 自身文件的期望摘要表，每条 64 位 hex，顺序与 tools/issue/selfdigest.js 的 SELF_FILES 一致。
  *
  * 每条形如 sha256(rel + '\n' + 归一化文本) XOR HMAC(PUBLIC_KEY, 'JSLB/SELF/' + i)。
  *
@@ -36,17 +36,16 @@ const B64_MACHINE_SALT = 'SnNMYWJ5cmludGgvTGljZW5zZS92MTo6bWFjaGluZTo6c2FsdDo6Mm
  * 摘要前先把源文本里的 64 位 hex 串填成 0，本表因此不参与自身的摘要计算，
  * 消除自引用。
  *
- * 改动 license-node.js、license-core.js、license-codec.js、license-secret.js、plan.js 或 plans.js
- * 后必须重算本表，漏跑会让工具判定自身被篡改并拒绝运行：
+ * 改动 license-core.js、license-codec.js、license-secret.js、plan.js 或 plans.js
+ * 后必须重算本表，漏跑会让校验判定自身被篡改：
  * node tools/issue/selfdigest.js --write
  */
 const SELF_DIGESTS = [
-  '6c715f0559889e70a770c065ad8383da49bcf7e750a0f1375af3fc70aa92ac17',
-  'a67d0160984b64e312bb44e3a68ebaa5aa284be98cc78ffb519fb977d5bc847c',
-  '7d8243a3d1b48dc288c4b7ef55f22932bc8b5663e5bdc7d893c6bde075a05f64',
-  'd5570e81916898955f133d5323164bf87cf9c0d38b8a0f5baa567e80ded95c00',
-  '1a183846331871ad5ce04aa611124f20fc249b1a56c754ecb80d7a695e5317b4',
-  '107f0771f5647898bce41cf815eaa5a5d66bd56c4966a98665cf963d5b685dca',
+  '827ad5309d34395c9d46ba76de36d3700c9a23004587960f72e65da358bec072',
+  '6442a9c998a2e746b7e05ba5c4d49128b49f883b07fddb038623f04883edb6a0',
+  'e586a6eb637b3ff10f6aed01661cda0f626f3520f45670958b0499b58e3cdb02',
+  'cbd602a189b8aba74477fc25e10daa39c23446214f2977da81aff039259e16c0',
+  'e3b6b48294531a3183e5862c770f75992977ab6c87897c68e6a98870eb8ba27b',
 ];
 
 export default { B64_PUBLIC_KEY, B64_MACHINE_SALT, SELF_DIGESTS };

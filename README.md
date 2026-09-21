@@ -1,32 +1,29 @@
 # JsLabyrinth
 
-JavaScript 混淆器。同一份核心源码，三种运行方式：
+JavaScript 混淆器，**完全运行在 Cloudflare 上**。核心混淆逻辑跑在浏览器或 Worker
+里，项目不依赖任何本地服务、不需要本地 hosts 映射、也没有 Node 端运行时入口。
 
 | 场景 | 入口 | 说明 |
 | --- | --- | --- |
-| 命令行 / Node | `node host/cli.js` | 文件、HTML、目录批量；许可证落在 `license.lic` |
 | 网页界面（浏览器内执行） | `web/`（构建到 `dist/`） | 用访问者自己的 CPU，代码不出本机，无服务端 CPU 时限 |
-| Cloudflare Worker / Pages | `host/worker.js`、`functions/api/[[path]].js` | 静态界面 + JSON API，可绑 KV 做跨请求计数 |
+| Cloudflare Worker / Pages | `worker/index.js`、`functions/api/[[path]].js` | 静态界面 + JSON API，绑 KV 做跨请求计数 |
 
 混淆核心（`src/obfuscate.js` 及其依赖：AST 解析器、生成器、二十个 pass、许可证编解码）不引用任何
-Node 内建模块，因此浏览器、Worker 与 Node 加载的是同一份代码、同一套选项表、同一套套餐闸门。
-Node 专有的能力（文件系统、机器指纹、反调试、自身文件摘要）只在对应入口里出现。
+Node 内建模块，因此浏览器与 Worker 加载的是同一份代码、同一套选项表、同一套套餐闸门。
+
+`src/` 与 `web/`、`worker/` 里**没有一行 `node:` 引用**，两者都是纯粹的 Web 标准代码。
+`tools/` 下的脚本（发卡、自测、构建）是给维护者在本地用的开发工具，不属于运行时。
 
 ## 快速开始
 
 ```bash
-# 1) 自测（零依赖，不联网）
+# 1) 自测（末段会打线上域名做验收；纯离线跑用 JSLB_SKIP_LIVE=1）
 npm test
 
-# 2) 命令行：单文件 / HTML / 目录
-node host/cli.js input.js out.js --preset medium --seed 42
-node host/cli.js page.html --preset high
-node host/cli.js ./src ./dist-src --dir-copy-others
-
-# 3) 构建静态产物（界面 + 核心；核心默认自混淆，见下）
+# 2) 构建静态产物（界面 + 核心；核心默认自混淆，见下）
 npm run build:web
 
-# 4) 预览与调试：一律走 Cloudflare，本地不起任何服务器
+# 3) 预览与调试：一律走 Cloudflare，本地不起任何服务器
 npx wrangler dev         # 本地 workerd：静态资源 + /api/*，与线上同构
 npx wrangler deploy      # 发布到线上，浏览器打开线上域名
 ```
@@ -41,8 +38,11 @@ npx wrangler deploy      # 发布到线上，浏览器打开线上域名
 
 调试线上问题时用 `npm run build:web -- --plain` 退回逐字节复制。详见 `DEPLOY.md` 4.5。
 
-首次运行命令行需要激活：`node tools/issue/keygen.js --plan pro --days 365` 签发一张卡密，
-再用 `JSLABYRINTH_LICENSE_KEY=<卡密> node host/cli.js ...` 或交互式输入完成激活。
+## 激活
+
+在网页界面里填入卡密即可。卡密由发布方用 `node tools/issue/keygen.js` 签发，
+用户在界面上能看到自己的**机器码**，把它交给发布方用于 `--bind` 绑定。
+（签发工具是维护者本地用的开发工具，不是运行时组件。）
 
 ## 部署到 Cloudflare
 
@@ -150,23 +150,14 @@ curl -s -X POST https://<host>/api/obfuscate \
 
 ## 选项
 
-选项表在 `src/options-meta.js`：一处定义，命令行解析与网页界面控件都从它生成。
-新增一个选项只要在那里加一行，CLI 立刻能解析、界面立刻出现控件、套餐闸门按同一个键判定。
+选项表在 `src/options-meta.js`：一处定义，网页界面控件与套餐闸门都从它生成。
+新增一个选项只要在那里加一行，界面立刻出现控件、套餐闸门按同一个键判定。
 
-```bash
-node host/cli.js --help          # 完整选项与套餐对照表
-```
+界面上的每个选项控件直接对应 `src/options-meta.js` 里的一行；悬停可看到取值说明。
+预设只提供默认值：同一次运行里显式改动的选项逐字段覆盖它——**只有被改动过的控件
+才作为"显式选项"提交**，因此默认值不会莫名其妙触发套餐闸门。
 
-常见用法：
-
-```bash
-node host/cli.js in.js out.js --preset max --no-debug-protection   # 预设打底，逐项覆盖
-node host/cli.js in.js out.js --config opts.json                   # 从 JSON 加载选项
-node host/cli.js in.js out.js --extra-globals WebSocketPair        # 声明宿主自定义全局
-```
-
-预设只提供默认值：同一次调用里显式写出的选项逐字段覆盖它。网页界面遵循同一规则——
-只有被改动过的控件才作为"显式选项"提交，因此默认值不会莫名其妙触发套餐闸门。
+`node tools/issue/keygen.js --plans` 可打印完整的选项与套餐对照表。
 
 ## 五类防护能力落在哪里
 
@@ -224,7 +215,7 @@ Plus 与 Pro 的预设上限都是 `medium`，区别在**闸门余量与配额**
 订阅档与额度包**不排在同一条阶梯上**：两者的配额口径不同（一个按日、一个按总额），
 `src/plan.js` 的档位阶梯不变式因此只在同族内比较。
 
-`node host/cli.js --help` 或 `node tools/issue/keygen.js --plans` 随时打印这份对照表。
+`node tools/issue/keygen.js --plans` 随时打印这份对照表。
 加档位时注意两条：**闸门缺省一律放行**（`undefined` 返回 `true`），关掉某个开关必须
 逐项写 `false`；且**套餐自带的预设必须满足自己的每一条闸门**——`src/plan.js` 的
 `assertConsistent()` 在模块加载时就会拦下不合规的定义，所以数值闸门不能比自带预设
@@ -239,21 +230,20 @@ base32），它在 Ed25519 签名载荷内，所以"这张卡属于哪台机器"
 摘要）。绑定的卡用 `--bind <机器码>` 签发，省略则是不绑定的通用卡（绑定段全 0，任何
 机器都能激活，供企业批量与内部测试）。
 
-本地记录里另有一份机器码与 HMAC 令牌，防的是把 `license.lic` 直接拷到另一台机器——那一层
+本地记录里另有一份机器码与 HMAC 令牌，防的是把许可证记录直接拷到另一台机器——那一层
 的密钥派生自公钥、是公开的，只留下篡改痕迹，**不是**安全边界。
 
-- **Node**：机器码取自硬件指纹（平台、架构、主机名、用户名、网卡 MAC、CPU 型号经 scrypt
-  派生为 24 字符 base32），换机即失效。用 `node tools/issue/keygen.js --machine` 可打印本机
-  机器码。运行期另有反调试（inspector 接入、`--inspect`、`toString` 钩子、计时探针）与自身
-  文件摘要校验（`tools/issue/selfdigest.js` 维护）。
 - **网页/Worker**：浏览器里**没有**可靠的唯一硬件标识，机器码只能由**设备特征**派生
   （平台、CPU 核心数、屏幕尺寸与像素比、GPU 渲染器、时区、语言；不含任何随机量）。因此
-  网页端是**设备特征绑定**，比 Node 的硬件指纹弱一档——**同型号同配置的两台机器会算出同一个
+  这是**设备特征绑定**，比硬件指纹弱一档——**同型号同配置的两台机器会算出同一个
   机器码，可以共用一张卡**。这是浏览器沙箱的物理上限，不是实现偷懒。
   好处是清掉站点数据、换浏览器、进隐私模式都**不会**换机器码，已激活的卡不会因此失效。
-  卡密、令牌、配额语义与 Node 完全一致（同一份 `license-codec.js` / `license-core.js`），
-  但反调试与自身摘要校验在网页端没有意义，没有搬运。
-  设备特征算法（字段集合或其顺序）一变，所有已签发的网页卡都会失效——改动前务必确认。
+  用户在界面「机器码」一栏能看到自己的码，把它交给发布方用于 `--bind`。
+  设备特征算法（字段集合或其顺序）一变，所有已签发的卡都会失效——改动前务必确认。
+
+> **签发时的机器码来源**：请以**网页界面显示的那个码**为准。
+> `keygen.js --machine` 打印的是本机 Node 环境的指纹（平台/主机名/网卡 MAC 等），
+> 与浏览器算出的码**本来就不同**，只适合开发调试，不要拿它当用户的码去 `--bind`。
 
 > **卡密格式 v4**：`JSLB-<套餐1>-<天数2>-<签发日3>-<编号8>-<绑定16>-<签名103>`，共 143 字符。
 > 比 v3 多了绑定段，编号段同时由 24 字符压到 8 字符（40 bit，约 1.1 万亿个编号）。
@@ -389,9 +379,6 @@ base32，格式校验分不出来。喂错了只会摘两次摘要，签出一�
 | 变量 | 作用域 | 说明 |
 | --- | --- | --- |
 | `JSLABYRINTH_LANG` | 全部 | 语言 `zh`/`en`（浏览器可改用 `window.JSLB_ENV`） |
-| `JSLABYRINTH_LICENSE_KEY` | Node | 非交互激活用的卡密 |
-| `JSLABYRINTH_LICENSE_FILE` | Node | 许可证路径（默认包根 `license.lic`） |
-| `JSLABYRINTH_LICENSE_DEBUG` | Node | 打印陷阱原因 |
 | `JSLABYRINTH_KEYGEN_STATE` | 发卡工具 | 编号计数器路径 |
 | `JSLABYRINTH_SIGNING_KEY_FILE` | 发卡工具 | 签发私钥文件路径（默认 `.jslb-signing-key`） |
 | `JSLB_SIGNING_KEY` | 发卡工具 | **签发私钥**（base64，32 字节种子）。**机密**，泄露 = 发卡权泄露 |
@@ -400,20 +387,25 @@ base32，格式校验分不出来。喂错了只会摘两次摘要，签出一�
 | `JSLB_MACHINE_SALT` | 网页/Worker | 覆盖机器码派生盐（base64，非机密） |
 | `JSLB_CORS_ORIGIN` | Worker | `/api/*` 的跨域来源，默认 `*` |
 | `JSLB_DEVICE_ID` | 网页/Worker | 固定设备码（仅 KV 分键与试用计数），便于测试 |
-| `DSH_DUMP_PASSES` | Node | 每个 pass 的中间产物转储为 `_phase_<name>.js` |
+| `JSLB_LIVE_ORIGIN` | 测试 | 线上验收目标域名（默认 `https://jslb.lllm.dpdns.org`） |
+| `JSLB_SKIP_LIVE` | 测试 | 设为 `1` 跳过线上验收段，纯离线跑 |
 | `DSH_VM_DEBUG` | 全部 | VM 编译失败时打印原因 |
+
+> 已随转向纯云端移除：`JSLABYRINTH_LICENSE_KEY` / `JSLABYRINTH_LICENSE_FILE` /
+> `JSLABYRINTH_LICENSE_DEBUG`（Node 端许可证文件机制）、`DSH_DUMP_PASSES`
+> （只被已删的 CLI 使用）。现在激活一律在网页界面完成。
 
 ## 目录结构
 
-按用途分：`src/` 是跨环境核心，`host/` 是宿主专有，`web/` 是界面，`tools/` 按用途三分。
-`functions/` 与 `dist/` 的位置由外部规范决定（Pages 只从项目根读函数，wrangler 指向 dist），
-不参与归整。
+按用途分：`src/` 是跨环境核心，`web/` 是界面，`worker/` 是 Cloudflare 入口，
+`tools/` 按用途三分。`functions/` 与 `dist/` 的位置由外部规范决定
+（Pages 只从项目根读函数，wrangler 指向 dist），不参与归整。
 
 ```
-src/                跨环境核心：前端、Node 与 Worker 共用同一份，零宿主依赖
+src/                跨环境核心：浏览器与 Worker 共用同一份，零宿主依赖
   index.js          公共入口（库用法、网页、Worker 都从这里取能力）
   obfuscate.js      核心：pass 编排与自校验
-  options.js        默认选项          options-meta.js  选项元数据（CLI 与界面共用）
+  options.js        默认选项          options-meta.js  选项元数据（界面与闸门共用）
   presets.js        强度预设          plans.js         套餐定义
   plan.js           套餐判定          options-gate.js  套餐闸门与提示（三端共用）
   html.js           HTML 内联脚本      pipeline.js      一次任务的完整流程
@@ -426,11 +418,8 @@ src/                跨环境核心：前端、Node 与 Worker 共用同一份�
   utils/            hash（纯 JS SHA-256/512、HMAC、base64）、ed25519（纯 JS 签名/验签）、
                     encode、rand、hide、ws、zip
 
-host/               宿主专有：只在某一种运行环境里成立，不进前端模块图
-  cli.js            Node 命令行入口
-  directory.js      Node 目录批量
-  license-node.js   Node 授权（文件、机器码、反调试、自身摘要校验）
-  worker.js         Cloudflare Worker 入口（Pages 的 functions/ 转调它）
+worker/             Cloudflare Worker 入口（Pages 的 functions/ 转调它）
+  index.js          无任何 node: 依赖的纯 Web 代码，wrangler.toml 的 main 指向它
 
 web/                网页界面源码（原生 ESM，无打包器，无第三方依赖）
 tools/
@@ -443,8 +432,14 @@ functions/api/      Cloudflare Pages Functions（必须留在项目根，Pages �
 dist/               构建产物（web/ 的界面 + src/ 的核心），不随仓库分发
 ```
 
-`host/` 里的东西一个都不进 `dist/`——构建只复制 `src/` 与 `web/`，所以不需要任何
-排除表。往 `src/` 里放宿主专有代码会同时破坏这条性质和前端模块图，别这么做。
+`worker/` 与 `src/`、`web/` 一样零宿主依赖——三者都是能在浏览器和 workerd 里直接跑的
+Web 标准代码。构建只复制 `src/` 与 `web/`，所以不需要任何排除表。
+
+> **已移除**：原先的 `host/` 目录（`cli.js` 命令行、`directory.js` 目录批量、
+> `license-node.js` Node 端许可证）随"全面转向云端"一并删除。这些能力在
+> Cloudflare Worker 里物理上不存在对应物：Worker 拿不到 `os.hostname()` 与网卡 MAC，
+> 也没有 debugger 可供反调试，更没有本地文件系统承载 `license.lic`。
+> 现在唯一的授权通道是网页界面 + Worker + KV。
 
 ## 与改动前版本的差异
 
@@ -468,13 +463,15 @@ dist/               构建产物（web/ 的界面 + src/ 的核心），不随�
    改动前签发的卡密与 `license.lic` 仍然有效。
 3. **数据文件 JSON → JS 模块**。原生 ESM 的 JSON 模块在各浏览器支持度不一，
    `options/presets/plans/builtin-*` 改成导出默认值的 `.js`。
-4. **许可证拆成三块**。原 `src/license.js` 里宿主相关的部分（fs/os/readline/inspector、反调试、
-   自身摘要）留在 `host/license-node.js`；共用的判定进 `src/license-core.js`；网页侧新增
-   `src/license-web.js`。自身文件摘要表覆盖的文件变了，`tools/issue/selfdigest.js` 已同步。
+4. **许可证拆成共用判定与宿主适配**。原 `src/license.js` 里宿主相关的部分拆出；共用的判定进
+   `src/license-core.js`，网页/Worker 侧新增 `src/license-web.js`。自身文件摘要表覆盖的文件变了，
+   `tools/issue/selfdigest.js` 已同步。
+   （后续 2026-09-21 转向纯云端时，Node 侧那份 `host/license-node.js` 已删除，
+   摘要表相应从 6 项缩到 5 项。）
 5. **`Buffer` 与 `process` 出核心**。`Buffer.from(mod).toString('base64')`（wasm 档）与
    `process.env.DSH_*` 改成通用实现，`Buffer.byteLength` 改成 `platform.byteLength`。
 6. **新增**：`src/platform.js`、`src/pipeline.js`、`src/options-meta.js`、`src/options-gate.js`、
-   `src/index.js`、`src/utils/zip.js`、`src/version.js`、`host/`、`functions/`、`web/`、
+   `src/index.js`、`src/utils/zip.js`、`src/version.js`、`functions/`、`web/`、
    `wrangler.toml`，以及 `tools/` 下的 `build-web.js`、`selftest.js`、`hashtest.js`。
 7. **版本号**从 `src/version.js` 读（避免浏览器导入 JSON），`tools/issue/selfdigest.js --check`
    会顺带校验它与 `package.json` 一致。
@@ -566,9 +563,9 @@ node tools/test/semantics.js -p medium -s 8 -f 逻辑
 命中依赖随机数，所以单 seed 跑过不代表没问题，默认跨 3 个 seed。加用例时优先覆盖
 **取值语义**容易被改错的地方：逻辑运算符作为运算数、复合赋值、短路求值的副作用顺序。
 
-改过自身许可证相关文件（`host/license-node.js`、`src/license-core.js`、`src/license-codec.js`、
+改过自身许可证相关文件（`src/license-core.js`、`src/license-codec.js`、
 `src/license-secret.js`、`src/plan.js`、`src/plans.js`）后必须重跑
-`node tools/issue/selfdigest.js --write`，否则 CLI 会判定自身被篡改并拒绝启动。
+`node tools/issue/selfdigest.js --write`，否则校验会判定自身被篡改。
 移动这几个文件的位置同样要重算——摘要把文件路径也算进去了。
 
 ## 已知问题

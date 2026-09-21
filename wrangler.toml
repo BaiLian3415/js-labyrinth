@@ -10,7 +10,7 @@
 # 说明：核心与入口都不 import 任何 node: 内建模块，因此不需要 nodejs_compat 兼容标志。
 
 name = "jslabyrinth"
-main = "host/worker.js"
+main = "worker/index.js"
 compatibility_date = "2025-04-01"
 
 # 静态界面。dist/ 由 tools/build/build-web.js 生成（web/ 的界面 + src/ 的核心）。
