@@ -193,7 +193,7 @@ async function handleObfuscate(request, env) {
       }, 401);
     }
   } else {
-    const ens = await licenseWeb.ensure();
+    const ens = await licenseWeb.ensure({ selfAnchored: true });
     if (!ens.ok) {
       return json({
         ok: false,
@@ -231,7 +231,7 @@ async function handleObfuscate(request, env) {
 /** /api/license：查询或激活。 */
 async function handleLicense(request) {
   if (request.method === 'GET') {
-    await licenseWeb.ensure();
+    await licenseWeb.ensure({ selfAnchored: true });
     const dev = request.headers.get('X-JSLB-Device') || cookieDevice(request);
     return json(await licenseState(), 200, dev ? { 'set-cookie': deviceCookie(request, dev) } : {});
   }
@@ -244,7 +244,7 @@ async function handleLicense(request) {
   // 这里删的是无后缀的共享键，真正的设备记录原封不动。
   if (body.deactivate === true) {
     await licenseWeb.deactivate();
-    await licenseWeb.ensure();
+    await licenseWeb.ensure({ selfAnchored: true });
     // 解除之后状态本来就是"未激活"，licenseState() 会给出 ok:false；响应仍要
     // 标 ok:true，否则客户端把它当成请求失败，界面上会显示解除没生效。
     // 一并清掉设备 cookie，否则浏览器还会带着旧身份继续取核心模块
@@ -281,7 +281,7 @@ async function handleLicense(request) {
       }, 401);
     }
   }
-  await licenseWeb.ensure();
+  await licenseWeb.ensure({ selfAnchored: true });
   // 激活成功后种下设备 cookie，后续 /src/** 的模块请求由浏览器自动带上。
   // 解除激活的那条分支不走这里——那边刚把记录删了，不该再发新 cookie。
   const dev = request.headers.get('X-JSLB-Device');
@@ -356,11 +356,16 @@ export default {
     // 代价要写在前面：每个模块请求都要读一次 KV（一次页面加载 = 五十来次读）。
     // 免费版 KV 是十万次读/天，够用但不宽裕；真上量了再改成带签名的短期票据
     // （cookie 里存过期时间戳，命中就跳过 KV）。
+    //
+    // selfAnchored 是**必需**的，不是优化：Worker 里没有 navigator / screen /
+    // WebGL，machineId() 派出的值（实测 4CFS7ZE5899W3R803S439Y2F）与浏览器派的
+    // （1K9W9H9S065P0C7M834C1XC8）永不相等，严格比对会把所有设备判成未授权，
+    // 且补登记也救不回来。详见 license-core.verifyLicenseData。
     if (gateCoreOn(env) && request.method === 'GET'
         && GATED_PREFIXES.some((p) => url.pathname.startsWith(p))) {
       const dev = cookieDevice(request);
       if (dev) licenseWeb.setRequestDeviceId(dev);
-      const ens = await licenseWeb.ensure();
+      const ens = await licenseWeb.ensure({ selfAnchored: true });
       if (!ens.ok) {
         return new Response('403 Forbidden — 核心模块仅对已激活设备开放\n', {
           status: 403,

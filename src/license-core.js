@@ -57,10 +57,33 @@ export function readUsage(u) {
  *     "本地记录被搬到另一台机器"。令牌密钥是公开的，所以这层只防搬运，不防
  *     有源码的人重签自己的记录；真正的边界是①。
  *
+ * ## 第 1.5 种调用方式：自锚定（Web 端服务侧）
+ *
+ * `mid` 省略（传 null/undefined）时进入**自锚定**模式：不拿外部机器码来比，
+ * 而是**采信记录自己的 `machine` 字段**作为锚点。
+ *
+ * 为什么必须提供这个模式：Worker 里没有 navigator / screen / WebGL，设备特征
+ * 全为空，`machineId()` 算出来的是一个与浏览器**永不相等**的常量（实测：
+ * 服务端 4CFS7ZE5899W3R803S439Y2F vs 浏览器 1K9W9H9S065P0C7M834C1XC8）。
+ * 于是浏览器写下的记录在服务端恒被判 `machine` 不一致 —— 核心模块一律 403，
+ * 且补登记（importRecord）也永远失败。这不是配置问题，是结构上不可能成立。
+ *
+ * 自锚定模式下仍然强制校验（安全性并未退化成"什么都收"）：
+ *   - 卡密 Ed25519 签名有效（真边界，私钥在签发方）
+ *   - `matchesMachine(bindSeg, data.machine)`：卡的**签名绑定段**必须与记录
+ *     自称的机器码吻合。绑定段在签名载荷内，改不了；所以记录必须属于"这张卡
+ *     签发时指定的那台机器"，换一台机器伪造的码过不了。
+ *   - 令牌与 `data.machine` 自洽：手改 machine / expiresAt / usage 都会失败。
+ *   - 未过期。
+ *
+ * 唯一放弃的是"记录里的机器 == 本服务器派生出的机器"——对浏览器设备而言
+ * 这一条从来就没有意义（服务端无从得知浏览器指纹）。设备身份改由 `jslb_dev`
+ * cookie 承担，闸门按 cookie 分键取记录。
+ *
  * @param {object} data 许可证内容
- * @param {string} mid 当前机器码（Node 为硬件指纹派生，网页为设备特征派生）
+ * @param {string|null} mid 当前机器码；省略即进入自锚定模式
  * @param {string} publicKeyB64 签发公钥 base64
- * @returns {{ok:boolean, reason?:string, expiresAt?:number, plan?:string, code?:string, usage?:object}}
+ * @returns {{ok:boolean, reason?:string, expiresAt?:number, plan?:string, code?:string, usage?:object, machine?:string}}
  */
 export function verifyLicenseData(data, mid, publicKeyB64) {
   if (!data || typeof data !== 'object' || Array.isArray(data)) return { ok: false, reason: 'corrupt' };
@@ -68,16 +91,22 @@ export function verifyLicenseData(data, mid, publicKeyB64) {
   if (typeof data.code !== 'string' || typeof data.token !== 'string') return { ok: false, reason: 'corrupt' };
   if (typeof data.machine !== 'string' || data.machine.length !== 24) return { ok: false, reason: 'corrupt' };
 
+  // 自锚定：锚点取记录自己的 machine。外部给了就以外部的为准（浏览器 / CLI）。
+  const selfAnchored = mid === null || mid === undefined || mid === '';
+  const anchor = selfAnchored ? data.machine : mid;
+
   const parsed = codec.parseCode(publicKeyB64, data.code);
   if (!parsed.ok) return { ok: false, reason: 'code' };
 
-  // 卡密绑定的机器与当前机器是否一致。不绑定的卡（绑定段全 0）这一步恒真。
-  if (!codec.matchesMachine(parsed.bindSeg, mid)) return { ok: false, reason: 'bind' };
+  // 卡密绑定的机器与锚点是否一致。不绑定的卡（绑定段全 0）这一步恒真。
+  // 自锚定下这一步依然有意义：绑定段是签名过的，记录必须属于该卡指定的机器。
+  if (!codec.matchesMachine(parsed.bindSeg, anchor)) return { ok: false, reason: 'bind' };
 
   // 套餐以卡密为准，存储里的 plan 只用来发现不一致
   if (data.plan !== parsed.plan) return { ok: false, reason: 'planmismatch' };
 
-  if (data.machine !== mid) return { ok: false, reason: 'machine' };
+  // 非自锚定时才需要显式比对；自锚定下 anchor 就是 data.machine，恒等。
+  if (!selfAnchored && data.machine !== mid) return { ok: false, reason: 'machine' };
 
   // 到期时间由**卡密里已签名的签发日**与天数推出，不采信记录里的 issuedAt 或
   // expiresAt。这两项在存储里是明文，改一下就能把自己的许可证无限续期；而
@@ -87,7 +116,7 @@ export function verifyLicenseData(data, mid, publicKeyB64) {
 
   const usage = readUsage(data.usage);
   if (!usage.ok) return { ok: false, reason: 'corrupt' };
-  if (!codec.verifyToken(publicKeyB64, data.token, mid, data.expiresAt, usage.day, usage.used)) {
+  if (!codec.verifyToken(publicKeyB64, data.token, anchor, data.expiresAt, usage.day, usage.used)) {
     return { ok: false, reason: 'token' };
   }
   if (data.expiresAt !== codec.PERPETUAL && platform.now() > data.expiresAt) {
@@ -99,6 +128,7 @@ export function verifyLicenseData(data, mid, publicKeyB64) {
     plan: parsed.plan,
     code: parsed.code,
     usage: { day: usage.day, used: usage.used },
+    machine: anchor,
   };
 }
 

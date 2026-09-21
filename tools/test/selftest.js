@@ -395,6 +395,95 @@ section('卡密的机器码绑定');
   }
 }
 
+// ------------------------------------------------------------ 自锚定校验
+
+// 服务端（Cloudflare Worker）里没有 navigator / screen / WebGL，machineId() 派生出的
+// 值与浏览器派的永不相等（Worker 实测 4CFS7ZE5899W3R803S439Y2F，浏览器实测
+// 1K9W9H9S065P0C7M834C1XC8）。所以 Worker 侧的网关必须用"自锚定"模式校验：
+// 锚点取记录自己声称的 machine，再拿**签名过的绑定段**去核对。
+//
+// 这一节钉住三件事：自锚定能放行正常记录、严格模式不会因此被放松、伪造仍然过不去。
+
+section('自锚定校验（服务端网关）');
+{
+  const seed = TEST_SIGNING_SEED;
+  const pub = TEST_PUBLIC_KEY;
+  const browserMid = '1K9W9H9S065P0C7M834C1XC8'; // 浏览器派生（记录里的 machine）
+  const serverMid = '4CFS7ZE5899W3R803S439Y2F';  // Worker 派生（网关手里的 machine）
+
+  // 签发日必须晚于当前时间，否则校验会在 expired 那一步先失败，掩盖掉这里要验的
+  // bind / token 判定。往上取一段余量而不是写死某天，免得测试随时间腐烂。
+  const issueDay = Math.floor((Date.now() - codec.DAY_ZERO) / 86400000) + 3650;
+
+  // 卡绑到浏览器机器码 —— 线上就是这种情况
+  const parsed = codec.parseCode(pub, codec.issueCode(seed, 'pro', 30, '70001', issueDay, browserMid));
+  ok(parsed.ok && parsed.bound === true, '自锚定用例：卡绑到浏览器机器码');
+  const rec = licCore.makeRecord({
+    code: parsed.code, plan: 'pro', machine: browserMid,
+    issuedAt: Date.now(), expiresAt: licCore.expiryFromIssueDay(parsed),
+    usage: { day: '2026-01-01', used: 0 },
+  }, pub);
+
+  // 严格模式：本机码相同 → 放行；换成 Worker 派的码 → 必须拒绝
+  ok(licCore.verifyLicenseData(rec, browserMid, pub).ok, '严格模式：机器码一致时放行');
+  {
+    const res = licCore.verifyLicenseData(rec, serverMid, pub);
+    // 拒绝的理由是 bind 而不是 machine：绑定段的核对排在 machine 比对之前，
+    // 而异机场景下绑定段先一步不合。这正是 403 的真凶。
+    ok(!res.ok && res.reason === 'bind', '严格模式：换成服务端机器码时判 bind（403 的真凶）', res.reason);
+  }
+
+  // 自锚定：null / undefined / 空串都应被视为自锚定
+  for (const anchor of [null, undefined, '']) {
+    const res = licCore.verifyLicenseData(rec, anchor, pub);
+    ok(res.ok, '自锚定（' + JSON.stringify(anchor) + '）放行浏览器派生的记录', res.reason);
+    ok(res.machine === browserMid, '自锚定回传的 machine 取自记录自身');
+  }
+
+  // 严格模式绝不能被自锚定带松：传了机器码就必须严格比对
+  ok(!licCore.verifyLicenseData(rec, serverMid, pub).ok, '自锚定不影响严格模式：异机仍拒');
+  ok(licCore.verifyLicenseData(rec, browserMid, pub).ok, '自锚定不影响严格模式：同机仍放');
+
+  // 安全性：自锚定的锚点来自记录，必须靠签名过的绑定段兜底
+  {
+    const forged = { ...rec, machine: 'ZZZZZZZZZZZZZZZZZZZZZZZZ' };
+    const res = licCore.verifyLicenseData(forged, null, pub);
+    ok(!res.ok && res.reason === 'bind', '自锚定：改 machine 会被签名过的绑定段拦下', res.reason);
+  }
+  {
+    // 连令牌一起换成"新机器"的也没用：绑定段仍指向原机器
+    const machine = 'ZZZZZZZZZZZZZZZZZZZZZZZZ';
+    const forged = {
+      ...rec,
+      machine,
+      token: codec.makeToken(pub, machine, rec.expiresAt, rec.usage.day, rec.usage.used),
+    };
+    const res = licCore.verifyLicenseData(forged, null, pub);
+    ok(!res.ok && res.reason === 'bind', '自锚定：令牌与 machine 同步伪造仍被绑定段拦下', res.reason);
+  }
+  {
+    const tampered = { ...rec, usage: { day: rec.usage.day, used: 999 } };
+    const res = licCore.verifyLicenseData(tampered, null, pub);
+    ok(!res.ok && res.reason === 'token', '自锚定：篡改用量判 token', res.reason);
+  }
+  {
+    // 卡密不绑机器（绑定段全 0）时，自锚定等价于"只看签名与令牌"
+    const free = codec.parseCode(pub, codec.issueCode(seed, 'pro', 30, '70002', issueDay));
+    ok(free.bound === false, '自锚定用例：通用卡不绑定机器');
+    const freeRec = licCore.makeRecord({
+      code: free.code, plan: 'pro', machine: serverMid,
+      issuedAt: Date.now(), expiresAt: licCore.expiryFromIssueDay(free),
+      usage: { day: '2026-01-01', used: 0 },
+    }, pub);
+    ok(licCore.verifyLicenseData(freeRec, null, pub).ok, '自锚定：不绑定的卡在任何机器码下都放行');
+  }
+  {
+    // machine 长度不对属于结构性损坏，自锚定也必须先挡下来
+    ok(!licCore.verifyLicenseData({ ...rec, machine: 'SHORT' }, null, pub).ok,
+      '自锚定：machine 长度非法判 corrupt');
+  }
+}
+
 // ------------------------------------------------------------ keygen 命令行
 
 section('签发工具命令行（编号分配与 --bind）');

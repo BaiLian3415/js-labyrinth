@@ -311,9 +311,16 @@ export function trialEntitlements() {
 
 /**
  * 从存储加载许可证并校验。成功则进入已授权状态。
+ *
+ * @param {object} [opts]
+ * @param {boolean} [opts.selfAnchored] 是否用记录自己的 machine 作锚点，而不是
+ *   现场派生的机器码。**服务侧（Worker 闸门）必须传 true**：Worker 里没有
+ *   navigator / screen / WebGL，派生出的机器码与浏览器永不相等，否则任何记录
+ *   都会判成 machine 不一致（详见 license-core.verifyLicenseData 的说明）。
+ *   浏览器与 CLI 省略即可，保持"必须与当前机器一致"的严格语义。
  * @returns {Promise<{ok:boolean, reason?:string}>} 结果
  */
-export async function restore() {
+export async function restore(opts) {
   const raw = await storeGet(K_LICENSE);
   if (!raw) return { ok: false, reason: 'missing' };
   let data;
@@ -322,13 +329,15 @@ export async function restore() {
   } catch (e) {
     return { ok: false, reason: 'corrupt' };
   }
-  const mid = await machineId();
+  const selfAnchored = !!(opts && opts.selfAnchored);
+  // 自锚定时不派生机器码——派生了也不用，还会白白读一遍 GPU 特征
+  const mid = selfAnchored ? null : await machineId();
   const res = licCore.verifyLicenseData(data, mid, publicKey);
   if (!res.ok) return { ok: false, reason: res.reason };
   state = {
     plan: res.plan,
     code: res.code,
-    machine: mid,
+    machine: res.machine || mid || data.machine,
     issuedAt: data.issuedAt,
     expiresAt: res.expiresAt,
     usage: res.usage,
@@ -389,8 +398,10 @@ export async function exportRecord() {
  * 核心模块是按设备 cookie 下发的，服务端 KV 里没有这台设备的记录，模块请求
  * 一律 403。这一步让服务端补上登记。
  *
- * 记录本身带签名且绑定机器码，服务端用自己派生的机器码重新验一遍：客户端
- * 换不来别人的授权，也改不动套餐与用量（那几项都在令牌载荷里）。
+ * 记录本身带签名且绑定机器码。服务端**没有浏览器指纹**，派不出与客户端一致的
+ * 机器码，所以这里采用自锚定校验（verifyLicenseData 传 mid=null）：拿记录自称的
+ * machine 作锚点，再验卡密签名、签名绑定段与记录令牌三者是否与它自洽。
+ * 客户端因此换不来别人的授权，也改不动套餐与用量（那几项都在令牌载荷里）。
  *
  * @param {object} record 许可证记录
  * @returns {Promise<{ok:boolean, reason?:string, plan?:string}>} 结果
@@ -400,18 +411,20 @@ export async function importRecord(record) {
   if (!record || typeof record !== 'object' || Array.isArray(record)) {
     return { ok: false, reason: 'corrupt' };
   }
-  const mid = await machineId();
-  const res = licCore.verifyLicenseData(record, mid, publicKey);
+  // 自锚定：服务端派不出浏览器机器码，改用记录自称的 machine 作锚点。
+  // 绑定段（Ed25519 签名内）与令牌都会拿它重验，所以伪造的 machine 过不了。
+  const res = licCore.verifyLicenseData(record, null, publicKey);
   if (!res.ok) return { ok: false, reason: res.reason };
+  const mid = res.machine;
   // 只在服务端本来没有有效记录时才落盘：客户端每刷新一次页面就会推一次记录，
   // 无脑覆盖等于把服务端累计的用量计数清零（/api/obfuscate 在那边扣的配额
   // 会被冲掉，等于白送额度）。服务端那份还有效就留着，客户端只是来补登记的。
   const mine = await exportRecord();
   if (mine) {
-    const keep = licCore.verifyLicenseData(mine, mid, publicKey);
+    const keep = licCore.verifyLicenseData(mine, null, publicKey);
     if (keep.ok) {
       state = {
-        plan: keep.plan, code: keep.code, machine: mid,
+        plan: keep.plan, code: keep.code, machine: keep.machine,
         issuedAt: mine.issuedAt, expiresAt: keep.expiresAt, usage: keep.usage, trial: false,
       };
       return { ok: true, plan: keep.plan, adopted: false };
@@ -451,9 +464,9 @@ export function current() {
  * @returns {Promise<{ok:boolean, reason?:string, trial?:boolean}>} 结果；
  *   ok 为假表示必须激活（requireLicense 为真且无有效卡密）
  */
-export async function ensure() {
+export async function ensure(opts) {
   loadKeysFromEnv();
-  const r = await restore();
+  const r = await restore(opts);
   if (r.ok) return { ok: true, trial: false };
   const cfg = platform.getWebConfig();
   if (cfg.requireLicense) return { ok: false, reason: r.reason || 'missing' };
