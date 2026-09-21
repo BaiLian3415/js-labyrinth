@@ -1,9 +1,10 @@
 #!/usr/bin/env node
 /**
- * 自测。零依赖，直接跑：
+ * 自测。直接跑：
  *
  *   npm test            （即 node tools/test/selftest.js）
  *   node tools/test/selftest.js --verbose
+ *   JSLB_SKIP_LIVE=1 npm test       仅跑离线段，完全不打网络
  *
  * 覆盖范围：
  *   核心       三个预设各跑一遍，产物可执行、固定 seed 可复现、跨运行一致
@@ -14,10 +15,15 @@
  *   网页链路   runJob 在浏览器侧等价路径上可跑通（授权、限额、记账）
  *   额度包     一次性额度按总额度累计、跨日不重置、用尽即拦
  *   解除激活   服务端按设备码存的那份记录被真正删掉，刷新不再恢复
- *   Worker API health / plans / license / obfuscate 四个路由
+ *   Worker API health / plans / license / obfuscate 四个路由（进程内，不打网络）
  *   ZIP        文件头、CRC 与中央目录结构
+ *   线上验收   打已部署的 Cloudflare 站点，确认部署与策略真的生效
  *
- * 不依赖网络、不写仓库内文件（临时目录用完即删），可在 CI 里直接跑。
+ * ⚠️ 网络依赖：除最末「线上验收」段外，全部离线。该段会打
+ *    JSLB_LIVE_ORIGIN（默认 https://jslb.lllm.dpdns.org），
+ *    需要无网/CI 环境纯离线跑时设 JSLB_SKIP_LIVE=1。
+ *
+ * 不写仓库内文件（临时目录用完即删）。
  */
 import fs from 'node:fs';
 import os from 'node:os';
@@ -1243,6 +1249,91 @@ section('其他');
       }
     }
     ok(same, 'shell 引导器原语：产物文本与构建期直接实现逐位一致', firstBad);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 线上验收（需要网络）
+//
+// 打已部署的 Cloudflare 站点，验证"本地构建的东西真的在线上跑着"。这一段是
+// 唯一会走网络的测试：它验的是部署，不是算法。算法与授权链路的判定在前面的
+// 离线段里已经全部覆盖过了，两者互补。
+//
+//   JSLB_LIVE_ORIGIN   覆盖目标域名（默认 jslb.lllm.dpdns.org）
+//   JSLB_SKIP_LIVE=1   跳过本段（离线跑测试时用）
+//
+// 注意：本段通过与网络状况有关。它失败时先看是"站点不可达"还是"内容不对"——
+// 前者是环境问题，后者才是部署问题。
+// ---------------------------------------------------------------------------
+const LIVE_ORIGIN = (process.env.JSLB_LIVE_ORIGIN || 'https://jslb.lllm.dpdns.org').replace(/\/+$/, '');
+if (process.env.JSLB_SKIP_LIVE === '1') {
+  console.log('\n线上验收（已按 JSLB_SKIP_LIVE=1 跳过）');
+} else {
+  section('线上验收：' + LIVE_ORIGIN);
+
+  /** 带超时的 GET，返回 {status, text} 或 {status:0, err}。 */
+  async function getLive(p, init) {
+    const ctl = new AbortController();
+    const t = setTimeout(() => ctl.abort(), 15000);
+    try {
+      const r = await fetch(LIVE_ORIGIN + p, { ...init, signal: ctl.signal });
+      return { status: r.status, text: await r.text() };
+    } catch (e) {
+      return { status: 0, err: (e && e.message) || String(e) };
+    } finally {
+      clearTimeout(t);
+    }
+  }
+
+  const health = await getLive('/api/health');
+  const reachable = health.status === 200;
+  ok(reachable, '线上 /api/health 可达并返回 200',
+    reachable ? '' : ('status=' + health.status + ' ' + (health.err || '')));
+
+  if (!reachable) {
+    // 站点都够不着，后面每项都会失败，只报一次即可，别刷屏。
+    console.log('  （线上不可达，跳过后续线上断言）');
+  } else {
+    let info = null;
+    try { info = JSON.parse(health.text); } catch { /* 下面断言会兜住 */ }
+    ok(info && info.ok === true, 'health 返回 ok:true', health.text.slice(0, 120));
+    ok(info && info.runtime === 'worker', 'health 标明 runtime=worker',
+      info ? String(info.runtime) : '');
+    ok(info && info.engine === 'cloudflare-worker', 'health 标明 engine=cloudflare-worker',
+      info ? String(info.engine) : '');
+
+    const plans = await getLive('/api/plans');
+    ok(plans.status === 200, '线上 /api/plans 返回 200', 'status=' + plans.status);
+    let plansBody = null;
+    try { plansBody = JSON.parse(plans.text); } catch { /* ignore */ }
+    ok(!!(plansBody && Array.isArray(plansBody.plans) && plansBody.plans.length > 0),
+      '线上 /api/plans 返回非空套餐表',
+      plansBody ? Object.keys(plansBody).join(',') : plans.text.slice(0, 120));
+    // 网页版策略要求激活卡密：未激活一律拒绝，这一点必须在线上成立。
+    // 注意策略挂在 body.web 下（不是顶层），见 host/worker.js 的 /api/plans。
+    ok(!!(plansBody && plansBody.web && plansBody.web.requireLicense === true),
+      '线上策略 web.requireLicense=true（未激活即拒绝）',
+      plansBody && plansBody.web ? JSON.stringify(plansBody.web).slice(0, 160) : '');
+
+    // 未授权调用 /api/obfuscate 必须被拒（不是 200），否则等于线上白送。
+    const unauth = await getLive('/api/obfuscate', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ code: 'var a=1;', preset: 'low' }),
+    });
+    ok(unauth.status !== 200,
+      '线上未授权混淆被拒（不是 200）', 'status=' + unauth.status);
+
+    // 核心源码闸门：未激活请求 /src/index.js 必须 403，不能白拿实现。
+    const gated = await getLive('/src/index.js');
+    ok(gated.status === 403, '线上 /src/index.js 对未激活设备返回 403',
+      'status=' + gated.status);
+
+    // 静态外壳必须能拿到，否则页面根本打不开。
+    const shell = await getLive('/index.html');
+    ok(shell.status === 200, '线上 /index.html 可访问', 'status=' + shell.status);
+
+    console.log('  线上段依赖网络：失败时先区分"站点不可达"与"内容不符"。');
   }
 }
 

@@ -23,12 +23,12 @@ node host/cli.js input.js out.js --preset medium --seed 42
 node host/cli.js page.html --preset high
 node host/cli.js ./src ./dist-src --dir-copy-others
 
-# 3) 本地预览网页界面（无需构建工具；加 --api 一并挂上 Worker 处理器）
-node tools/build/serve.js --port 8787 --api
-#    浏览器打开 http://127.0.0.1:8787/
-
-# 4) 构建静态产物（界面 + 核心；核心默认自混淆，见下）
+# 3) 构建静态产物（界面 + 核心；核心默认自混淆，见下）
 npm run build:web
+
+# 4) 预览与调试：一律走 Cloudflare，本地不起任何服务器
+npx wrangler dev         # 本地 workerd：静态资源 + /api/*，与线上同构
+npx wrangler deploy      # 发布到线上，浏览器打开线上域名
 ```
 
 `build:web` 会用**项目自己的混淆器**把 `src/**` 跑一遍再写进 `dist/`（体积约 1.3 倍、
@@ -434,7 +434,7 @@ host/               宿主专有：只在某一种运行环境里成立，不进
 
 web/                网页界面源码（原生 ESM，无打包器，无第三方依赖）
 tools/
-  build/            构建、预览与发布验证  build-web.js、serve.js、verify-deploy.js
+  build/            构建与发布验证  build-web.js、verify-deploy.js
   test/             测试          selftest.js、hashtest.js、semantics.js、bench.js（性能基准）
   issue/            发卡与密钥    keygen.js（发卡）、signingkey.js（生成密钥对）、
                                   keyrotate.js（轮换）、selfdigest.js
@@ -475,19 +475,35 @@ dist/               构建产物（web/ 的界面 + src/ 的核心），不随�
    `process.env.DSH_*` 改成通用实现，`Buffer.byteLength` 改成 `platform.byteLength`。
 6. **新增**：`src/platform.js`、`src/pipeline.js`、`src/options-meta.js`、`src/options-gate.js`、
    `src/index.js`、`src/utils/zip.js`、`src/version.js`、`host/`、`functions/`、`web/`、
-   `wrangler.toml`，以及 `tools/` 下的 `build-web.js`、`serve.js`、`selftest.js`、`hashtest.js`。
+   `wrangler.toml`，以及 `tools/` 下的 `build-web.js`、`selftest.js`、`hashtest.js`。
 7. **版本号**从 `src/version.js` 读（避免浏览器导入 JSON），`tools/issue/selfdigest.js --check`
    会顺带校验它与 `package.json` 一致。
 
 ## 测试
 
 ```bash
-npm test                                 # 132 项：核心/HTML/目录/闸门/许可证/网页链路/Worker/ZIP/ESM 说明符/BigInt
+npm test                                 # 核心/HTML/目录/闸门/许可证/网页链路/Worker/ZIP/ESM/BigInt + 线上验收
+JSLB_SKIP_LIVE=1 npm test                # 同上，但不打网络（纯离线段）
 node tools/test/hashtest.js              # 118 项：SHA-256/512、HMAC、base64、Ed25519 与 node:crypto 逐位一致
 npm run semantics                        # 语义保持扫描（42 用例 × 4 预设 × 3 seed = 528 次比对）
 npm run bench                            # 混淆性能基准（各预设 × 各规模 + per-pass 分布）
 node tools/issue/selfdigest.js --check   # 自身摘要表与版本号一致性
+node tools/test/webfp.js                 # 浏览器指纹线上实测（playwright + 线上域名）
+npm run verify                           # 发布验证：打线上域名核对接口与资源
 ```
+
+### 网络依赖
+
+除「线上验收」段外，`npm test` 全部离线运行，不读凭据、不写仓库内文件。
+该段会请求已部署的 Cloudflare 站点，确认部署与策略真的生效：
+
+| 环境变量 | 作用 |
+| --- | --- |
+| `JSLB_LIVE_ORIGIN` | 覆盖验收目标域名，默认 `https://jslb.lllm.dpdns.org` |
+| `JSLB_SKIP_LIVE=1` | 跳过线上段，纯离线跑（无网环境、受限 CI 用这个） |
+
+线上段失败时先分清两种原因：`站点不可达` 是环境/网络问题，`内容不符` 才是部署问题。
+`tools/test/webfp.js` 与 `npm run verify` 同样需要网络，且都打同一个域名。
 
 ### 性能基准
 

@@ -42,9 +42,7 @@
     "semantics": "node tools/test/semantics.js",
     "test": "node tools/test/selftest.js",
     "build:web": "node tools/build/build-web.js",
-    "serve": "node tools/build/serve.js",
     "verify": "node tools/build/verify-deploy.js https://jslb.lllm.dpdns.org/",
-    "dev": "npx wrangler dev",
     "deploy": "npx wrangler deploy",
     "pages:deploy": "npm run build:web && npx wrangler pages deploy dist"
   },

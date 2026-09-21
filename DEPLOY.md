@@ -73,28 +73,46 @@ node node_modules/wrangler/bin/wrangler.js kv namespace create JSLB_KV
 
 ---
 
-## 3. 本地构建与预览
+## 3. 构建与调试（全部经 Cloudflare）
+
+本项目**不在本地起 Web 服务器**，也不需要任何本地 hosts 映射。所有调试与发布
+都走 Cloudflare 自己的运行时：
 
 ```bash
 npm run build:web        # 产出 dist/：界面 + 自混淆后的核心（--plain 可退回纯复制）
                          # 纯复制 + 注入，无打包器、无外部依赖，约 1 秒
 
-npm run serve            # 静态预览 http://127.0.0.1:8787/
-                         # 加 --api 一并挂上 Worker 处理器，方便脱离 wrangler 调试
+npx wrangler dev         # 本地 workerd：静态资源 + /api/*，与线上同构
+                         # 这是唯一的"本地跑起来"方式，跑的就是线上那套运行时
 
-npx wrangler dev         # 或：真 workerd 环境（静态资源 + /api/*），与线上最一致
+npx wrangler deploy      # 发布到线上，浏览器直接打开线上域名验证
 ```
 
-`npm run serve` 的参数：`node tools/build/serve.js --port 8787 --host 127.0.0.1 --dist --api`。
+`wrangler dev` 由 Cloudflare 官方工具提供并运行 `workerd`（Cloudflare 的生产
+运行时），不是自建服务器——静态资源、`/api/*` 路由、KV 绑定、`[vars]` 策略
+全部按 `wrangler.toml` 在进程内复现。因此**本地与线上是同一套语义**，不需要
+再维护一个等价的本地预览器。
+
+> 早先版本有个 `npm run serve`（自建 http 静态预览），现已移除。它只是把
+> 文件读给浏览器，既不跑 Worker 也不读 KV，与线上差异反而更大；`wrangler dev`
+> 覆盖了它全部用途且更准。
 
 **发布前必跑**（改了授权相关代码时）：
 
 ```bash
-npm run test             # selftest（124 项）
+npm run test             # 核心 + 线上验收（见下）
 npm run hashtest         # 68 项
 npm run semantics        # 语义保持 528 次比对（约 11 分钟）
 npm run selfdigest:check # 自身摘要表；改了授权文件要 npm run selfdigest
 ```
+
+`npm run test` 末段会打线上域名做验收。若要纯离线跑（无网 / 受限 CI）：
+
+```bash
+JSLB_SKIP_LIVE=1 npm test
+```
+
+验收目标域名默认 `https://jslb.lllm.dpdns.org`，用 `JSLB_LIVE_ORIGIN` 覆盖。
 
 ---
 
