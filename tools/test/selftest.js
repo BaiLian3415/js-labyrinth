@@ -65,6 +65,21 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '.
 const VERBOSE = process.argv.includes('--verbose');
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'jslb-selftest-'));
 
+// 临时目录必须随进程一起消失。末尾那句 rmSync 只在"跑到最后"时才执行，
+// 而线上段不可达时会提前 return、断言失败时也可能中途抛错——都会把
+// os.tmpdir()/jslb-selftest-* 留在盘上（曾攒下几十个）。这里挂进程级兜底，
+// 保证任何退出路径（正常、抛错、Ctrl-C、process.exit）都能清掉。
+let tmpCleaned = false;
+function cleanTmp() {
+  if (tmpCleaned) return;
+  tmpCleaned = true;
+  try { fs.rmSync(TMP, { recursive: true, force: true }); } catch { /* 尽力而为 */ }
+}
+process.on('exit', cleanTmp);
+process.on('SIGINT', () => { cleanTmp(); process.exit(130); });
+process.on('SIGTERM', () => { cleanTmp(); process.exit(143); });
+process.on('uncaughtException', (e) => { cleanTmp(); throw e; });
+
 let pass = 0;
 let fail = 0;
 const failures = [];
@@ -1312,7 +1327,7 @@ if (process.env.JSLB_SKIP_LIVE === '1') {
   }
 }
 
-fs.rmSync(TMP, { recursive: true, force: true });
+cleanTmp();
 
 console.log('\n' + (fail === 0 ? '✅ 全部通过' : '❌ 有失败项') + '：' + pass + ' 项通过，' + fail + ' 项失败');
 if (fail) {
