@@ -3,7 +3,8 @@
 # 网页构建产物（npm run build:web 生成）
 dist/
 
-# 目录模式混淆的输出（README 里 node host/cli.js ./src ./dist-src 那个示例）
+# 目录模式混淆的遗留输出目录（Node 命令行已在 2026-09-21 转向纯云端时删除，
+# 这里保留忽略规则以防旧工作区里还有残留）
 dist-src/
 
 # 本地许可证与发卡计数器
