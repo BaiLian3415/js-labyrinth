@@ -36,8 +36,11 @@
  * 是不可能的。不绑定时该段为全 0。
  *
  * 默认编号由包根下的计数器文件 .keygen-state.json 分配，每签发一次递增，
- * 首次使用或计数器缺失时以当前毫秒时间戳为起点。默认编号不用时间戳低位
- * 截断。那种取值在同一秒内连跑多次会重复，签出完全相同的卡密。
+ * 首次使用或计数器缺失时以当前毫秒时间戳**取模编号段跨度**为起点。不能直接用
+ * 时间戳：13 位毫秒数超出 40 bit 编号段的上限，会让首次签发（含最常见的
+ * --bind 签名场景）直接失败。取模后仍在进程间唯一，且计数器一旦写出就不再
+ * 看时间戳。默认编号也不用时间戳低位截断——那种取值在同一秒内连跑多次会重复，
+ * 签出完全相同的卡密。
  *
  * 签名算法与 src/license-codec.js 是同一份实现，签发与校验永远同源。根密钥
  * 来自 src/license-secret.js，轮换该文件后必须重新发卡。
@@ -156,6 +159,27 @@ const HELP = `JsLabyrinth 卡密计算工具
   node tools/issue/keygen.js --plans
   node tools/issue/keygen.js --check <卡密>
 `;
+
+/**
+ * 把当前毫秒时间戳折回编号段能表示的范围，作为计数器的起始值。
+ *
+ * 时间戳是 13 位（约 1.8e12），编号段只有 40 bit（上限约 1.1e12），直接拿来当
+ * 起始编号必然越界。**这里绝不能报错退出**：计数器文件只在首次签发时不存在，
+ * 而 --bind 之类的普通签名因此失败会让人以为是机器码有问题，实际是编号分配
+ * 出了问题（错误信息还只说"编号区间超出编码上限"，指向完全错误的方向）。
+ *
+ * 取模到 [0, MAX_ID] 而不是从 0 或 1 起数，是为了延续原来的意图：起点仍带
+ * 时间戳信息，不同批次不会轻易撞在一起。跨度 2^40 毫秒约 34.8 年，取模后的
+ * 值一段 2^24 毫秒（约 4.7 小时）内才可能重复——而计数器文件一旦写出，
+ * 后续编号就从文件里的值往后数，不再看时间戳；只有计数器被删且恰好在同一个
+ * 4.7 小时窗口内才会撞上旧编号，且要两条都命中。
+ *
+ * @param {number} ms 毫秒时间戳
+ * @returns {bigint} 合法的起始编号
+ */
+function timestampSeedId(ms) {
+  return BigInt(ms) % (codec.MAX_ID + 1n);
+}
 
 /** 全角字符判定，用于按显示宽度对齐表格。 */
 const WIDE = /[\u1100-\u115F\u2E80-\uA4CF\uAC00-\uD7A3\uF900-\uFAFF\uFE30-\uFE6F\uFF00-\uFF60\uFFE0-\uFFE6]/;
@@ -327,14 +351,28 @@ function allocateId(count, explicit) {
 
     let id = explicit;
     if (id === null) {
-      id = stored === null ? BigInt(Date.now()) : stored + 1n;
+      id = stored === null ? timestampSeedId(Date.now()) : stored + 1n;
     } else if (stored !== null && id <= stored) {
       console.error(`警告: 编号 ${id} 不大于计数器中的最后编号 ${stored}，可能重号`);
     }
 
     const lastId = id + BigInt(count - 1);
     if (lastId > codec.MAX_ID) {
-      return { ok: false, message: `编号区间超出编码上限（${codec.ID_LEN} 字符 base32，上限 ${codec.MAX_ID}）` };
+      // 自动分配时起点就是计数器里的值加一，"溢出"意味着这个计数器用完了整段
+      // 编号空间（40 bit / 2^40 个）。只有 --id 显式指定才可能是调用方给大了，
+      // 两种情形给的建议不一样，混在一起说会把人引向错误的方向。
+      const next = stored === null ? 0n : stored + 1n;
+      return {
+        ok: false,
+        message: explicit === null
+          ? `编号区间超出编码上限（${codec.ID_LEN} 字符 base32，上限 ${codec.MAX_ID}）：`
+            + `计数器已用到 ${next}，再加 ${count} 张就放不下了。`
+            + `请删除或改名 ${STATE_PATH} 让编号从新的时间戳起点重新分配`
+            + `（旧编号不会因此失效），或用 --id 显式指定一段更大的区间。`
+          : `编号区间超出编码上限（${codec.ID_LEN} 字符 base32，上限 ${codec.MAX_ID}）：`
+            + `--id ${explicit} 加 ${count} 张后的末尾编号 ${lastId} 超界。`
+            + `请把 --id 调到 ${codec.MAX_ID - BigInt(count - 1)} 以内（配合 --count ${count}）。`,
+      };
     }
 
     // 先把计数器推进到本次用掉的编号，再打印卡密，写盘失败时不发出无法
@@ -443,6 +481,12 @@ function localMachineId() {
  * 卡密里的绑定段是机器码的派生摘要，所以这里只接受机器码本身；长度或字符集
  * 不对就直接报错退出，免得把一段摘要当成机器码再摘要一次，签出一张谁也激活
  * 不了的卡。
+ *
+ * 注意这里只查**格式**，查不出"这段文字到底是不是机器码"——摘要不可逆，签发
+ * 方没有反推手段。能拦下的只有长度或字符集不对的输入（例如手抄时混进了分隔
+ * 符、少了几位）。机器码与绑定段都可能恰好是 24 个合法 base32 字符，格式校验
+ * 分不出来，所以**把绑定段当机器码喂进来不会被拦**，只会摘两次摘要。要核对
+ * 就重新跑一次 --machine，与对方报来的那串逐字符比。
  *
  * @param {string} raw 机器码文本
  * @returns {string} 归一化的机器码

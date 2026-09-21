@@ -298,6 +298,24 @@ section('卡密与令牌');
   ok(codec.issueCode(seed, 'pro', 30, '1099511627776') === null, '编号超 40 bit 上限时拒绝签发');
   ok(codec.MAX_ID === 1099511627775n, '编号上限恰为 2^40-1', String(codec.MAX_ID));
 
+  // 编号段的跨度**小于**时间戳——这正是 keygen 首次签发时必须取模的原因。
+  // 这一条防的是"起点策略悄悄换回裸时间戳"：13 位毫秒数 (~1.8e12) 比 40 bit 的
+  // 上限 (~1.1e12) 大，那样的起点会让首次签发（比如最常见的 --bind 签名）报
+  // "编号区间超出编码上限"，看起来却像机器码有问题。
+  {
+    const span = codec.MAX_ID + 1n;
+    ok(BigInt(Date.now()) > span, '毫秒时间戳超出编号段跨度（所以起点必须取模）',
+      '跨度 ' + span + '，时间戳 ' + Date.now());
+    const at = (ms) => codec.issueCode(seed, 'pro', 30, BigInt(ms) % span, 2192);
+    ok(at(Date.now()) !== null, '时间戳取模后的起点可签发');
+    ok(at(4102444800000) !== null, '2100 年的时间戳取模后仍可签发');
+    // 同一毫秒内连签两张：取模起点相同，靠编号递增才不会撞成同一段卡密。
+    const ms = Date.now();
+    const one = codec.issueCode(seed, 'pro', 30, BigInt(ms) % span, 2192);
+    const two = codec.issueCode(seed, 'pro', 30, BigInt(ms) % span + 1n, 2192);
+    ok(one !== two, '同一起点紧邻编号签出不同卡密');
+  }
+
   // 非对称的核心性质：只有公钥时签不出卡。公钥是公开的，用它当种子必然签不出
   // 一张能验过的卡（这里验的是"拿公钥冒充私钥"不会意外通过）。
   const forged = codec.issueCode(hash.bytesToB64(hash.b64ToBytes(pub)), 'business', 0, '99999');
@@ -382,7 +400,102 @@ section('卡密的机器码绑定');
   }
 }
 
-// ---------------------------------------------------------------- 网页链路
+// ------------------------------------------------------------ keygen 命令行
+
+section('签发工具命令行（编号分配与 --bind）');
+{
+  // 这一节必须真的把 keygen.js 当子进程跑，不能只调 codec。踩过的坑正是：
+  // 签发工具首次运行时拿 Date.now() 当起始编号，13 位毫秒数超出 40 bit 编号段，
+  // 于是**任何**不带 --id 的签发都失败，报的却是"编号区间超出编码上限"。因为
+  // keygen.js 平时能看到的状态是 --machine（不需要私钥、不碰计数器），
+  // 这个坑看起来就像"机器码有问题"。用假私钥跑子进程才能覆盖到这条路径：
+  // 签发在 allocateId 之后才用私钥，而假私钥（32 字节非零种子）一样能签出
+  // 语法合法的卡密。
+  const KEYGEN = path.join(ROOT, 'tools', 'issue', 'keygen.js');
+  const FAKE_SEED = hash.bytesToB64(new Uint8Array(32).fill(7));
+  const stateDir = fs.mkdtempSync(path.join(TMP, 'keygen-'));
+  const stateFile = path.join(stateDir, '.keygen-state.json');
+  const env = {
+    ...process.env,
+    JSLB_SIGNING_KEY: FAKE_SEED,
+    JSLABYRINTH_KEYGEN_STATE: stateFile,
+  };
+  const gen = (args) => execFileSync(process.execPath, [KEYGEN, ...args], {
+    encoding: 'utf8', timeout: 30000, env,
+  });
+  const genFail = (args) => {
+    try {
+      execFileSync(process.execPath, [KEYGEN, ...args], { encoding: 'utf8', timeout: 30000, env });
+      return null;
+    } catch (e) {
+      return String((e.stderr || '') + (e.stdout || ''));
+    }
+  };
+
+  // 计数器不存在 = 首次签发。绑定签名是最常见的用法，也是最容易撞上这个坑的路径。
+  const mid = 'ABCDEFGHJKMNPQRSTVWXYZ01';
+  let first = null;
+  try {
+    first = gen(['--plan', 'pro', '--days', '365', '--bind', mid]);
+  } catch (e) {
+    ok(false, '首次签发（计数器不存在）能成功', String(e.stderr || e.message).trim());
+  }
+  if (first !== null) {
+    const line = first.trim().split('\n')[0].trim();
+    ok(/^JSLB-R-/.test(line), '首次签发 --bind 得到卡密', line.slice(0, 24) + '…');
+    // 卡密是假私钥签的，验签必然不过，所以这里只校验段结构：能切出绑定段、
+    // 且编号落在 40 bit 之内，就说明 allocateId 没把越界编号交出去。
+    const segs = codec.normalizeCode(line);
+    const body = segs.slice(4);
+    const idSeg = body.slice(1 + 2 + 3, 1 + 2 + 3 + codec.ID_LEN);
+    ok(codec.isB32Text(idSeg) && idSeg.length === codec.ID_LEN,
+      '首次签发落在编号段 40 bit 之内', idSeg);
+    const state = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
+    ok(/^[0-9]+$/.test(state.last) && BigInt(state.last) <= codec.MAX_ID,
+      '计数器写入的编号未越界', state.last);
+  }
+
+  // 计数器存在之后走 stored + 1，不再看时间戳：连续两次签发编号必须递增。
+  const second = gen(['--plan', 'pro', '--days', '365', '--bind', mid]);
+  ok(second.trim().length > 0, '计数器存在后仍可签发');
+  const stateAfterSecond = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
+  ok(/^[0-9]+$/.test(stateAfterSecond.last) && BigInt(stateAfterSecond.last) <= codec.MAX_ID,
+    '第二次签发的编号仍在编号段内', stateAfterSecond.last);
+
+  // --count 3 必须把计数器推进 3 个编号（写回的是本次用掉的最后编号，故 +2）
+  gen(['--plan', 'pro', '--days', '365', '--count', '3']);
+  const stateAfterBatch = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
+  ok(BigInt(stateAfterBatch.last) === BigInt(stateAfterSecond.last) + 3n,
+    '--count 3 把计数器推进 3 个编号',
+    stateAfterSecond.last + ' → ' + stateAfterBatch.last);
+
+  // 显式 --id 越界：错误信息必须指向 --id，而不是含糊的"编号区间超出编码上限"
+  const tooBig = genFail(['--plan', 'pro', '--id', String(codec.MAX_ID), '--count', '2']);
+  ok(tooBig !== null && /--id/.test(tooBig), '显式 --id 越界时报错并点出 --id',
+    String(tooBig).trim().split('\n').pop());
+
+  // 计数器已满：报错要给出可执行的处置（删除/改名计数器），别让人去怀疑机器码
+  fs.writeFileSync(stateFile, JSON.stringify({ last: codec.MAX_ID.toString() }, null, 2));
+  const exhausted = genFail(['--plan', 'pro', '--days', '365', '--bind', mid]);
+  ok(exhausted !== null && /计数器|--id/.test(exhausted) && /--bind/.test(exhausted) === false,
+    '计数器用满时给出可操作的建议', String(exhausted).trim().split('\n')[0]);
+  ok(exhausted === null || !/机器码|--bind/.test(exhausted),
+    '计数器用满的报错不把责任推给机器码');
+
+  // --machine 不碰计数器、不需要私钥：即使在计数器已满的情况下也必须正常
+  const noKeyEnv = { ...process.env, JSLB_SIGNING_KEY: '', JSLABYRINTH_KEYGEN_STATE: stateFile };
+  const machineOut = execFileSync(process.execPath, [KEYGEN, '--machine', '--json'], {
+    encoding: 'utf8', timeout: 30000, env: noKeyEnv,
+  });
+  let parsedMachine = null;
+  try { parsedMachine = JSON.parse(machineOut.trim()); } catch { /* 下面断言报错 */ }
+  ok(parsedMachine && parsedMachine.machine && parsedMachine.machine.length === 24
+    && codec.isB32Text(parsedMachine.machine),
+  '--machine 无需私钥即可打印 24 字符机器码',
+  parsedMachine ? parsedMachine.machine : machineOut.trim());
+
+  fs.rmSync(stateDir, { recursive: true, force: true });
+}
 
 section('网页链路（授权 → 限额 → 混淆 → 记账）');
 {
