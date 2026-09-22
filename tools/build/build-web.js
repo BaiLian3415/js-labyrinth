@@ -34,8 +34,52 @@ const SRC_DIRS = ['src'];
 /** 界面文件，web/ 下逐个复制。 */
 const PUBLIC_DIR = 'web';
 
+/** 同步等待 ms 毫秒。Node 没有同步 sleep，用 Atomics.wait 起一个不占 CPU 的等待。 */
+function sleepSync(ms) {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+/**
+ * 递归删除目录。
+ *
+ * Windows 上删"刚生成的产物目录"会间歇撞 EPERM，而且**不是瞬时**的：本项目就在
+ * 同步盘目录下，实测锁能持续好几秒，rmSync 自带的重试（10 次 × 500 ms）也被耗光
+ * 仍会失败，且报错路径是目录本身而不是某个子文件——说明有进程正持有这个目录的句柄
+ * （同步盘客户端、杀软、搜索索引都会这么干）。
+ *
+ * 所以这里再加一层更长的退避重试；仍删不掉时**退化为清空内容**并打印警告：目录本身
+ * 留着不影响构建（随后每个文件都会被重写），比直接让构建失败要好。
+ */
 function rmrf(p) {
-  fs.rmSync(p, { recursive: true, force: true });
+  if (!fs.existsSync(p)) return;
+  for (let attempt = 0; attempt < 6; attempt++) {
+    try {
+      fs.rmSync(p, { recursive: true, force: true, maxRetries: 10, retryDelay: 300 });
+      return;
+    } catch (e) {
+      const transient = e && (e.code === 'EPERM' || e.code === 'EBUSY' || e.code === 'ENOTEMPTY');
+      if (!transient) throw e;
+      if (attempt === 5) { emptyDir(p, e); return; }
+      sleepSync(1000 * (attempt + 1));
+    }
+  }
+}
+
+/** 目录删不掉的兜底：逐个清空子项；实在删不掉的留在原地并点名，不静默吞掉。 */
+function emptyDir(dir, cause) {
+  const left = [];
+  for (const name of fs.readdirSync(dir)) {
+    try {
+      fs.rmSync(path.join(dir, name), { recursive: true, force: true, maxRetries: 10, retryDelay: 300 });
+    } catch (e) {
+      left.push(name);
+    }
+  }
+  if (left.length) {
+    console.warn('警告：无法删除的旧产物 ' + left.join(', ')
+      + '（' + (cause && cause.code) + '）。构建会覆盖同名文件，但上面这些若已不再产出，'
+      + '会成为残留，请人工确认。');
+  }
 }
 
 /**
@@ -327,7 +371,7 @@ function main(argv) {
     console.log('  公开不影响安全——卡密是 Ed25519 签名的，没有私钥就签不出新卡。');
     console.log('  签发私钥只在签发方：环境变量 JSLB_SIGNING_KEY 或 .jslb-signing-key（gitignore）。');
     console.log('  发卡（缺私钥会明确报错）：');
-    console.log('    JSLB_SIGNING_KEY=<base64 种子> node tools/issue/keygen.js --plan pro --days 365');
+    console.log('    JSLB_SIGNING_KEY=<base64 种子> node tools/issue/keygen.js --plan plus --days 365');
   })();
 }
 

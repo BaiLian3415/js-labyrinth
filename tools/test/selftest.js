@@ -272,10 +272,10 @@ section('卡密与令牌');
   // 签发用私钥种子，验签用公钥——两把不是同一个东西，这正是非对称的意义。
   const seed = TEST_SIGNING_SEED;
   const pub = TEST_PUBLIC_KEY;
-  const code = codec.issueCode(seed, 'pro', 30, '12345');
+  const code = codec.issueCode(seed, 'plus', 30, '12345');
   ok(!!code && code.startsWith('JSLB-R-'), '可签发 Pro/30 天卡密', code);
   const parsed = codec.parseCode(pub, code);
-  ok(parsed.ok && parsed.plan === 'pro' && parsed.days === 30, '卡密可解析且套餐天数正确');
+  ok(parsed.ok && parsed.plan === 'plus' && parsed.days === 30, '卡密可解析且套餐天数正确');
   ok(parsed.id === '12345', '编号可还原（编号段已压到 40 bit）');
   ok(typeof parsed.issueDay === 'number' && parsed.issueDay >= 0, '卡密带签发日');
   ok(parsed.bound === false, '未指定机器码时卡密为"不绑定"');
@@ -284,13 +284,13 @@ section('卡密与令牌');
   ok(!codec.parseCode(pub, code.slice(0, -1) + '0').ok, '改签名段失败');
   ok(!codec.parseCode(pub, 'JSLB-X-00-000-' + '0'.repeat(8) + '-' + '0'.repeat(16) + '-' + '0'.repeat(103)).ok, '未知套餐段失败');
   // 签发日也在签名载荷里，改它必须失败——否则本地能把到期时间往后挪
-  const shiftedDay = codec.issueCode(seed, 'pro', 30, '12345', 1000);
+  const shiftedDay = codec.issueCode(seed, 'plus', 30, '12345', 1000);
   const tamperedDay = shiftedDay.replace(/^(JSLB-R-..-)(...)/, (m, a) => a + '001');
   ok(!codec.parseCode(pub, tamperedDay).ok, '改签发日导致签名失败');
 
   // 编号段超界必须拒绝——压缩段宽后原来的 20 位编号再也放不下
-  ok(codec.issueCode(seed, 'pro', 30, '1099511627775') !== null, '编号上限内可签发');
-  ok(codec.issueCode(seed, 'pro', 30, '1099511627776') === null, '编号超 40 bit 上限时拒绝签发');
+  ok(codec.issueCode(seed, 'plus', 30, '1099511627775') !== null, '编号上限内可签发');
+  ok(codec.issueCode(seed, 'plus', 30, '1099511627776') === null, '编号超 40 bit 上限时拒绝签发');
   ok(codec.MAX_ID === 1099511627775n, '编号上限恰为 2^40-1', String(codec.MAX_ID));
 
   // 编号段的跨度**小于**时间戳——这正是 keygen 首次签发时必须取模的原因。
@@ -301,13 +301,13 @@ section('卡密与令牌');
     const span = codec.MAX_ID + 1n;
     ok(BigInt(Date.now()) > span, '毫秒时间戳超出编号段跨度（所以起点必须取模）',
       '跨度 ' + span + '，时间戳 ' + Date.now());
-    const at = (ms) => codec.issueCode(seed, 'pro', 30, BigInt(ms) % span, 2192);
+    const at = (ms) => codec.issueCode(seed, 'plus', 30, BigInt(ms) % span, 2192);
     ok(at(Date.now()) !== null, '时间戳取模后的起点可签发');
     ok(at(4102444800000) !== null, '2100 年的时间戳取模后仍可签发');
     // 同一毫秒内连签两张：取模起点相同，靠编号递增才不会撞成同一段卡密。
     const ms = Date.now();
-    const one = codec.issueCode(seed, 'pro', 30, BigInt(ms) % span, 2192);
-    const two = codec.issueCode(seed, 'pro', 30, BigInt(ms) % span + 1n, 2192);
+    const one = codec.issueCode(seed, 'plus', 30, BigInt(ms) % span, 2192);
+    const two = codec.issueCode(seed, 'plus', 30, BigInt(ms) % span + 1n, 2192);
     ok(one !== two, '同一起点紧邻编号签出不同卡密');
   }
 
@@ -320,7 +320,7 @@ section('卡密与令牌');
   // 用 2026-01-01（距零点 2192 天）签 30 天，到期必须是 2026-01-31，而不是"激活时刻 + 30 天"。
   {
     const day = 2192; // 2026-01-01 距 2020-01-01 UTC 的天数
-    const c = codec.issueCode(seed, 'pro', 30, '12345', day);
+    const c = codec.issueCode(seed, 'plus', 30, '12345', day);
     const p = codec.parseCode(pub, c);
     ok(p.ok && p.issueDay === day, '签发日可从卡密还原', String(p.issueDay));
     const exp = licCore.expiryFromIssueDay(p);
@@ -330,7 +330,7 @@ section('卡密与令牌');
     ok(new Date(exp).toISOString().slice(0, 10) === '2026-01-31',
       '2026-01-01 签的 30 天卡到期日为 2026-01-31');
     // 永久卡不受签发日影响
-    const perm = codec.parseCode(pub, codec.issueCode(seed, 'pro', 0, '12345', day));
+    const perm = codec.parseCode(pub, codec.issueCode(seed, 'plus', 0, '12345', day));
     ok(licCore.expiryFromIssueDay(perm) === codec.PERPETUAL, '永久卡到期时间为 0');
   }
 
@@ -354,7 +354,7 @@ section('卡密的机器码绑定');
   const midA = 'ABCDEFGHJKMNPQRSTVWXYZ01';
   const midB = 'ABCDEFGHJKMNPQRSTVWXYZ02'; // 与 A 只差最后一位
 
-  const bound = codec.parseCode(pub, codec.issueCode(seed, 'pro', 30, '12345', 2192, midA));
+  const bound = codec.parseCode(pub, codec.issueCode(seed, 'plus', 30, '12345', 2192, midA));
   ok(bound.ok && bound.bound === true, '指定机器码签出的卡为"已绑定"');
   ok(codec.matchesMachine(bound.bindSeg, midA), '绑定卡在本机可用');
   ok(!codec.matchesMachine(bound.bindSeg, midB), '绑定卡换一台机器（机器码差一位）即被拒');
@@ -376,7 +376,7 @@ section('卡密的机器码绑定');
   ok(!codec.parseCode(pub, tampered).ok, '改绑定段导致签名失败（换绑不了）');
 
   // 不绑定的卡对任何机器都放行
-  const free = codec.parseCode(pub, codec.issueCode(seed, 'pro', 30, '12345', 2192));
+  const free = codec.parseCode(pub, codec.issueCode(seed, 'plus', 30, '12345', 2192));
   ok(free.bound === false && free.bindSeg === codec.BIND_NONE, '不绑定的卡绑定段为全 0');
   ok(codec.matchesMachine(free.bindSeg, midA) && codec.matchesMachine(free.bindSeg, midB),
     '不绑定的卡在任何机器上都放行');
@@ -384,7 +384,7 @@ section('卡密的机器码绑定');
   // 端到端的判定走 license-core：绑定不符时 reason 必须是 bind
   {
     const rec = licCore.makeRecord({
-      code: bound.code, plan: 'pro', machine: midB,
+      code: bound.code, plan: 'plus', machine: midB,
       issuedAt: Date.now(), expiresAt: licCore.expiryFromIssueDay(bound),
       usage: { day: '2026-01-01', used: 0 },
     }, pub);
@@ -416,10 +416,10 @@ section('自锚定校验（服务端网关）');
   const issueDay = Math.floor((Date.now() - codec.DAY_ZERO) / 86400000) + 3650;
 
   // 卡绑到浏览器机器码 —— 线上就是这种情况
-  const parsed = codec.parseCode(pub, codec.issueCode(seed, 'pro', 30, '70001', issueDay, browserMid));
+  const parsed = codec.parseCode(pub, codec.issueCode(seed, 'plus', 30, '70001', issueDay, browserMid));
   ok(parsed.ok && parsed.bound === true, '自锚定用例：卡绑到浏览器机器码');
   const rec = licCore.makeRecord({
-    code: parsed.code, plan: 'pro', machine: browserMid,
+    code: parsed.code, plan: 'plus', machine: browserMid,
     issuedAt: Date.now(), expiresAt: licCore.expiryFromIssueDay(parsed),
     usage: { day: '2026-01-01', used: 0 },
   }, pub);
@@ -468,10 +468,10 @@ section('自锚定校验（服务端网关）');
   }
   {
     // 卡密不绑机器（绑定段全 0）时，自锚定等价于"只看签名与令牌"
-    const free = codec.parseCode(pub, codec.issueCode(seed, 'pro', 30, '70002', issueDay));
+    const free = codec.parseCode(pub, codec.issueCode(seed, 'plus', 30, '70002', issueDay));
     ok(free.bound === false, '自锚定用例：通用卡不绑定机器');
     const freeRec = licCore.makeRecord({
-      code: free.code, plan: 'pro', machine: serverMid,
+      code: free.code, plan: 'plus', machine: serverMid,
       issuedAt: Date.now(), expiresAt: licCore.expiryFromIssueDay(free),
       usage: { day: '2026-01-01', used: 0 },
     }, pub);
@@ -520,7 +520,7 @@ section('签发工具命令行（编号分配与 --bind）');
   const mid = 'ABCDEFGHJKMNPQRSTVWXYZ01';
   let first = null;
   try {
-    first = gen(['--plan', 'pro', '--days', '365', '--bind', mid]);
+    first = gen(['--plan', 'plus', '--days', '365', '--bind', mid]);
   } catch (e) {
     ok(false, '首次签发（计数器不存在）能成功', String(e.stderr || e.message).trim());
   }
@@ -540,27 +540,27 @@ section('签发工具命令行（编号分配与 --bind）');
   }
 
   // 计数器存在之后走 stored + 1，不再看时间戳：连续两次签发编号必须递增。
-  const second = gen(['--plan', 'pro', '--days', '365', '--bind', mid]);
+  const second = gen(['--plan', 'plus', '--days', '365', '--bind', mid]);
   ok(second.trim().length > 0, '计数器存在后仍可签发');
   const stateAfterSecond = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
   ok(/^[0-9]+$/.test(stateAfterSecond.last) && BigInt(stateAfterSecond.last) <= codec.MAX_ID,
     '第二次签发的编号仍在编号段内', stateAfterSecond.last);
 
   // --count 3 必须把计数器推进 3 个编号（写回的是本次用掉的最后编号，故 +2）
-  gen(['--plan', 'pro', '--days', '365', '--count', '3']);
+  gen(['--plan', 'plus', '--days', '365', '--count', '3']);
   const stateAfterBatch = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
   ok(BigInt(stateAfterBatch.last) === BigInt(stateAfterSecond.last) + 3n,
     '--count 3 把计数器推进 3 个编号',
     stateAfterSecond.last + ' → ' + stateAfterBatch.last);
 
   // 显式 --id 越界：错误信息必须指向 --id，而不是含糊的"编号区间超出编码上限"
-  const tooBig = genFail(['--plan', 'pro', '--id', String(codec.MAX_ID), '--count', '2']);
+  const tooBig = genFail(['--plan', 'plus', '--id', String(codec.MAX_ID), '--count', '2']);
   ok(tooBig !== null && /--id/.test(tooBig), '显式 --id 越界时报错并点出 --id',
     String(tooBig).trim().split('\n').pop());
 
   // 计数器已满：报错要给出可执行的处置（删除/改名计数器），别让人去怀疑机器码
   fs.writeFileSync(stateFile, JSON.stringify({ last: codec.MAX_ID.toString() }, null, 2));
-  const exhausted = genFail(['--plan', 'pro', '--days', '365', '--bind', mid]);
+  const exhausted = genFail(['--plan', 'plus', '--days', '365', '--bind', mid]);
   ok(exhausted !== null && /计数器|--id/.test(exhausted) && /--bind/.test(exhausted) === false,
     '计数器用满时给出可操作的建议', String(exhausted).trim().split('\n')[0]);
   ok(exhausted === null || !/机器码|--bind/.test(exhausted),
@@ -683,8 +683,8 @@ section('一次性额度包与解除激活');
   ok((await seed(devPack, packCode, 'pack100', 0, 50)).ok, '旧日期的额度包记录仍可恢复');
   ok((await licenseWeb.quota()).used === 50, '额度包跨日累计：旧日期已用的次数照算');
 
-  const proCode = codec.issueCode(keys[0], 'pro', 30, '66666');
-  ok((await seed(devSub, proCode, 'pro', 30, 7)).ok, '旧日期的订阅档记录仍可恢复');
+  const plusCode = codec.issueCode(keys[0], 'plus', 30, '66666');
+  ok((await seed(devSub, plusCode, 'plus', 30, 7)).ok, '旧日期的订阅档记录仍可恢复');
   ok((await licenseWeb.quota()).used === 0, '订阅档跨日归零');
 
   // 本地改 expiresAt 续期必须失败：到期时间由已签名的签发日推出
@@ -708,7 +708,7 @@ section('一次性额度包与解除激活');
   licenseWeb.resetRequestState();
   licenseWeb.setRequestDeviceId(devSub);
   const act2 = await licenseWeb.activate(proCode);
-  ok(act2.ok && act2.plan === 'pro', '另一台设备激活成功');
+  ok(act2.ok && act2.plan === 'plus', '另一台设备激活成功');
   ok(store.has('jslabyrinth.license.v2:' + devSub), '许可证按设备码分键存进 KV');
   await licenseWeb.deactivate();
   ok(!store.has('jslabyrinth.license.v2:' + devSub), '解除激活删掉 KV 里那一条（真删，不是写空串）');
@@ -780,14 +780,14 @@ section('Cloudflare Worker 路由');
 
   // 激活流程：用 keygen 的签发路径造一张卡密，走 /api/license 激活
   const keys = [TEST_SIGNING_SEED, TEST_PUBLIC_KEY];
-  const issued = codec.issueCode(keys[0], 'pro', 30, '98765');
+  const issued = codec.issueCode(keys[0], 'plus', 30, '98765');
   const act = await call('/api/license', {
     method: 'POST',
     headers: { 'content-type': 'application/json', 'X-JSLB-Device': 'b'.repeat(32) },
     body: JSON.stringify({ key: issued }),
   });
   const actJson = await act.json();
-  ok(act.status === 200 && actJson.ok === true && actJson.plan === 'pro' && actJson.trial === false,
+  ok(act.status === 200 && actJson.ok === true && actJson.plan === 'plus' && actJson.trial === false,
     'POST /api/license 激活 Pro 卡密', JSON.stringify(actJson && actJson.message));
   ok(actJson.preset === 'medium', '激活后预设上限取自套餐');
 

@@ -2,7 +2,9 @@
 <html lang="zh">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<!-- viewport-fit=cover：让页面铺进刘海屏的安全区，配合 CSS 里的
+     env(safe-area-inset-*) 给 Home 指示条让位；无刘海设备上恒为 0，无副作用。 -->
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>JsLabyrinth — JS 混淆器</title>
 <meta name="description" content="JsLabyrinth 混淆器网页版：混淆在浏览器内完成，代码不出本机。">
 <meta name="color-scheme" content="dark light">

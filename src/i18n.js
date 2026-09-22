@@ -175,6 +175,7 @@ const STRINGS = {
     webActivated: '激活成功（套餐 {plan}）',
     webActivatedNoSync: '本机已激活（套餐 {plan}），但服务端未登记此设备；若混淆时提示核心模块加载失败，请检查服务地址后重新激活',
     webActivateFailed: '激活失败: {reason}',
+    webDeactivated: '已解除激活',
 
     // 网页版：界面
     guiTitle: 'JsLabyrinth 混淆器',
@@ -426,6 +427,7 @@ const STRINGS = {
     webActivated: 'Activated (plan {plan})',
     webActivatedNoSync: 'Activated locally (plan {plan}), but the server has no record for this device; if obfuscation reports that core modules failed to load, check the API endpoint and activate again',
     webActivateFailed: 'Activation failed: {reason}',
+    webDeactivated: 'Deactivated',
 
     // web: GUI
     guiTitle: 'JsLabyrinth Obfuscator',

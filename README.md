@@ -189,9 +189,8 @@ curl -s -X POST https://<host>/api/obfuscate \
 | 档位 | 卡密字符 | 预设上限 | 单文件 | 每任务文件 | 每日次数 |
 | --- | --- | --- | --- | --- | --- |
 | Free | `F` | low | 128 KB | 1 | 3 |
-| Plus | `P` | medium | 4 MB | 5 | 20 |
-| Pro | `R` | medium | 4 MB | 10 | 50 |
-| Team | `T` | high | 7 MB | 10 | 200 |
+| Plus | `P` | high | 4 MB | 5 | 20 |
+| Team | `T` | max | 7 MB | 10 | 200 |
 | Business | `B` | max | 10 MB | 10 | 1000 |
 
 一次性额度包（**买断总次数，用完为止**，不按日重置；卡密自带的到期时间仍是硬上限）:
@@ -206,11 +205,15 @@ curl -s -X POST https://<host>/api/obfuscate \
 额度包的能力跟随 Business（`max` 预设、无闸门），买的是次数而不是能力：适合不想
 续费、只需要跑一批的场景。用尽后不会恢复，需要再买一张。
 
-Plus 与 Pro 的预设上限都是 `medium`，区别在**闸门余量与配额**：Plus 的闸门正好卡在
-`medium` 预设的取值上（能用整套 medium，但不能把单项往上调），Pro 的闸门比预设更松
-（`stringArrayThreshold` 0.9 对 0.8、`vmDecoyOps` 256 对 128、`deadCodeProbability`
-0.6 对 0.5 等），且每任务文件数与每日次数更高。Plus 只关掉 `envFingerprint` 与
-`consoleStub` 两个开关，Free 则关掉十二个。
+Plus 的预设上限是 `high`，闸门正好卡在 `high` 预设的取值上（能用整套 high，但不能把
+单项往上调），只关掉 `consoleStub` 一个开关；Free 则关掉十二个。Team 与 Business 同为
+`max` 且都不设闸门，差别只剩配额（7 MB / 200 次 对 10 MB / 1000 次）。
+
+> **2026-09-22 删除 Pro 档**：原 Pro 的预设上限是 `medium`，夹在 Plus(medium) 与
+> Team(high) 之间，删掉之后 Plus 提到 `high`、Team 提到 `max`，阶梯变为
+> Free(low) < Plus(high) < Team(max) = Business(max)。
+> **已签发的 Pro 卡密（套餐字符 `R`）随之全部作废**——`parseCode` 再也查不到 `R`
+> 对应的档位，直接以 `reason:"plan"` 拒绝，需要重新签发。
 
 订阅档与额度包**不排在同一条阶梯上**：两者的配额口径不同（一个按日、一个按总额），
 `src/plan.js` 的档位阶梯不变式因此只在同族内比较。
@@ -222,6 +225,9 @@ Plus 与 Pro 的预设上限都是 `medium`，区别在**闸门余量与配额**
 更紧。**升预设上限时尤其注意**：闸门必须放行该预设的每一个取值，没有中间地带
 （例如把上限提到 `medium`，就必须同时放行 `wasm`、`debugProtection`、`selfDefending`、
 `integrityCheck`、`shell`、`stringArrayMixedEncoding` 这些 medium 用到的开关）。
+2026-09-22 把 Plus 提到 `high` 时就踩过一次：`high` 会打开 `envFingerprint`，而旧的
+Plus 闸门把它显式关着，改上限却忘了动那一条，加载期直接被 `assertConsistent()` 拦下——
+**升上限必须逐条比对目标预设的取值，开关项（true/false）比数值项更容易漏**。
 自测里有一条不变式：**低档的每一条闸门都不得超过高档**。
 
 **两层机器绑定，卡密那层才是边界。** 卡密里带一段机器码的派生摘要（绑定段，16 字符
@@ -280,7 +286,7 @@ npx wrangler secret put JSLB_PUBLIC_KEY      # 值 = 上一步打印的公钥（
 用**自己的**密钥对时，发卡与验签才同源：
 
 ```bash
-JSLB_SIGNING_KEY=<base64 私钥种子> node tools/issue/keygen.js --plan pro --days 365
+JSLB_SIGNING_KEY=<base64 私钥种子> node tools/issue/keygen.js --plan plus --days 365
 ```
 
 `tools/issue/keygen.js` 因此优先读环境变量 `JSLB_SIGNING_KEY`，读不到才退回项目根的
@@ -305,17 +311,17 @@ npm run signingkey -- --seed <base64>       # 由种子确定性重建，用于�
 npm run signingkey -- --check <公钥>        # 只校验公钥格式并打印指纹
 
 # 2) 发卡
-npm run keygen -- --plan pro --days 365 --count 5          # 5 张，逐行裸卡密（便于脚本）
+npm run keygen -- --plan plus --days 365 --count 5          # 5 张，逐行裸卡密（便于脚本）
 npm run keygen -- --plan team --days 365 --count 3 --table # 对齐表格
-npm run keygen -- --plan pro --count 100 --csv > batch.csv # CSV 导出
+npm run keygen -- --plan plus --count 100 --csv > batch.csv # CSV 导出
 npm run keygen -- --plan plus --count 10 --ledger issued.csv  # 追加进台账
-npm run keygen -- --plan pro --days 30 --date 2026-01-01   # 指定签发日（补发历史卡）
+npm run keygen -- --plan plus --days 30 --date 2026-01-01   # 指定签发日（补发历史卡）
 npm run keygen -- --check <卡密>                            # 校验一张卡
 
 # 3) 绑定机器发卡（两步：先让用户报机器码，再签）
 npm run keygen -- --machine                                # 在用户机器上跑，读出机器码
-npm run keygen -- --plan pro --days 365 --bind <机器码>     # 本机签卡，只有那台机器能激活
-npm run keygen -- --plan pro --days 365                    # 省略 --bind = 不绑定，通用卡
+npm run keygen -- --plan plus --days 365 --bind <机器码>     # 本机签卡，只有那台机器能激活
+npm run keygen -- --plan plus --days 365                    # 省略 --bind = 不绑定，通用卡
 ```
 
 **`--date` 值得单独说**：签发日进卡密签名载荷，到期时间由"签发日 + 天数"推出。所以补发

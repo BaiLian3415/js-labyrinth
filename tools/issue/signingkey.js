@@ -69,7 +69,7 @@ const HELP = `JsLabyrinth 签名密钥对生成器
 拿到密钥对之后：
   1) 公钥填进 src/license-secret.js 的 B64_PUBLIC_KEY（或直接用 keyrotate.js --write）
   2) 私钥妥善保管：环境变量 JSLB_SIGNING_KEY，或 .jslb-signing-key（已在 .gitignore 里）
-  3) 发卡：node tools/issue/keygen.js --plan pro --days 365
+  3) 发卡：node tools/issue/keygen.js --plan plus --days 365
 
 ⚠️ 私钥泄露等于发卡权泄露。别进仓库、别进 dist/、别进 Worker Secret。
 `;
@@ -232,7 +232,7 @@ function main(argv) {
   console.log('    1) 公钥写进 src/license-secret.js（或改用 keyrotate.js --write 一步到位）');
   console.log('    2) 私钥保管好：export JSLB_SIGNING_KEY=<上面那串私钥>');
   console.log('       或写进 .jslb-signing-key（已在 .gitignore 里，权限 600）');
-  console.log('    3) 发卡：node tools/issue/keygen.js --plan pro --days 365');
+  console.log('    3) 发卡：node tools/issue/keygen.js --plan plus --days 365');
   console.log('');
   console.log('  ⚠️ 私钥泄露等于发卡权泄露。别进仓库、别进 dist/、别进 Worker Secret。');
 }

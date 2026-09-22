@@ -163,7 +163,7 @@ chmod 600 .dev.vars
    而所有验签方都持有对应公钥，一定通过。
 2. **发卡要带同一把私钥**（默认读 `.jslb-signing-key`，所以通常也不用带）：
    ```bash
-   JSLB_SIGNING_KEY=<base64 种子> node tools/issue/keygen.js --plan pro --days 365
+   JSLB_SIGNING_KEY=<base64 种子> node tools/issue/keygen.js --plan plus --days 365
    ```
    缺私钥时会明确报错并给出设置方法，不会静默签出一张验不过的卡。
 3. `.jslb-signing-key`、`.keygen-state.json`、`.dev.vars`、`.env`、

@@ -40,11 +40,20 @@ export default {
       "shellDepth": 1
     }
   },
+  // 2026-09-22：Pro 档删除，Plus 预设上限由 medium 提到 high，Team 由 high 提到
+  // max。删档会**作废已签发的 Pro 卡密**（卡密里的套餐字符 "R" 再也解析不出档位，
+  // parseCode 直接返回 reason:"plan"），需要另行补发。
+  //
+  // 阶梯因此变为 Free(low) < Plus(high) < Team(max) = Business(max)：Plus 与 Team
+  // 之间不再有 Pro 垫着，所以 Plus 的闸门必须整体放宽到能放行 high 的每一个取值
+  // （尤其是 envFingerprint —— high 会打开它，旧的 Plus 把它关着，不改就违反
+  // "自带预设必须满足自己的每一条闸门"）。Team 与 Business 同为 max 且不设闸门，
+  // 差别只剩配额。
   "plus": {
     "rank": 1,
     "code": "P",
     "display": "Plus",
-    "preset": "medium",
+    "preset": "high",
     "limits": {
       "maxFileBytes": 4194304,
       "maxFilesPerRun": 5,
@@ -52,7 +61,7 @@ export default {
       "runsTotal": 0
     },
     "gates": {
-      "vmDecoyOps": 128,
+      "vmDecoyOps": 256,
       "wasm": true,
       "callProxy": true,
       "honeyStrings": true,
@@ -60,7 +69,6 @@ export default {
       "debugProtection": true,
       "debugPoison": true,
       "selfDefending": true,
-      "envFingerprint": false,
       "integrityCheck": true,
       "shell": true,
       "consoleStub": false,
@@ -71,73 +79,33 @@ export default {
         "base64",
         "rc4"
       ],
-      "stringArrayThreshold": 0.8,
-      "stringSplitProbability": 0.6,
-      "stringArrayDecompose": 2,
+      "stringArrayThreshold": 1,
+      "stringSplitProbability": 1,
+      "stringArrayDecompose": 3,
       "controlFlowDepth": 2,
-      "controlFlowProbability": 0.7,
-      "deadCodeProbability": 0.5,
-      "opaquePredicatesMax": 4,
-      "sentinelRate": 0.2,
-      "integrityPoisonPoints": 3,
+      "controlFlowProbability": 1,
+      "deadCodeProbability": 0.8,
+      "opaquePredicatesMax": 6,
+      "sentinelRate": 0.5,
+      "integrityPoisonPoints": 4,
       "shellDepth": 1
     }
   },
-  "pro": {
-    "rank": 2,
-    "code": "R",
-    "display": "Pro",
-    "preset": "medium",
-    "limits": {
-      "maxFileBytes": 4194304,
-      "maxFilesPerRun": 10,
-      "runsPerDay": 50,
-      "runsTotal": 0
-    },
-    "gates": {
-      "stringArrayEncoding": [
-        "none",
-        "xor",
-        "base64",
-        "rc4"
-      ],
-      "stringArrayThreshold": 0.9,
-      "stringSplitProbability": 0.6,
-      "stringArrayDecompose": 2,
-      "controlFlowDepth": 2,
-      "controlFlowProbability": 0.8,
-      "deadCodeProbability": 0.6,
-      "opaquePredicatesMax": 4,
-      "sentinelRate": 0.3,
-      "integrityPoisonPoints": 3,
-      "shellDepth": 1,
-      "vmDecoyOps": 256
-    }
-  },
   "team": {
-    "rank": 3,
+    "rank": 2,
     "code": "T",
     "display": "Team",
-    "preset": "high",
+    "preset": "max",
     "limits": {
       "maxFileBytes": 7340032,
       "maxFilesPerRun": 10,
       "runsPerDay": 200,
       "runsTotal": 0
     },
-    "gates": {
-      "stringArrayDecompose": 3,
-      "controlFlowDepth": 3,
-      "deadCodeProbability": 0.9,
-      "opaquePredicatesMax": 6,
-      "sentinelRate": 0.5,
-      "integrityPoisonPoints": 4,
-      "shellDepth": 1,
-      "vmDecoyOps": 512
-    }
+    "gates": {}
   },
   "business": {
-    "rank": 4,
+    "rank": 3,
     "code": "B",
     "display": "Business",
     "preset": "max",
@@ -161,7 +129,7 @@ export default {
   // kind:"pack" 让 plan.js 把它单独成组：两族的配额口径不同，混在一条阶梯上
   // 比不出高低（订阅档的 runsTotal 恒为不限，额度包却是有限值），硬排会误报倒挂。
   "pack100": {
-    "rank": 5,
+    "rank": 4,
     "code": "S",
     "display": "Pack 100",
     "kind": "pack",
@@ -175,7 +143,7 @@ export default {
     "gates": {}
   },
   "pack1000": {
-    "rank": 6,
+    "rank": 5,
     "code": "M",
     "display": "Pack 1000",
     "kind": "pack",
@@ -189,7 +157,7 @@ export default {
     "gates": {}
   },
   "pack10000": {
-    "rank": 7,
+    "rank": 6,
     "code": "W",
     "display": "Pack 10000",
     "kind": "pack",
@@ -204,7 +172,7 @@ export default {
   },
   // 更大的额度按合同谈：卡上不设上限，价目表上写"联系作者"
   "packCustom": {
-    "rank": 8,
+    "rank": 7,
     "code": "C",
     "display": "Pack Custom",
     "kind": "pack",

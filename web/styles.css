@@ -592,6 +592,12 @@ input.text:focus, select.mini:focus, button:focus-visible, textarea:focus {
 .status.warn { color: var(--warn); }
 .right { margin-left: auto; }
 
+/* 状态文案（失败原因）与配额（套餐名+用量）都可能很长，而状态栏只有一行高。
+   flex 子项默认不肯缩（min-width:auto），长文案会把整条栏顶出横向滚动——
+   这里允许两段各自截断：左边的状态优先保住开头，右边的配额钉在末尾。 */
+.statusbar .status { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#quota { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
 /* 状态栏里的快捷键提示。窄屏放不下就整段收掉，避免挤压状态文案。 */
 #shortcutHint { display: flex; align-items: center; gap: 4px; white-space: nowrap; }
 #shortcutHint kbd {
@@ -950,4 +956,118 @@ button.primary:hover:not(:disabled) { filter: brightness(1.1); }
   .panes { grid-template-columns: 1fr; grid-template-rows: 1fr 1fr; }
   .drawer-cols { grid-template-columns: 1fr; }
   #shortcutHint { display: none; }
+}
+
+/* ==========================================================================
+   触摸设备（phone / pad）：目标尺寸与输入字号
+   ==========================================================================
+
+   用 pointer:coarse 而不是宽度断点——要照顾的是"手指"这种输入方式，
+   pad 屏幕再大也是手指在点。桌面指针完全不受影响，布局密度保持不变。
+
+   两条硬规则：
+   1. **可输入的控件字号 ≥16px**。iOS Safari 对更小的输入框在 focus 时自动
+      放大页面，每次聚焦屏幕都跳一下，pinch 还原后下次又跳。编辑器也是
+      textarea，同样中招，所以一起提。手机上反正要横滚（混淆产物是超长单行），
+      字号换来的防缩放比每行多几个字符值钱。
+   2. **可点目标高度 ≥36px**。WCAG 建议 44px，但这是选项密集的工具台，
+      36px 在可用与密度之间更平衡；主按钮给到 40px。 */
+@media (pointer: coarse) {
+  input.text, select.mini, .editor,
+  .opt-row input[type="text"], .opt-row input[type="number"], .opt-row select {
+    font-size: 16px;
+  }
+
+  button.mini, select.mini { min-height: 36px; padding: 6px 14px; }
+  button.primary { min-height: 40px; padding: 6px 20px; }
+  .presets button { min-height: 36px; }
+  .files button { min-height: 32px; padding: 4px 14px; }
+  .row input[type="checkbox"], .opt-row input[type="checkbox"] {
+    width: 18px; height: 18px; flex: 0 0 auto;
+  }
+  /* 触屏没有悬停，行高太挤会误点相邻行 */
+  .opt-row { padding: 3px 0; }
+}
+
+/* 触屏上 :hover 会在点按后"粘"住：文件标签翘着不下去、按钮边框一直亮着，
+   看上去像多了一个选中态。触屏没有悬停概念，把这些效果整组摘掉。 */
+@media (hover: none) {
+  .files button:hover { transform: none; }
+  button.mini:hover, select.mini:hover { border-color: var(--line); }
+  button.primary:hover:not(:disabled) { filter: none; }
+  .sidebar .presets button:hover { background: none; }
+  .presets button:hover { color: var(--fg-dim); }
+  .stats summary:hover { color: var(--fg-dim); }
+}
+
+/* ==========================================================================
+   手机（≤640px）：结构级调整
+   ==========================================================================
+
+   900px 断点已把侧栏折成顶条，这里再压一层：品牌与主题/语言一行，
+   预设独占一行横向滚动；面板工具组独占整行并均分拉伸——手机上
+   "开始混淆"必须一眼锁定，不能混在一排一样大的按钮里。 */
+@media (max-width: 640px) {
+  .sidebar { gap: 6px 8px; padding: 8px 12px; }
+  .brand { flex: 1 1 auto; min-width: 0; }
+  .brand h1 { font-size: 15px; }
+  .side-foot { flex: 0 0 auto; }
+
+  /* 预设横滚条。DOM 里 presets 在 side-foot 之前，order:3 + basis:100% 把它
+     挪到品牌行之后独占一行；负边距出血到屏幕边，滚动时首尾按钮才有从边缘
+     滑入的自然感；右侧渐隐提示后面还有档位。滚动条藏掉（横滚条用不上它）。 */
+  .sidebar .presets {
+    order: 3;
+    flex: 1 1 100%;
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    margin: 2px -12px -2px;
+    padding: 2px 12px 6px;
+    scrollbar-width: none;
+    -webkit-mask-image: linear-gradient(90deg, #000 90%, transparent);
+    mask-image: linear-gradient(90deg, #000 90%, transparent);
+  }
+  .sidebar .presets::-webkit-scrollbar { display: none; }
+  .sidebar .presets button { flex: 0 0 auto; }
+
+  .mainbar { padding: 8px 10px 0; }
+  .panes { padding: 8px; gap: 8px; }
+
+  /* 面板头：标题一行、工具一行。工具均分撑满整行（大目标好按），
+     主按钮双倍宽——手机上的主操作必须是最显眼的那个。 */
+  .pane-head { flex-wrap: wrap; row-gap: 6px; }
+  .pane-tools { flex: 1 1 100%; margin-left: 0; }
+  .pane-tools > * { flex: 1 1 auto; }
+  #outputPane #runBtn { flex: 2.2 1 auto; }
+
+  .editor { padding: 10px 12px; }
+
+  /* 抽屉改成底部浮层：留在文档流里它会与两个面板抢高度——62vh 的抽屉一展开，
+     面板区被压到不足一行，输出面板的按钮拦腰截断。浮层脱离文档流后，面板保持
+     完整高度，抽屉从底边向上张开；盖住状态栏无妨（授权区里就有机器码与用量）。
+     字段从"标签左输入右"改纵向堆叠——窄屏里横排会把输入框压到只剩几个字符宽。 */
+  .main { position: relative; }
+  .drawer {
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 30;
+    max-height: 62vh;
+    box-shadow: 0 -10px 28px rgba(0, 0, 0, .45);
+  }
+  /* 浮层展开时盖住状态栏，Home 指示条的让位改由抽屉自己承担 */
+  .drawer[data-open="1"] > .drawer-inner {
+    padding-bottom: calc(6px + env(safe-area-inset-bottom, 0px));
+  }
+  .opt-groups { grid-template-columns: 1fr; }
+  .row.field { flex-direction: column; align-items: stretch; gap: 4px; }
+  .row.field > span { white-space: normal; }
+  .row.btns .mini { flex: 1 1 auto; }
+
+  .files button { max-width: 170px; }
+
+  /* 刘海屏：状态栏贴底，给 Home 指示条让位。viewport-fit=cover 已在
+     index.html 配好；无刘海设备上 env() 恒 0，等价于原来的 6px。 */
+  .statusbar { padding-bottom: calc(6px + env(safe-area-inset-bottom, 0px)); }
 }

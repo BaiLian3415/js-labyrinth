@@ -7,7 +7,7 @@
  *   node tools/issue/keygen.js [选项]
  *
  * 选项:
- *   -P, --plan <s>     套餐名（订阅档 free|plus|pro|team|business，一次性额度包
+ *   -P, --plan <s>     套餐名（订阅档 free|plus|team|business，一次性额度包
  *                      pack100|pack1000|pack10000|packCustom），默认 free（最低档）
  *   -d, --days <n>     有效天数，0 表示永久，默认 365
  *   -c, --count <n>    生成数量，默认 1
@@ -22,7 +22,7 @@
  *   -h, --help         帮助
  *
  * 卡密格式: JSLB-<套餐段>-<天数段>-<签发日段>-<编号段>-<绑定段>-<签名段>
- *   例: node tools/issue/keygen.js --plan pro --days 30 --count 3
+ *   例: node tools/issue/keygen.js --plan plus --days 30 --count 3
  *
  * 套餐段 1 个字符（F=Free、P=Plus、R=Pro、T=Team、B=Business、S/M/W/C=一次性
  * 额度包 100/1000/10000/定制），决定这张卡能用的混淆选项范围与配额，定义见
@@ -65,7 +65,7 @@ const { B64_PUBLIC_KEY, B64_MACHINE_SALT } = secret;
 // 优先读环境变量，其次读项目根的 .jslb-signing-key（该文件在 .gitignore 里）。
 // 生产环境建议只用环境变量或密钥管理服务，别在磁盘上留副本。
 //
-//   JSLB_SIGNING_KEY=<base64> node tools/issue/keygen.js --plan pro --days 365
+//   JSLB_SIGNING_KEY=<base64> node tools/issue/keygen.js --plan plus --days 365
 //
 // 卡密用私钥签，验签只需公钥——所以浏览器与 Worker 那边爬走全部源码也签不出新卡。
 const SIGNING_KEY = (() => {
@@ -151,11 +151,11 @@ const HELP = `JsLabyrinth 卡密计算工具
 示例:
   node tools/issue/keygen.js --plan plus --days 30 --count 5
   node tools/issue/keygen.js --plan business --days 0    # 企业版永久卡
-  node tools/issue/keygen.js --plan pro --count 100 --csv > batch.csv
+  node tools/issue/keygen.js --plan plus --count 100 --csv > batch.csv
   node tools/issue/keygen.js --plan team --days 365 --ledger issued.csv --count 10
-  node tools/issue/keygen.js --plan pro --days 30 --date 2026-01-01   # 补发指定签发日
+  node tools/issue/keygen.js --plan plus --days 30 --date 2026-01-01   # 补发指定签发日
   node tools/issue/keygen.js --machine                   # 打印本机机器码
-  node tools/issue/keygen.js --plan pro --days 365 --bind <对方报来的机器码>
+  node tools/issue/keygen.js --plan plus --days 365 --bind <对方报来的机器码>
   node tools/issue/keygen.js --plans
   node tools/issue/keygen.js --check <卡密>
 `;
@@ -673,7 +673,7 @@ function main(argv) {
       '卡密用 Ed25519 签名，私钥只在签发方持有，不随源码分发。设置方式二选一：',
       '',
       '  1) 环境变量（推荐，生产环境用这个）：',
-      '       JSLB_SIGNING_KEY=<base64 私钥种子> node tools/issue/keygen.js --plan pro --days 365',
+      '       JSLB_SIGNING_KEY=<base64 私钥种子> node tools/issue/keygen.js --plan plus --days 365',
       '  2) 项目根的 .jslb-signing-key 文件（已在 .gitignore 里），内容是一行 base64。',
       '',
       '没有私钥时仍可校验卡密：node tools/issue/keygen.js --check <卡密>',

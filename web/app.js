@@ -631,7 +631,9 @@ async function run() {
     } catch (e) {
       f.status = 'error';
       f.error = (e && e.message) || String(e);
-      if (!firstError) firstError = e;
+      // 与上面 r.message 分支同口径：状态条拼的是文本，Error 对象经模板
+      // 插值会带上 "Error: " 前缀
+      if (!firstError) firstError = f.error;
     }
   }
 
@@ -961,7 +963,7 @@ async function deactivate() {
   // 回到试用态（策略要求强制激活时这里会给出未激活），面板才不会停留在旧权益
   await licenseWeb.ensure();
   await refreshLicensePanel();
-  setStatus(serverCleared ? t('guiReset') : t('guiDeactivateServerFailed'), serverCleared ? 'ok' : 'warn');
+  setStatus(serverCleared ? t('webDeactivated') : t('guiDeactivateServerFailed'), serverCleared ? 'ok' : 'warn');
 }
 
 // ---------- 文件载入 ----------
@@ -1173,6 +1175,12 @@ async function init() {
   document.addEventListener('keydown', (e) => {
     if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') { e.preventDefault(); run(); }
   });
+
+  // 手机屏幕寸土寸金：首屏默认收起选项抽屉，把高度留给输入/输出面板
+  // （桌面保持 HTML 里的默认展开）。只在加载时判断一次，之后由"选项"按钮接管。
+  if (window.matchMedia && window.matchMedia('(max-width: 640px)').matches) {
+    setDrawer(false);
+  }
 
   // 授权：优先恢复已激活卡密，否则按网页版策略进入试用
   const ens = await licenseWeb.ensure();
