@@ -430,6 +430,9 @@ function showResult() {
     return;
   }
   els.output.value = f.out;
+  // 产物落位时淡入一次：混淆耗时可能几百毫秒到数秒，突然整屏换字会让人
+  // 分不清"是不是又跑了一遍"，一次淡入就是"这次结果到了"的信号。
+  replay(els.output, 'flash');
   els.outInfo.textContent = f.name;
   els.outSize.textContent = t('guiSize', {
     in: f.originalSize || 0,
@@ -476,9 +479,40 @@ function explicitOptions() {
   return out;
 }
 
+/**
+ * 重播一次性 CSS 动画。
+ *
+ * 同一个 class 连续 add 两次浏览器不会重播，中间必须强制一次样式计算把
+ * 动画状态"归零"。读 offsetWidth 是最省的写法（比 getComputedStyle 便宜，
+ * 且这里只需要触发回流）。
+ */
+function replay(node, cls) {
+  if (!node) return;
+  node.classList.remove(cls);
+  void node.offsetWidth;
+  node.classList.add(cls);
+}
+
 function setStatus(msg, kind) {
   els.status.textContent = msg || '';
   els.status.className = 'status' + (kind ? ' ' + kind : '');
+  // 文案有变化才播，否则每次 saveState 都会闪一下
+  if (msg) replay(els.status, 'flash');
+}
+
+/**
+ * 开合选项抽屉。
+ *
+ * 不用 hidden 属性：hidden 是 display:none，浏览器不会对 display 变化做过渡，
+ * 抽屉只会"啪"地出现/消失。改用 data-open + CSS 的 grid-template-rows
+ * 0fr→1fr 做高度动画（见 styles.css）。
+ *
+ * aria-expanded 同步更新，收起后内容仍留在 DOM 里但由 CSS 的 visibility
+ * 挡掉，不会被 tab 到。
+ */
+function setDrawer(open) {
+  els.drawer.setAttribute('data-open', open ? '1' : '0');
+  els.optsBtn.setAttribute('aria-expanded', String(open));
 }
 
 function setBusy(on) {
@@ -727,6 +761,9 @@ async function pushLicense() {
 function renderApiState() {
   const badge = els.apiState;
   if (!badge) return;
+  // 记下切换前的语义，只有"真的变了"才弹一下，避免轮询每次心跳都动
+  const prev = badge.dataset.state || '';
+  const next = state.apiOnline === null ? 'checking' : (state.apiOnline ? 'online' : 'offline');
   if (state.apiOnline === null) {
     badge.hidden = false;
     badge.className = 'badge';
@@ -743,6 +780,9 @@ function renderApiState() {
     badge.textContent = t('guiApiOffline');
     badge.title = t('guiApiOfflineHint');
   }
+  badge.dataset.state = next;
+  // 首次渲染（prev 为空）不弹，之后状态跃迁才弹
+  if (prev && prev !== next) replay(badge, 'pop');
   if (els.apiHint) {
     if (state.apiOnline === false) els.apiHint.textContent = t('guiApiOfflineHint');
     else if (state.apiOnline && serverAttested()) els.apiHint.textContent = t('guiServerAttestedHint');
@@ -809,17 +849,24 @@ function downloadZip() {
 
 async function refreshLicensePanel() {
   const ent = currentEntitlements();
+  // 记录切换前的观感，只有真的变了才弹一下（激活成功那一刻最需要这个反馈）
+  const prevLic = els.licBadge.dataset.state || '';
+  const nextLic = !ent ? 'missing' : (ent.trial ? 'trial' : 'licensed:' + (ent.display || ''));
   if (!ent) {
     els.licBadge.textContent = t('licReason_missing');
     els.licBadge.className = 'badge';
     els.licInfo.textContent = '';
     els.licDevice.textContent = t('guiDevice') + ': ' + (await licenseWeb.machineId());
+    els.licBadge.dataset.state = nextLic;
+    if (prevLic && prevLic !== nextLic) replay(els.licBadge, 'pop');
     return;
   }
   const trial = !!ent.trial;
   els.licBadge.textContent = trial ? t('webTrialPlan') : ent.display;
   els.licBadge.className = 'badge ' + (trial ? 'trial' : 'licensed');
   els.licBadge.title = trial ? t('guiTrialHint', { limits: limitsText(ent) }) : '';
+  els.licBadge.dataset.state = nextLic;
+  if (prevLic && prevLic !== nextLic) replay(els.licBadge, 'pop');
   if (state.serverLicense) {
     // 服务端认定的授权：本地没有可读的记录，横幅与配额都直接用服务端答复
     els.licInfo.textContent = (state.serverLicense.banner || '')
@@ -1052,8 +1099,7 @@ async function init() {
   });
 
   els.optsBtn.addEventListener('click', () => {
-    els.drawer.hidden = !els.drawer.hidden;
-    els.optsBtn.setAttribute('aria-expanded', String(!els.drawer.hidden));
+    setDrawer(els.drawer.getAttribute('data-open') !== '1');
   });
 
   els.mode.addEventListener('change', () => { state.mode = els.mode.value; saveState(); });

@@ -111,40 +111,42 @@
   </section>
 </main>
 
-<section class="drawer" id="drawer">
-  <div class="drawer-cols">
-    <div class="drawer-col">
-      <h3 data-i18n="guiLicense">授权</h3>
-      <div class="lic-box">
-        <div id="licInfo" class="dim"></div>
-        <label class="row field">
-          <span data-i18n="guiApiEndpoint">服务地址</span>
-          <input id="apiBase" class="text" type="text" placeholder="/" spellcheck="false">
-        </label>
-        <label class="row field">
-          <span data-i18n="guiLicenseKey">卡密</span>
-          <input id="licKey" class="text" type="text" autocomplete="off" spellcheck="false" placeholder="JSLB-...">
-        </label>
-        <div class="row btns">
-          <button id="actBtn" class="mini" type="button" data-i18n="guiActivate">激活</button>
-          <button id="deactBtn" class="mini" type="button" data-i18n="guiDeactivate">解除激活</button>
+<section class="drawer" id="drawer" data-open="1">
+  <div class="drawer-inner">
+    <div class="drawer-cols">
+      <div class="drawer-col">
+        <h3 data-i18n="guiLicense">授权</h3>
+        <div class="lic-box">
+          <div id="licInfo" class="dim"></div>
+          <label class="row field">
+            <span data-i18n="guiApiEndpoint">服务地址</span>
+            <input id="apiBase" class="text" type="text" placeholder="/" spellcheck="false">
+          </label>
+          <label class="row field">
+            <span data-i18n="guiLicenseKey">卡密</span>
+            <input id="licKey" class="text" type="text" autocomplete="off" spellcheck="false" placeholder="JSLB-...">
+          </label>
+          <div class="row btns">
+            <button id="actBtn" class="mini" type="button" data-i18n="guiActivate">激活</button>
+            <button id="deactBtn" class="mini" type="button" data-i18n="guiDeactivate">解除激活</button>
+          </div>
+          <div id="licDevice" class="dim mono"></div>
         </div>
-        <div id="licDevice" class="dim mono"></div>
+        <p class="hint" id="apiHint"></p>
+
+        <h3 data-i18n="guiSeedTitle">随机种子</h3>
+        <label class="row field">
+          <input id="seed" class="text" type="text" inputmode="numeric" placeholder="—" spellcheck="false">
+        </label>
+        <p class="hint" data-i18n="guiSeed">随机种子（留空即每次不同）</p>
       </div>
-      <p class="hint" id="apiHint"></p>
 
-      <h3 data-i18n="guiSeedTitle">随机种子</h3>
-      <label class="row field">
-        <input id="seed" class="text" type="text" inputmode="numeric" placeholder="—" spellcheck="false">
-      </label>
-      <p class="hint" data-i18n="guiSeed">随机种子（留空即每次不同）</p>
+      <div class="drawer-col wide" id="optCols"></div>
     </div>
-
-    <div class="drawer-col wide" id="optCols"></div>
-  </div>
-  <div class="drawer-foot">
-    <span class="hint" id="presetHint" data-i18n="guiPresetHint">预设只提供默认值，下面的显式选项逐字段覆盖它。</span>
-    <button id="resetBtn" class="mini" type="button" data-i18n="guiReset">恢复默认选项</button>
+    <div class="drawer-foot">
+      <span class="hint" id="presetHint" data-i18n="guiPresetHint">预设只提供默认值，下面的显式选项逐字段覆盖它。</span>
+      <button id="resetBtn" class="mini" type="button" data-i18n="guiReset">恢复默认选项</button>
+    </div>
   </div>
 </section>
 

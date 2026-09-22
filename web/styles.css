@@ -320,16 +320,16 @@ input.text:focus, select.mini:focus, button:focus-visible, textarea:focus {
 
 /* ---------- 选项抽屉 ---------- */
 
+/* 抽屉容器。
+   高度用 grid-template-rows 0fr → 1fr 做过渡（见文末动效层），
+   所以这里必须有 display:grid 且内层唯一子元素是 .drawer-inner。
+   滚动交给打开态自身，收起态用 overflow:hidden 压掉内容。 */
 .drawer {
   flex: 0 0 auto;
   max-height: 42vh;
-  overflow: auto;
-  background: var(--bg-soft);
   border-top: 1px solid var(--line);
-  padding: 10px 14px 6px;
+  background: var(--bg-soft);
 }
-
-.drawer[hidden] { display: none; }
 
 .drawer-cols {
   display: grid;
@@ -460,24 +460,306 @@ input.text:focus, select.mini:focus, button:focus-visible, textarea:focus {
 .dim { color: var(--fg-dim); }
 .mono { font-family: var(--mono); }
 
-/* 忙时的进度条 */
+/* 忙碌条的样式与 @keyframes sweep 都在文末「动效层」里，
+   这里刻意不留旧定义——两份规则靠层叠顺序决胜负，改起来容易只改一半。 */
+
+/* ==========================================================================
+   动效层
+   ==========================================================================
+
+   原则：
+   1. **只动 transform / opacity**。这两个属性走合成层，不触发布局与重绘；
+      动 width/height/margin 会在每一帧重排，混淆本身已经是同步重活，
+      界面再抢主线程只会让"处理中"显得更卡。
+   2. **时长克制**。交互反馈 90–160ms，大于 200ms 就会让连续点击觉得黏。
+      入场动画可以稍长（220ms），但只播一次。
+   3. **全局可关**。末尾统一用 prefers-reduced-motion 把位移类动画摘掉，
+      只保留颜色/透明度这类不引起眩晕的变化。
+   4. **不改变布局盒**。抽屉、面板都用 opacity + translate，
+      避免动画期间布局抖动导致 textarea 里的光标位置跳。
+
+   变量集中在这里，便于统一调节奏。
+   -------------------------------------------------------------------------- */
+
+:root {
+  --dur-fast: 90ms;
+  --dur-mid: 160ms;
+  --dur-slow: 220ms;
+  --ease-out: cubic-bezier(.22, .61, .36, 1);
+  --ease-in-out: cubic-bezier(.4, 0, .2, 1);
+  /* 回弹曲线：用于按下/切档这类需要"确认感"的动作，过冲很小，不轻浮 */
+  --ease-spring: cubic-bezier(.34, 1.4, .64, 1);
+}
+
+/* ---------- 主题切换：全局颜色过渡 ---------- */
+
+/* 深/浅色切换时给颜色加过渡，否则整屏"啪"地跳色，像闪屏。
+   刻意**不**写 transition: all —— 那样会把布局属性也纳入过渡，
+   抽屉开合与文本回流都会跟着变慢。逐项列出需要的颜色属性。
+   不放在 :root 上是因为 color-scheme 切换需要立刻生效，
+   过渡只作用于真正可见的容器。 */
+body, .topbar, .pane, .drawer, .statusbar, .presets, .files button,
+button.mini, select.mini, input.text, .badge, .editor, .pane-head, .pane-foot {
+  transition:
+    background-color var(--dur-mid) var(--ease-out),
+    border-color var(--dur-mid) var(--ease-out),
+    color var(--dur-mid) var(--ease-out);
+}
+
+/* ---------- 按钮反馈 ---------- */
+
+/* 按下时轻微内缩。用 scale 而不是 translateY，因为 translate 会与
+   已有的 :active{transform:translateY(1px)} 冲突（后写的覆盖前写的）。 */
+button.mini:active, button.primary:active {
+  transform: scale(.97);
+  transition: transform var(--dur-fast) var(--ease-out);
+}
+
+button.mini, button.primary {
+  transition:
+    transform var(--dur-fast) var(--ease-out),
+    border-color var(--dur-mid) var(--ease-out),
+    background-color var(--dur-mid) var(--ease-out),
+    filter var(--dur-fast) var(--ease-out);
+}
+
+/* 主按钮 hover 用亮度而非改背景色：改背景色会与主题过渡的那条规则打架，
+   亮度是 filter，走合成层，不参与颜色过渡。 */
+button.primary:hover:not(:disabled) { filter: brightness(1.1); }
+
+/* ---------- 预设档位：选中态滑动感 ---------- */
+
+.presets button {
+  transition:
+    background-color var(--dur-mid) var(--ease-out),
+    color var(--dur-mid) var(--ease-out),
+    box-shadow var(--dur-mid) var(--ease-out);
+}
+
+/* ---------- 面板入场 ---------- */
+
+/* 首屏两块面板轻微上浮淡入。只播一次，不用 infinite。
+   animation-fill-mode: backwards 保证动画开始前不会先闪一下终态。 */
+.panes > .pane {
+  animation: pane-in var(--dur-slow) var(--ease-out) backwards;
+}
+.panes > .pane:nth-child(2) { animation-delay: 60ms; }
+
+@keyframes pane-in {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: none; }
+}
+
+/* ---------- 抽屉开合 ---------- */
+
+/* 抽屉原本用 hidden 属性切换。hidden 是 display:none，无法过渡——
+   所以改成用 .drawer[data-open] 控制，由脚本配合（见 app.js setDrawer）。
+   这里用 grid-template-rows 0fr -> 1fr 做高度动画，好处是**不猜高度**；
+   比 max-height:0 -> 999px 的写法不会出现"高度猜错"导致的跳帧。
+   这条属性不是纯合成层属性，但抽屉开合是低频交互且内容不多，可接受。 */
+.drawer {
+  display: grid;
+  grid-template-rows: 0fr;
+  opacity: 0;
+  /* 收起后内容不该再被 tab 到，也不该被读到 */
+  visibility: hidden;
+  transition:
+    grid-template-rows var(--dur-slow) var(--ease-in-out),
+    opacity var(--dur-mid) var(--ease-out),
+    visibility 0s linear var(--dur-slow);
+}
+
+.drawer[data-open="1"] {
+  grid-template-rows: 1fr;
+  opacity: 1;
+  visibility: visible;
+  transition:
+    grid-template-rows var(--dur-slow) var(--ease-in-out),
+    opacity var(--dur-mid) var(--ease-out),
+    visibility 0s linear 0s;
+}
+
+/* 抽屉内部容器是"可被压扁"的那一层：0fr 时高度为 0，内容靠 overflow:hidden 裁掉。
+   内边距必须一起过渡到 0：grid-template-rows:0fr 只压缩**内容盒**，
+   盒子的 padding 不参与收缩——实测残留 10px+6px = 16px，抽屉永远收不干净。 */
+.drawer > .drawer-inner {
+  min-height: 0;
+  overflow: hidden;
+  padding: 0 14px;
+  transition: padding var(--dur-slow) var(--ease-in-out);
+}
+
+.drawer[data-open="1"] > .drawer-inner {
+  padding: 10px 14px 6px;
+}
+
+/* 打开态允许滚动（内容可能高于 42vh）。滚动必须落在能滚的那一层上，
+   这里让 .drawer 自己滚、内部不再裁剪。 */
+.drawer[data-open="1"] { overflow: auto; }
+.drawer[data-open="1"] > .drawer-inner { overflow: visible; }
+
+/* 抽屉内各行依次入场的错位效果：只在打开时播，收起不播（收起要干脆）。 */
+.drawer[data-open="1"] .opt-group {
+  animation: group-in var(--dur-slow) var(--ease-out) backwards;
+}
+.drawer[data-open="1"] .opt-group:nth-child(1) { animation-delay: 20ms; }
+.drawer[data-open="1"] .opt-group:nth-child(2) { animation-delay: 45ms; }
+.drawer[data-open="1"] .opt-group:nth-child(3) { animation-delay: 70ms; }
+.drawer[data-open="1"] .opt-group:nth-child(4) { animation-delay: 95ms; }
+.drawer[data-open="1"] .opt-group:nth-child(n+5) { animation-delay: 120ms; }
+
+@keyframes group-in {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: none; }
+}
+
+/* ---------- 状态栏文案切换 ---------- */
+
+/* setStatus 每次都会换文案。直接换字会显得很生硬，加一个极短的淡入。
+   用 class 触发（脚本里 remove → 强制回流 → add），否则连续两次同值
+   写入不会重播动画。 */
+.status.flash {
+  animation: status-in var(--dur-mid) var(--ease-out);
+}
+
+@keyframes status-in {
+  from { opacity: 0; transform: translateY(2px); }
+  to { opacity: 1; transform: none; }
+}
+
+/* ---------- 文件标签 ---------- */
+
+.files button {
+  transition:
+    border-color var(--dur-mid) var(--ease-out),
+    color var(--dur-mid) var(--ease-out),
+    background-color var(--dur-mid) var(--ease-out),
+    transform var(--dur-fast) var(--ease-out);
+}
+.files button:hover { transform: translateY(-1px); }
+.files button:active { transform: translateY(0) scale(.98); }
+
+/* 新加入的标签淡入。renderFiles 每次都重建 DOM，所以给每个新节点加
+   一次性动画即可，无需去重。 */
+.files button {
+  animation: tag-in var(--dur-mid) var(--ease-out) backwards;
+}
+
+@keyframes tag-in {
+  from { opacity: 0; transform: scale(.94); }
+  to { opacity: 1; transform: none; }
+}
+
+/* ---------- 统计区展开 ---------- */
+
+.stats-body {
+  animation: body-in var(--dur-mid) var(--ease-out);
+}
+
+@keyframes body-in {
+  from { opacity: 0; transform: translateY(-3px); }
+  to { opacity: 1; transform: none; }
+}
+
+/* details 的三角标记旋转，给出"可展开"的暗示 */
+.stats summary { transition: color var(--dur-mid) var(--ease-out); }
+.stats summary:hover { color: var(--fg); }
+
+/* ---------- 徽章变化 ---------- */
+
+/* 授权/在线状态徽章在状态改变时轻微弹一下，提示"这里变了"。 */
+.badge {
+  transition:
+    border-color var(--dur-mid) var(--ease-out),
+    color var(--dur-mid) var(--ease-out),
+    transform var(--dur-mid) var(--ease-spring);
+}
+.badge.pop { animation: badge-pop var(--dur-slow) var(--ease-spring); }
+
+@keyframes badge-pop {
+  0% { transform: scale(1); }
+  40% { transform: scale(1.12); }
+  100% { transform: scale(1); }
+}
+
+/* ---------- 忙碌条：改为"扫光"而非来回弹 ---------- */
+
+/* 原来是一条 30% 宽的块来回平移，方向感像"等待"，但轨迹会撞到容器两端，
+   显得毛躁。改成两端渐隐的不定式进度条：视觉上更像"正在推进"，
+   且首尾透明度过渡让它不会硬生生从屏幕边缘跳出。 */
 .busy-bar {
   position: fixed;
   top: 0; left: 0;
   height: 2px;
-  width: 30%;
-  background: var(--accent);
-  animation: slide 1.1s ease-in-out infinite;
+  width: 40%;
+  background: linear-gradient(90deg,
+    transparent 0%,
+    var(--accent) 25%,
+    var(--accent) 75%,
+    transparent 100%);
+  animation: sweep 1.2s var(--ease-in-out) infinite;
   z-index: 10;
-}
-@keyframes slide {
-  0% { transform: translateX(-100%); }
-  100% { transform: translateX(400%); }
+  will-change: transform;
 }
 
-/* 尊重系统的"减少动态效果"：进度条改成常亮一小段，不做位移 */
+@keyframes sweep {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(350%); }
+}
+
+/* 结果区新内容落位 */
+@keyframes result-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+#output.flash { animation: result-in var(--dur-slow) var(--ease-out); }
+
+/* ---------- 尊重系统的"减少动态效果" ---------- */
+
+/* 不是"把动画调快"，而是**取消位移**。前庭功能障碍者对位移最敏感，
+   而颜色与透明度的淡入是安全的。这里把所有 keyframes 的位移动画摘掉，
+   只保留过渡（transition），因为过渡多为颜色变化。 */
 @media (prefers-reduced-motion: reduce) {
-  .busy-bar { animation: none; width: 100%; opacity: .6; }
+  .busy-bar {
+    animation: none;
+    width: 100%;
+    opacity: .6;
+    background: var(--accent);
+  }
+
+  /* 入场/错位动画全部取消，直接显示终态 */
+  .panes > .pane,
+  .drawer[data-open="1"] .opt-group,
+  .files button,
+  .stats-body,
+  .status.flash,
+  #output.flash,
+  .badge.pop {
+    animation: none;
+  }
+
+  /* 位移类变化去掉，只留颜色过渡 */
+  button.mini:active,
+  button.primary:active,
+  .files button:hover,
+  .files button:active { transform: none; }
+
+  /* 抽屉改为直接显示/隐藏，不做高度动画 */
+  .drawer, .drawer[data-open="1"] {
+    transition: opacity var(--dur-fast) linear, visibility 0s linear;
+  }
+
+  /* 统一把过渡/动画压到最短。
+     注意这里**不能**用 `*` 通配符：那会连上面那条 visibility 延迟一起清掉，
+     抽屉收起时内容会瞬间失去可见性并产生闪烁。只压时长，不改时序。 */
+  button.mini, button.primary, .files button, input.text, select.mini,
+  .badge, .editor, .presets button, .stats summary {
+    transition-duration: 1ms;
+  }
+  .panes > .pane, .drawer[data-open="1"] .opt-group, .files button,
+  .stats-body, .status.flash, #output.flash, .badge.pop {
+    animation-duration: 1ms;
+  }
 }
 
 @media (max-width: 900px) {
