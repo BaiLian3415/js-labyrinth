@@ -36,125 +36,137 @@
   <p class="noscript">JsLabyrinth 的界面需要 JavaScript 才能运行。命令行用法见项目 README。</p>
 </noscript>
 
-<header class="topbar">
-  <div class="brand">
-    <span class="logo" aria-hidden="true">🌀</span>
-    <h1 data-i18n="guiTitle">JsLabyrinth 混淆器</h1>
-    <span class="ver" id="ver"></span>
-  </div>
-
-  <div class="presets" id="presets" role="radiogroup" data-i18n-aria="guiAriaPresets" aria-label="preset"></div>
-
-  <div class="topbar-right">
-    <span class="badge" id="apiState" hidden></span>
-    <span class="badge" id="licBadge"></span>
-    <select id="lang" class="mini" data-i18n-aria="guiAriaLang" aria-label="language">
-      <option value="zh">中文</option>
-      <option value="en">English</option>
-    </select>
-    <button id="themeBtn" class="mini" type="button" data-i18n-title="guiAriaTheme" data-i18n-aria="guiAriaTheme" title="theme">
-      <span data-i18n="guiThemeDark">深色</span>
-    </button>
-    <button id="optsBtn" class="mini" type="button" aria-expanded="true" aria-controls="drawer"
-      data-i18n-aria="guiAriaOptions" data-i18n-title="guiAriaOptions">
-      <span data-i18n="guiOptions">选项</span> ▾
-    </button>
-  </div>
-</header>
-
-<main class="panes">
-  <section class="pane" id="inputPane">
-    <div class="pane-head">
-      <h2 data-i18n="guiInput">输入</h2>
-      <div class="pane-tools">
-        <select id="mode" class="mini" data-i18n-aria="guiAriaMode" aria-label="mode">
-          <option value="auto" data-i18n="guiModeAuto">自动识别</option>
-          <option value="js" data-i18n="guiModeJs">JavaScript</option>
-          <option value="html" data-i18n="guiModeHtml">HTML 内联脚本</option>
-        </select>
-        <button id="openBtn" class="mini" type="button" data-i18n="guiOpenFiles">打开文件</button>
-        <button id="clearBtn" class="mini" type="button" data-i18n="guiClear">清空</button>
-        <input id="fileInput" type="file" multiple accept=".js,.mjs,.cjs,.html,.htm,.xhtml,.txt" hidden>
+<!-- 仪表盘式两栏外壳：左导航（品牌 + 预设 + 设置），右主列（状态条 + 面板 + 选项抽屉 + 状态栏）。
+     布局对齐 obfuscator.io dashboard；app.js 全部按 id 取元素，容器怎么挪都不影响接线。 -->
+<div class="shell">
+  <aside class="sidebar">
+    <div class="brand">
+      <span class="logo" aria-hidden="true">🌀</span>
+      <div class="brand-text">
+        <h1 data-i18n="guiTitle">JsLabyrinth 混淆器</h1>
+        <span class="ver" id="ver"></span>
       </div>
     </div>
-    <div class="files" id="files" hidden></div>
-    <textarea id="input" class="editor" spellcheck="false" autocomplete="off"
-      data-i18n-aria="guiInput" aria-label="input"
-      placeholder="// 在此粘贴 JavaScript，或把 .js / .html 文件拖进这个面板"></textarea>
-    <div class="pane-foot">
-      <span id="inInfo" class="dim"></span>
-      <span id="dropHint" class="dim" data-i18n="guiDropHint">拖入 .js / .html 文件，或直接粘贴代码到左侧</span>
-    </div>
-  </section>
 
-  <section class="pane" id="outputPane">
-    <div class="pane-head">
-      <h2 data-i18n="guiOutput">输出</h2>
-      <div class="pane-tools">
-        <button id="runBtn" class="primary" type="button" data-i18n="guiRun">开始混淆</button>
-        <button id="copyBtn" class="mini" type="button" data-i18n="guiCopy">复制</button>
-        <button id="dlBtn" class="mini" type="button" data-i18n="guiDownload">下载</button>
-        <button id="zipBtn" class="mini" type="button" hidden data-i18n="guiDownloadZip">打包下载</button>
-      </div>
-    </div>
-    <textarea id="output" class="editor" spellcheck="false" readonly
-      data-i18n-aria="guiAriaOutput" aria-label="output"
-      placeholder="// 混淆结果"></textarea>
-    <div class="pane-foot">
-      <span id="outInfo" class="dim"></span>
-      <span id="outSize" class="dim"></span>
-    </div>
-    <details id="statsBox" class="stats" hidden>
-      <summary data-i18n="guiStats">混淆统计</summary>
-      <div id="statsBody" class="stats-body"></div>
-    </details>
-  </section>
-</main>
+    <div class="presets" id="presets" role="radiogroup" data-i18n-aria="guiAriaPresets" aria-label="preset"></div>
 
-<section class="drawer" id="drawer" data-open="1">
-  <div class="drawer-inner">
-    <div class="drawer-cols">
-      <div class="drawer-col">
-        <h3 data-i18n="guiLicense">授权</h3>
-        <div class="lic-box">
-          <div id="licInfo" class="dim"></div>
-          <label class="row field">
-            <span data-i18n="guiApiEndpoint">服务地址</span>
-            <input id="apiBase" class="text" type="text" placeholder="/" spellcheck="false">
-          </label>
-          <label class="row field">
-            <span data-i18n="guiLicenseKey">卡密</span>
-            <input id="licKey" class="text" type="text" autocomplete="off" spellcheck="false" placeholder="JSLB-...">
-          </label>
-          <div class="row btns">
-            <button id="actBtn" class="mini" type="button" data-i18n="guiActivate">激活</button>
-            <button id="deactBtn" class="mini" type="button" data-i18n="guiDeactivate">解除激活</button>
+    <div class="side-foot">
+      <select id="lang" class="mini" data-i18n-aria="guiAriaLang" aria-label="language">
+        <option value="zh">中文</option>
+        <option value="en">English</option>
+      </select>
+      <button id="themeBtn" class="mini" type="button" data-i18n-title="guiAriaTheme" data-i18n-aria="guiAriaTheme" title="theme">
+        <span data-i18n="guiThemeDark">深色</span>
+      </button>
+    </div>
+  </aside>
+
+  <div class="main">
+    <header class="mainbar">
+      <span class="mainbar-spacer"></span>
+      <span class="badge" id="apiState" hidden></span>
+      <span class="badge" id="licBadge"></span>
+      <button id="optsBtn" class="mini" type="button" aria-expanded="true" aria-controls="drawer"
+        data-i18n-aria="guiAriaOptions" data-i18n-title="guiAriaOptions">
+        <span data-i18n="guiOptions">选项</span> ▾
+      </button>
+    </header>
+
+    <main class="panes">
+      <section class="pane" id="inputPane">
+        <div class="pane-head">
+          <h2 data-i18n="guiInput">输入</h2>
+          <div class="pane-tools">
+            <select id="mode" class="mini" data-i18n-aria="guiAriaMode" aria-label="mode">
+              <option value="auto" data-i18n="guiModeAuto">自动识别</option>
+              <option value="js" data-i18n="guiModeJs">JavaScript</option>
+              <option value="html" data-i18n="guiModeHtml">HTML 内联脚本</option>
+            </select>
+            <button id="openBtn" class="mini" type="button" data-i18n="guiOpenFiles">打开文件</button>
+            <button id="clearBtn" class="mini" type="button" data-i18n="guiClear">清空</button>
+            <input id="fileInput" type="file" multiple accept=".js,.mjs,.cjs,.html,.htm,.xhtml,.txt" hidden>
           </div>
-          <div id="licDevice" class="dim mono"></div>
         </div>
-        <p class="hint" id="apiHint"></p>
+        <div class="files" id="files" hidden></div>
+        <textarea id="input" class="editor" spellcheck="false" autocomplete="off"
+          data-i18n-aria="guiInput" aria-label="input"
+          placeholder="// 在此粘贴 JavaScript，或把 .js / .html 文件拖进这个面板"></textarea>
+        <div class="pane-foot">
+          <span id="inInfo" class="dim"></span>
+          <span id="dropHint" class="dim" data-i18n="guiDropHint">拖入 .js / .html 文件，或直接粘贴代码到左侧</span>
+        </div>
+      </section>
 
-        <h3 data-i18n="guiSeedTitle">随机种子</h3>
-        <label class="row field">
-          <input id="seed" class="text" type="text" inputmode="numeric" placeholder="—" spellcheck="false">
-        </label>
-        <p class="hint" data-i18n="guiSeed">随机种子（留空即每次不同）</p>
+      <section class="pane" id="outputPane">
+        <div class="pane-head">
+          <h2 data-i18n="guiOutput">输出</h2>
+          <div class="pane-tools">
+            <button id="runBtn" class="primary" type="button" data-i18n="guiRun">开始混淆</button>
+            <button id="copyBtn" class="mini" type="button" data-i18n="guiCopy">复制</button>
+            <button id="dlBtn" class="mini" type="button" data-i18n="guiDownload">下载</button>
+            <button id="zipBtn" class="mini" type="button" hidden data-i18n="guiDownloadZip">打包下载</button>
+          </div>
+        </div>
+        <textarea id="output" class="editor" spellcheck="false" readonly
+          data-i18n-aria="guiAriaOutput" aria-label="output"
+          placeholder="// 混淆结果"></textarea>
+        <div class="pane-foot">
+          <span id="outInfo" class="dim"></span>
+          <span id="outSize" class="dim"></span>
+        </div>
+        <details id="statsBox" class="stats" hidden>
+          <summary data-i18n="guiStats">混淆统计</summary>
+          <div id="statsBody" class="stats-body"></div>
+        </details>
+      </section>
+    </main>
+
+    <section class="drawer" id="drawer" data-open="1">
+      <div class="drawer-inner">
+        <div class="drawer-cols">
+          <div class="drawer-col">
+            <h3 data-i18n="guiLicense">授权</h3>
+            <div class="lic-box">
+              <div id="licInfo" class="dim"></div>
+              <label class="row field">
+                <span data-i18n="guiApiEndpoint">服务地址</span>
+                <input id="apiBase" class="text" type="text" placeholder="/" spellcheck="false">
+              </label>
+              <label class="row field">
+                <span data-i18n="guiLicenseKey">卡密</span>
+                <input id="licKey" class="text" type="text" autocomplete="off" spellcheck="false" placeholder="JSLB-...">
+              </label>
+              <div class="row btns">
+                <button id="actBtn" class="mini" type="button" data-i18n="guiActivate">激活</button>
+                <button id="deactBtn" class="mini" type="button" data-i18n="guiDeactivate">解除激活</button>
+              </div>
+              <div id="licDevice" class="dim mono"></div>
+            </div>
+            <p class="hint" id="apiHint"></p>
+
+            <h3 data-i18n="guiSeedTitle">随机种子</h3>
+            <label class="row field">
+              <input id="seed" class="text" type="text" inputmode="numeric" placeholder="—" spellcheck="false">
+            </label>
+            <p class="hint" data-i18n="guiSeed">随机种子（留空即每次不同）</p>
+          </div>
+
+          <div class="drawer-col wide" id="optCols"></div>
+        </div>
+        <div class="drawer-foot">
+          <span class="hint" id="presetHint" data-i18n="guiPresetHint">预设只提供默认值，下面的显式选项逐字段覆盖它。</span>
+          <button id="resetBtn" class="mini" type="button" data-i18n="guiReset">恢复默认选项</button>
+        </div>
       </div>
+    </section>
 
-      <div class="drawer-col wide" id="optCols"></div>
-    </div>
-    <div class="drawer-foot">
-      <span class="hint" id="presetHint" data-i18n="guiPresetHint">预设只提供默认值，下面的显式选项逐字段覆盖它。</span>
-      <button id="resetBtn" class="mini" type="button" data-i18n="guiReset">恢复默认选项</button>
-    </div>
+    <footer class="statusbar">
+      <span id="status" class="status" role="status" aria-live="polite"></span>
+      <span id="shortcutHint" class="hint"></span>
+      <span id="quota" class="dim right"></span>
+    </footer>
   </div>
-</section>
-
-<footer class="statusbar">
-  <span id="status" class="status" role="status" aria-live="polite"></span>
-  <span id="shortcutHint" class="hint"></span>
-  <span id="quota" class="dim right"></span>
-</footer>
+</div>
 
 <script type="module" src="./app.js"></script>
 </body>
