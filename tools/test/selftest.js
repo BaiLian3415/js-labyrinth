@@ -242,10 +242,13 @@ section('HTML 内联脚本');
 section('套餐闸门与提示');
 {
   const plusEnt = { ...plan.describe('plus'), trial: false };
-  ok(gate.checkOptions({ preset: 'medium' }, plusEnt).ok, '套餐自带预设可用（Plus 上限为 medium）');
+  ok(gate.checkOptions({ preset: 'high' }, plusEnt).ok, '套餐自带预设可用（Plus 上限为 high）');
   ok(!gate.checkOptions({ preset: 'max' }, plusEnt).ok, '超出套餐预设上限被拦');
-  ok(!gate.checkOptions({ envFingerprint: true }, plusEnt).ok, '套餐不提供的开关被拦');
-  ok(!gate.checkOptions({ stringArrayThreshold: 0.9 }, plusEnt).ok, '超上限的数值被拦');
+  // 这两条必须挑 Plus **确实还拦着**的项：提档会连带放宽若干开关与数值，原先拿
+  // envFingerprint / 更松的阈值当样本，2026-09-22 把 Plus 提到 high 后就变成了
+  // "本该被拦却被放行"的假失败。
+  ok(!gate.checkOptions({ consoleStub: true }, plusEnt).ok, '套餐不提供的开关被拦');
+  ok(!gate.checkOptions({ controlFlowDepth: 3 }, plusEnt).ok, '超上限的数值被拦');
   ok(gate.checkOptions({ preset: 'low', mangle: false }, plusEnt).ok, '关掉开关始终允许');
   ok(gate.checkOptions({}, plusEnt).ok, '什么都不写不被拦（用套餐自带预设）');
   // 档位阶梯（低档每一项都不得超过高档）由 plan.js 的 assertConsistent() 在模块
@@ -272,20 +275,26 @@ section('卡密与令牌');
   // 签发用私钥种子，验签用公钥——两把不是同一个东西，这正是非对称的意义。
   const seed = TEST_SIGNING_SEED;
   const pub = TEST_PUBLIC_KEY;
+  // 套餐字符从 plans.js 取，不硬编码：删档/换档时它会跟着变。2026-09-22 删掉 Pro
+  // 后，硬编码的 "R" 让下面两条"篡改"变成了空操作（replace 找不到目标）——
+  // 产物没被改动，测试却期望验签失败，于是报出两个**假失败**。
+  const planCh = plan.planCode('plus');
+  const otherCh = planCh === plan.planCode('business') ? plan.planCode('free') : plan.planCode('business');
   const code = codec.issueCode(seed, 'plus', 30, '12345');
-  ok(!!code && code.startsWith('JSLB-R-'), '可签发 Pro/30 天卡密', code);
+  ok(!!code && code.startsWith('JSLB-' + planCh + '-'), '可签发 Plus/30 天卡密', code);
   const parsed = codec.parseCode(pub, code);
   ok(parsed.ok && parsed.plan === 'plus' && parsed.days === 30, '卡密可解析且套餐天数正确');
   ok(parsed.id === '12345', '编号可还原（编号段已压到 40 bit）');
   ok(typeof parsed.issueDay === 'number' && parsed.issueDay >= 0, '卡密带签发日');
   ok(parsed.bound === false, '未指定机器码时卡密为"不绑定"');
   ok(codec.parseCode(pub, code.toLowerCase().replace(/-/g, ' ')).ok, '小写与分隔符容错');
-  ok(!codec.parseCode(pub, code.replace(/-R-/, '-B-')).ok, '改套餐段导致签名失败');
+  // 换成**另一个有效档位**：确保失败原因是签名，而不是"套餐段不认识"
+  ok(!codec.parseCode(pub, code.replace('-' + planCh + '-', '-' + otherCh + '-')).ok, '改套餐段导致签名失败');
   ok(!codec.parseCode(pub, code.slice(0, -1) + '0').ok, '改签名段失败');
   ok(!codec.parseCode(pub, 'JSLB-X-00-000-' + '0'.repeat(8) + '-' + '0'.repeat(16) + '-' + '0'.repeat(103)).ok, '未知套餐段失败');
   // 签发日也在签名载荷里，改它必须失败——否则本地能把到期时间往后挪
   const shiftedDay = codec.issueCode(seed, 'plus', 30, '12345', 1000);
-  const tamperedDay = shiftedDay.replace(/^(JSLB-R-..-)(...)/, (m, a) => a + '001');
+  const tamperedDay = shiftedDay.replace(new RegExp('^(JSLB-' + planCh + '-..-)(...)'), (m, a) => a + '001');
   ok(!codec.parseCode(pub, tamperedDay).ok, '改签发日导致签名失败');
 
   // 编号段超界必须拒绝——压缩段宽后原来的 20 位编号再也放不下
@@ -526,7 +535,7 @@ section('签发工具命令行（编号分配与 --bind）');
   }
   if (first !== null) {
     const line = first.trim().split('\n')[0].trim();
-    ok(/^JSLB-R-/.test(line), '首次签发 --bind 得到卡密', line.slice(0, 24) + '…');
+    ok(line.startsWith('JSLB-' + plan.planCode('plus') + '-'), '首次签发 --bind 得到卡密', line.slice(0, 24) + '…');
     // 卡密是假私钥签的，验签必然不过，所以这里只校验段结构：能切出绑定段、
     // 且编号落在 40 bit 之内，就说明 allocateId 没把越界编号交出去。
     const segs = codec.normalizeCode(line);
@@ -692,7 +701,7 @@ section('一次性额度包与解除激活');
     licenseWeb.resetRequestState();
     licenseWeb.setRequestDeviceId(devSub);
     const mid = await licenseWeb.machineId();
-    const parsed = codec.parseCode(TEST_PUBLIC_KEY, proCode);
+    const parsed = codec.parseCode(TEST_PUBLIC_KEY, plusCode);
     const rec = licCore.makeRecord({
       code: parsed.code, plan: parsed.plan, machine: mid,
       issuedAt: Date.now(), expiresAt: licCore.expiryFromIssueDay(parsed),
@@ -707,7 +716,7 @@ section('一次性额度包与解除激活');
   // 解除激活：本设备那份必须真的从 KV 里消失
   licenseWeb.resetRequestState();
   licenseWeb.setRequestDeviceId(devSub);
-  const act2 = await licenseWeb.activate(proCode);
+  const act2 = await licenseWeb.activate(plusCode);
   ok(act2.ok && act2.plan === 'plus', '另一台设备激活成功');
   ok(store.has('jslabyrinth.license.v2:' + devSub), '许可证按设备码分键存进 KV');
   await licenseWeb.deactivate();
@@ -789,7 +798,7 @@ section('Cloudflare Worker 路由');
   const actJson = await act.json();
   ok(act.status === 200 && actJson.ok === true && actJson.plan === 'plus' && actJson.trial === false,
     'POST /api/license 激活 Pro 卡密', JSON.stringify(actJson && actJson.message));
-  ok(actJson.preset === 'medium', '激活后预设上限取自套餐');
+  ok(actJson.preset === plan.presetCeiling('plus'), '激活后预设上限取自套餐');
 
   const afterAct = await call('/api/obfuscate', {
     method: 'POST',
@@ -802,7 +811,7 @@ section('Cloudflare Worker 路由');
 
   const tampered = await call('/api/obfuscate', {
     method: 'POST',
-    headers: { 'content-type': 'application/json', 'X-JSLB-Key': issued.replace(/-R-/, '-B-') },
+    headers: { 'content-type': 'application/json', 'X-JSLB-Key': issued.replace('-' + plan.planCode('plus') + '-', '-' + plan.planCode('business') + '-') },
     body: JSON.stringify({ code: SAMPLE, options: { preset: 'low' } }),
   });
   ok(tampered.status === 401, '改过套餐段的卡密被拒（401）');
