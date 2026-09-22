@@ -209,12 +209,6 @@ Plus 的预设上限是 `high`，闸门正好卡在 `high` 预设的取值上（
 单项往上调），只关掉 `consoleStub` 一个开关；Free 则关掉十二个。Team 与 Business 同为
 `max` 且都不设闸门，差别只剩配额（7 MB / 200 次 对 10 MB / 1000 次）。
 
-> **2026-09-22 删除 Pro 档**：原 Pro 的预设上限是 `medium`，夹在 Plus(medium) 与
-> Team(high) 之间，删掉之后 Plus 提到 `high`、Team 提到 `max`，阶梯变为
-> Free(low) < Plus(high) < Team(max) = Business(max)。
-> **已签发的 Pro 卡密（套餐字符 `R`）随之全部作废**——`parseCode` 再也查不到 `R`
-> 对应的档位，直接以 `reason:"plan"` 拒绝，需要重新签发。
-
 订阅档与额度包**不排在同一条阶梯上**：两者的配额口径不同（一个按日、一个按总额），
 `src/plan.js` 的档位阶梯不变式因此只在同族内比较。
 

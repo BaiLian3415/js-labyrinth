@@ -40,15 +40,10 @@ export default {
       "shellDepth": 1
     }
   },
-  // 2026-09-22：Pro 档删除，Plus 预设上限由 medium 提到 high，Team 由 high 提到
-  // max。删档会**作废已签发的 Pro 卡密**（卡密里的套餐字符 "R" 再也解析不出档位，
-  // parseCode 直接返回 reason:"plan"），需要另行补发。
-  //
-  // 阶梯因此变为 Free(low) < Plus(high) < Team(max) = Business(max)：Plus 与 Team
-  // 之间不再有 Pro 垫着，所以 Plus 的闸门必须整体放宽到能放行 high 的每一个取值
-  // （尤其是 envFingerprint —— high 会打开它，旧的 Plus 把它关着，不改就违反
-  // "自带预设必须满足自己的每一条闸门"）。Team 与 Business 同为 max 且不设闸门，
-  // 差别只剩配额。
+  // 2026-09-22 起：订阅档为 Free(low) < Plus(high) < Team(max) = Business(max)。
+  // 提预设上限必须同时把闸门放宽到能放行该预设的**每一个**取值——high 会打开
+  // envFingerprint，闸门若仍把它关着，加载期就会被 assertConsistent() 拦下。
+  // Team 与 Business 同为 max 且都不设闸门，差别只剩配额。
   "plus": {
     "rank": 1,
     "code": "P",

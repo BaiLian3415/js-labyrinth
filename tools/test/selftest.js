@@ -275,9 +275,9 @@ section('卡密与令牌');
   // 签发用私钥种子，验签用公钥——两把不是同一个东西，这正是非对称的意义。
   const seed = TEST_SIGNING_SEED;
   const pub = TEST_PUBLIC_KEY;
-  // 套餐字符从 plans.js 取，不硬编码：删档/换档时它会跟着变。2026-09-22 删掉 Pro
-  // 后，硬编码的 "R" 让下面两条"篡改"变成了空操作（replace 找不到目标）——
-  // 产物没被改动，测试却期望验签失败，于是报出两个**假失败**。
+  // 套餐字符从 plans.js 取，不硬编码：删档/换档时它会跟着变。硬编码过一次，结果
+  // 档位删掉后 replace 找不到目标，"篡改"变成了空操作——产物没改动，测试却期望
+  // 验签失败，于是报出**假失败**（这类断言失效不报错、只报错在别处，最难查）。
   const planCh = plan.planCode('plus');
   const otherCh = planCh === plan.planCode('business') ? plan.planCode('free') : plan.planCode('business');
   const code = codec.issueCode(seed, 'plus', 30, '12345');
@@ -797,7 +797,7 @@ section('Cloudflare Worker 路由');
   });
   const actJson = await act.json();
   ok(act.status === 200 && actJson.ok === true && actJson.plan === 'plus' && actJson.trial === false,
-    'POST /api/license 激活 Pro 卡密', JSON.stringify(actJson && actJson.message));
+    'POST /api/license 激活 Plus 卡密', JSON.stringify(actJson && actJson.message));
   ok(actJson.preset === plan.presetCeiling('plus'), '激活后预设上限取自套餐');
 
   const afterAct = await call('/api/obfuscate', {

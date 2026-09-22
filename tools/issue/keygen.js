@@ -24,7 +24,7 @@
  * 卡密格式: JSLB-<套餐段>-<天数段>-<签发日段>-<编号段>-<绑定段>-<签名段>
  *   例: node tools/issue/keygen.js --plan plus --days 30 --count 3
  *
- * 套餐段 1 个字符（F=Free、P=Plus、R=Pro、T=Team、B=Business、S/M/W/C=一次性
+ * 套餐段 1 个字符（F=Free、P=Plus、T=Team、B=Business、S/M/W/C=一次性
  * 额度包 100/1000/10000/定制），决定这张卡能用的混淆选项范围与配额，定义见
  * src/plans.js。套餐段进签名载荷，用户改卡密上的字符换不到高档权益。--plans
  * 可直接打印各档差异。
