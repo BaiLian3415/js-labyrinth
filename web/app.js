@@ -171,6 +171,19 @@ function applyI18n() {
   document.title = t('guiTitle');
 }
 
+/**
+ * 主题按钮的文案：写"点下去会切到哪一侧"（与按钮上的图标同一语义），
+ * 而不是"当前是哪一侧"。
+ *
+ * 它不能挂 data-i18n：那个属性归 applyI18n() 管，会把文案一律刷成写死的那一个键，
+ * 于是每次加载/切语言后按钮都显示"深色"——哪怕此刻已经是深色主题。所以文案由这里
+ * 按 state.theme 单独渲染，init 与切语言后各调一次。
+ */
+function renderThemeBtn() {
+  els.themeBtn.querySelector('span').textContent =
+    state.theme === 'light' ? t('guiThemeDark') : t('guiThemeLight');
+}
+
 // ---------- 选项面板 ----------
 
 /**
@@ -333,10 +346,27 @@ function refreshGateStyles() {
 
 function renderPresets() {
   els.presets.textContent = '';
+  // 每档一句强度说明，补可读性（"更快还是更硬"一句话讲清）。
+  // 键必须写成字面量而不是拼字符串：selftest 会扫 t('...') 里的字面量来校验"界面用到的
+  // 文案键都已定义"，拼出来的键会被截成半截（presetDesc）而误判为缺失。
+  // 放在函数里而不是模块顶层，是为了切语言时跟着重新渲染。
+  const descs = {
+    low: t('presetDescLow'),
+    medium: t('presetDescMedium'),
+    high: t('presetDescHigh'),
+    max: t('presetDescMax'),
+  };
   for (const name of PRESET_NAMES) {
     const b = document.createElement('button');
     b.type = 'button';
-    b.textContent = name;
+    // 两行结构：档位名 + 强度说明。点击行为、aria-pressed 单选语义与原先完全一致。
+    const label = document.createElement('span');
+    label.className = 'preset-name';
+    label.textContent = name;
+    const desc = document.createElement('span');
+    desc.className = 'preset-desc';
+    desc.textContent = descs[name] || '';
+    b.append(label, desc);
     b.setAttribute('role', 'radio');
     b.setAttribute('aria-pressed', String(state.preset === name));
     b.addEventListener('click', () => {
@@ -1080,13 +1110,13 @@ async function init() {
   setLang(state.lang);
   els.lang.value = state.lang;
   document.documentElement.className = state.theme === 'light' ? 'light' : '';
-  els.themeBtn.querySelector('span').textContent = state.theme === 'light' ? t('guiThemeDark') : t('guiThemeLight');
   els.ver.textContent = 'v' + VERSION + ' · ' + runtimeInfo.runtime;
   els.mode.value = state.mode;
   els.apiBase.value = state.apiBase;
   els.seed.value = state.seed;
 
   applyI18n();
+  renderThemeBtn();   // 必须在 applyI18n() 之后：见 renderThemeBtn 的说明
   renderPresets();
   renderOptions();
 
@@ -1095,6 +1125,7 @@ async function init() {
     state.lang = els.lang.value;
     setLang(state.lang);
     applyI18n();
+    renderThemeBtn();   // 主题文案不挂 data-i18n，切语言后要自己重渲染
     renderOptions();
     renderPresets();
     renderFiles();
@@ -1107,7 +1138,7 @@ async function init() {
   els.themeBtn.addEventListener('click', () => {
     state.theme = state.theme === 'light' ? 'dark' : 'light';
     document.documentElement.className = state.theme === 'light' ? 'light' : '';
-    els.themeBtn.querySelector('span').textContent = state.theme === 'light' ? t('guiThemeDark') : t('guiThemeLight');
+    renderThemeBtn();
     saveState();
   });
 

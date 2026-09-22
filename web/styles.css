@@ -124,12 +124,15 @@ body {
 
 /* grid 两栏：左导航固定宽，右主列自适应。body 是 flex column，
    .shell 吃掉剩余高度；min-height:0 防止 grid/flex 子项把页面撑出滚动。
-   app.js 全按 id 取元素，容器结构怎么换都不影响接线——这是敢动布局的前提。 */
+   app.js 全按 id 取元素，容器结构怎么换都不影响接线——这是敢动布局的前提。
+
+   栏宽 216px：预设项改两行（名称 + 强度说明）后左对齐的导航行不再需要 236px，
+   收窄的 20px 全给右侧编辑区，同时让左栏的"空"看起来更收敛。 */
 .shell {
   flex: 1 1 auto;
   min-height: 0;
   display: grid;
-  grid-template-columns: 236px minmax(0, 1fr);
+  grid-template-columns: 216px minmax(0, 1fr);
 }
 
 .main {
@@ -144,8 +147,8 @@ body {
 .sidebar {
   display: flex;
   flex-direction: column;
-  gap: 10px;
-  padding: 14px 12px;
+  gap: 14px;
+  padding: 16px 14px;
   background-color: var(--bg-soft);
   background-image: var(--grad-pane);
   border-right: 1px solid var(--line);
@@ -157,22 +160,64 @@ body {
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 2px 4px 8px;
+  padding: 0 2px 2px;
   min-width: 0;
 }
 
-.brand .logo { font-size: 22px; }
-.brand-text { display: flex; flex-direction: column; min-width: 0; }
-.brand h1 { font-size: 16px; margin: 0; font-weight: 700; letter-spacing: -.01em; white-space: nowrap; }
-.brand .ver { color: var(--fg-dim); font-size: 12px; }
+/* 品牌标记做成圆角色块，与下面成排的控件共用同一套圆角与强调色。
+   原来只是一个裸 emoji，和控件不在同一视觉层级上。 */
+.brand .logo {
+  display: grid;
+  place-items: center;
+  flex: 0 0 auto;
+  width: 34px;
+  height: 34px;
+  font-size: 18px;
+  line-height: 1;
+  border-radius: var(--radius);
+  background: var(--accent-dim);
+  box-shadow: inset 0 0 0 1px var(--line);
+}
+.brand-text { display: flex; flex-direction: column; min-width: 0; gap: 1px; }
+.brand h1 { font-size: 15px; margin: 0; font-weight: 700; letter-spacing: -.01em; white-space: nowrap; }
+.brand .ver { color: var(--fg-dim); font-size: 11.5px; }
 
-/* 预设档位在侧边栏里变成垂直导航项（dashboard 的 nav 语言）：
-   去掉分段控件的容器感（描边/底/圆角），按钮拉满宽度、左对齐。
-   选中态复用全局的 accent-dim + 内描边规则，看着就是激活的导航项。 */
+/* 侧栏分组：小标题 + 内容，做成一张浅卡片。给导航以视觉重量，中段那段留白
+   因此读作"两张卡片之间的间距"，而不是"这一栏没放东西"。
+   卡片样式在 ≤900px 自动失效——那一档 .side-group 是 display:contents，不产生盒子。 */
+.side-group {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px;
+  border-radius: var(--radius);
+  background-color: var(--bg-pane);
+  background-image: var(--grad-chip);
+  border: 1px solid var(--line-soft);
+}
+
+/* 分组小标题在"预设/设置"两处复用，字体与颜色统一，作为左栏的视觉锚点：
+   它们把四散的控件收拢成两组，中间那段留白因此读起来是"分组之间"而不是"没放东西"。 */
+.side-label {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: .09em;
+  text-transform: uppercase;
+  color: var(--fg-dim);
+  padding: 0 2px;
+}
+
+/* 预设档位在侧边栏里是垂直导航项：拉满宽度、两行（档位名 + 强度说明）、左对齐。
+   选中态复用全局的 accent-dim + 内描边规则，看着就是激活的导航项。
+
+   ⚠️ display:flex 必须显式写。这里原先只有 flex-direction:column 而没有 display，
+   于是按钮按 inline-block 像文字一样横排换行（整列只占 71px 高），
+   加上 .side-foot 的 margin-top:auto，中间就空出 559px——左栏"留白过多"的根因。 */
 .sidebar .presets {
+  display: flex;
   flex-direction: column;
   align-items: stretch;
-  gap: 2px;
+  gap: 5px;
   padding: 0;
   background: none;
   border: 0;
@@ -180,25 +225,67 @@ body {
 }
 
 .sidebar .presets button {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  width: 100%;
+  min-width: 0;
   text-align: left;
-  padding: 8px 12px;
+  padding: 10px 12px;
   border-radius: 8px;
+  position: relative;
 }
+
+/* 选中态左侧强调条用伪元素，而不是再叠一层 box-shadow：
+   选中描边已经由 .presets button[aria-pressed=true] 负责，被套餐拦下时那条描边
+   还要转成红色，阴影叠加会互相覆盖。 */
+.sidebar .presets button::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 9px;
+  bottom: 9px;
+  width: 3px;
+  border-radius: 0 3px 3px 0;
+  background: var(--accent);
+  opacity: 0;
+  transition: opacity var(--dur-fast) var(--ease-out);
+}
+.sidebar .presets button[aria-pressed="true"]::before { opacity: 1; }
+.presets.blocked button[aria-pressed="true"]::before { background: var(--err); }
+
+.preset-name {
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.3;
+  text-transform: capitalize;
+}
+.preset-desc { font-size: 11.5px; line-height: 1.35; color: var(--fg-dim); }
+/* 选中项描述跟着提亮一档：accent-dim 底上 #94a3b8 的对比度偏低 */
+.sidebar .presets button[aria-pressed="true"] .preset-desc { color: var(--fg); opacity: .78; }
 
 /* 悬停底色用带 alpha 的字面量：主题切换时它不需要过渡（悬停是瞬态），
    而底下的 .sidebar 自己会过渡，两层观感一致 */
 .sidebar .presets button:hover { background: rgba(148,163,184,.10); }
 
+/* 底部设置组：与上面的预设组共用同一套标题、间距与控件尺寸语言。
+   两个控件统一 34px 高、满宽、同字号——原来是 30px 与 32px，并排看高度不齐。 */
 .side-foot {
   margin-top: auto;
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 8px;
   padding-top: 12px;
   border-top: 1px solid var(--line-soft);
 }
 
-.side-foot .mini { width: 100%; }
+.side-foot .mini { width: 100%; height: 34px; padding: 0 10px; }
+
+/* 主题按钮的图标与品牌标记同属 emoji 字形。图标只表示"点下去会切到哪一侧"，
+   文案仍由 JS 按当前主题写入——这里不参与任何逻辑。 */
+#themeBtn::before { content: '☀️'; margin-right: 6px; font-size: 13px; }
+html.light #themeBtn::before { content: '🌙'; }
 
 /* ---------- 主列顶条 ---------- */
 
@@ -931,7 +1018,10 @@ button.primary:hover:not(:disabled) { filter: brightness(1.1); }
 }
 
 @media (max-width: 900px) {
-  /* 窄屏：侧边栏折回顶部横条（回到旧 topbar 的形态），预设横向换行 */
+  /* 窄屏：侧边栏折回顶部横条（回到旧 topbar 的形态），预设横向换行。
+     桌面那套"分组标题 + 两行预设项"在这一档全部撤掉：横条里多一行标题就白占高度，
+     说明文字也会把每个档位撑成两行。display:contents 让 .side-group 自身不参与布局，
+     它的子元素（#presets）回到 .sidebar 的直接子项位置，与改造前完全一致。 */
   .shell { grid-template-columns: 1fr; grid-template-rows: auto 1fr; }
   .sidebar {
     flex-direction: row;
@@ -944,7 +1034,12 @@ button.primary:hover:not(:disabled) { filter: brightness(1.1); }
     overflow: visible;
   }
   .brand { padding: 0; }
+  .side-group { display: contents; }
+  .side-label { display: none; }
+  .preset-desc { display: none; }
   .sidebar .presets { flex-direction: row; flex-wrap: wrap; }
+  /* 桌面那条 width:100% 是为竖排导航写的，横条里必须放回内容宽度 */
+  .sidebar .presets button { width: auto; padding: 6px 12px; }
   .side-foot {
     margin-top: 0;
     margin-left: auto;

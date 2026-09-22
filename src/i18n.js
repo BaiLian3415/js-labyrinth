@@ -196,6 +196,14 @@ const STRINGS = {
     guiModeHtml: 'HTML 内联脚本',
     guiOptions: '选项',
     guiPreset: '混淆强度预设',
+    /* 侧栏预设导航的第二行说明。一句话讲清"更快还是更硬"，用户不必逐个试。
+       文案与 presets.js 的实际强度对应：low 不启用 vm/wasm/反调试，medium 启用，
+       high 把各项阈值拉满并开脸环境指纹，max 再加弦池逐次演化与更深的外壳。 */
+    presetDescLow: '最快 · 体积最小',
+    presetDescMedium: '均衡 · 推荐',
+    presetDescHigh: '更强防护 · 明显变慢',
+    presetDescMax: '最强 · 最慢',
+    guiSettings: '设置',
     guiAdvanced: '逐项选项',
     guiSeedTitle: '随机种子',
     guiSeed: '留空即每次不同；填写后同样的输入产出同样的结果',
@@ -448,6 +456,11 @@ const STRINGS = {
     guiModeHtml: 'HTML inline scripts',
     guiOptions: 'Options',
     guiPreset: 'Strength preset',
+    presetDescLow: 'Fastest · smallest',
+    presetDescMedium: 'Balanced · recommended',
+    presetDescHigh: 'Stronger · slower',
+    presetDescMax: 'Strongest · slowest',
+    guiSettings: 'Settings',
     guiAdvanced: 'Individual options',
     guiSeedTitle: 'Random seed',
     guiSeed: 'blank = different every run; a fixed value reproduces the same output',

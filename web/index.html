@@ -50,15 +50,23 @@
       </div>
     </div>
 
-    <div class="presets" id="presets" role="radiogroup" data-i18n-aria="guiAriaPresets" aria-label="preset"></div>
+    <div class="side-group">
+      <!-- 分组标题只在桌面（>900px）起作用：窄屏下侧栏折成顶条，标题会白占一行，
+           所以 ≤900px 时由 CSS 隐掉。文本走既有的 data-i18n 机制。 -->
+      <span class="side-label" data-i18n="guiPreset">预设</span>
+      <div class="presets" id="presets" role="radiogroup" data-i18n-aria="guiAriaPresets" aria-label="preset"></div>
+    </div>
 
     <div class="side-foot">
+      <span class="side-label" data-i18n="guiSettings">设置</span>
       <select id="lang" class="mini" data-i18n-aria="guiAriaLang" aria-label="language">
         <option value="zh">中文</option>
         <option value="en">English</option>
       </select>
       <button id="themeBtn" class="mini" type="button" data-i18n-title="guiAriaTheme" data-i18n-aria="guiAriaTheme" title="theme">
-        <span data-i18n="guiThemeDark">深色</span>
+        <!-- 文案由 renderThemeBtn() 按当前主题写入（写"点了会切到哪一侧"），刻意不挂
+             data-i18n：applyI18n() 会把它一律刷成写死的那一个键，加载后永远显示"深色"。 -->
+        <span>深色</span>
       </button>
     </div>
   </aside>
