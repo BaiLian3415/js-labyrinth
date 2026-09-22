@@ -2,6 +2,15 @@
 
 :root {
   color-scheme: dark;
+  /* 纯色基色。**不能删**：它们是主题切换过渡的载体。
+     background-image（渐变）在 Chrome 里不参与插值，只写 gradient 的话
+     切主题会硬跳（实测：过渡中只采到 1 个不同帧）。所以每块面都是
+     「下层纯色 + 上层渐变」，纯色负责过渡、渐变负责观感：
+       background-color: var(--bg);
+       background-image: var(--grad-page);
+     两者同时存在时 background-image 盖在 background-color 上，
+     而 background-color 的过渡仍然可见（渐变多为半透明感的低对比层）。
+     纯色值取对应渐变的中间调，保证过渡过程中不出现突兀中间色。 */
   --bg: #0e1116;
   --bg-soft: #151a21;
   --bg-pane: #12171e;
@@ -17,13 +26,31 @@
   --mono: ui-monospace, "Cascadia Mono", "JetBrains Mono", Consolas, "Courier New", monospace;
   --ui: system-ui, -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
   --radius: 8px;
+
+  /* 渐变层。色相全部取自 --accent（#4ea3ff）的低饱和邻域，明度做细微过渡；
+     深色主题低明度起底，避免大面积高饱和渐变把文字压得看不清。
+
+     六条按用途分层（页面 / 横条 / 面板 / 凹槽 / 强调 / 小片），
+     不是按颜色分——这样调某类区域时知道该动哪一条。
+
+     ⚠️ 这些渐变的色值**必须带 alpha**（rgba 而不是 #rrggbb）。
+     原因见上面 --bg* 的注释：主题过渡实际由下层 background-color 承担，
+     渐变若完全不透明就会把它整块盖住，切主题又变回硬跳。
+     实测过：全不透明的 6 位色值下，切主题时像素从 [13,16,22] 直接跳到
+     [241,244,249]，中间零帧；改成半透明后才有连续过渡。 */
+  --grad-page: linear-gradient(160deg, rgba(30,44,64,.55) 0%, rgba(20,28,40,.34) 45%, rgba(10,14,20,.30) 100%);
+  --grad-bar: linear-gradient(90deg, rgba(38,54,76,.55) 0%, rgba(21,26,33,.30) 55%, rgba(22,30,42,.34) 100%);
+  --grad-pane: linear-gradient(170deg, rgba(32,46,66,.52) 0%, rgba(18,23,30,.26) 60%, rgba(15,20,27,.30) 100%);
+  --grad-well: linear-gradient(180deg, rgba(30,44,62,.50) 0%, rgba(14,20,28,.34) 100%);
+  --grad-accent: linear-gradient(135deg, #5aabff 0%, #3f93f0 100%);
+  --grad-chip: linear-gradient(135deg, rgba(34,48,68,.52) 0%, rgba(23,32,48,.38) 100%);
 }
 
 html.light {
   color-scheme: light;
   --bg: #f4f6f9;
-  --bg-soft: #ffffff;
-  --bg-pane: #ffffff;
+  --bg-soft: #f7f9fc;
+  --bg-pane: #fcfdff;
   --line: #d8dee7;
   --line-soft: #e6eaf0;
   --fg: #1b2430;
@@ -33,7 +60,18 @@ html.light {
   --ok: #1a7f52;
   --warn: #9a6b00;
   --err: #c0392b;
+
+  /* 浅色主题反过来：高明度起底、极低饱和，靠一点点蓝调把白拉开层次。
+     饱和度必须比深色那套更低——浅底上一点色偏就很显眼，容易显脏。
+     同样必须带 alpha，理由见深色那套的注释。 */
+  --grad-page: linear-gradient(160deg, rgba(214,228,248,.55) 0%, rgba(226,236,250,.35) 45%, rgba(214,226,244,.45) 100%);
+  --grad-bar: linear-gradient(90deg, rgba(220,232,248,.60) 0%, rgba(247,249,252,.25) 55%, rgba(226,236,250,.45) 100%);
+  --grad-pane: linear-gradient(170deg, rgba(255,255,255,.55) 0%, rgba(246,249,253,.30) 60%, rgba(232,240,250,.40) 100%);
+  --grad-well: linear-gradient(180deg, rgba(244,248,253,.60) 0%, rgba(228,237,250,.40) 100%);
+  --grad-accent: linear-gradient(135deg, #3b82f6 0%, #1f6feb 100%);
+  --grad-chip: linear-gradient(135deg, rgba(232,240,252,.65) 0%, rgba(219,230,246,.50) 100%);
 }
+
 
 * { box-sizing: border-box; }
 
@@ -45,7 +83,8 @@ html, body {
 body {
   display: flex;
   flex-direction: column;
-  background: var(--bg);
+  background-color: var(--bg);
+  background-image: var(--grad-page);
   color: var(--fg);
   font: 14px/1.5 var(--ui);
   overflow: hidden;
@@ -58,7 +97,8 @@ body {
   align-items: center;
   gap: 16px;
   padding: 10px 14px;
-  background: var(--bg-soft);
+  background-color: var(--bg-soft);
+  background-image: var(--grad-bar);
   border-bottom: 1px solid var(--line);
   flex: 0 0 auto;
 }
@@ -78,7 +118,8 @@ body {
   display: flex;
   gap: 4px;
   padding: 3px;
-  background: var(--bg-pane);
+  background-color: var(--bg-pane);
+  background-image: var(--grad-chip);
   border: 1px solid var(--line);
   border-radius: var(--radius);
 }
@@ -99,6 +140,8 @@ body {
 .presets.blocked { box-shadow: inset 0 0 0 1px var(--err); }
 .presets.blocked button[aria-pressed="true"] { color: var(--err); box-shadow: inset 0 0 0 1px var(--err); }
 .presets button[aria-pressed="true"] {
+  /* 选中态用实色强调底 + 内描边，刻意不用渐变：
+     渐变在这么小的按钮里看不出层次，反而让"选中"和"未选中"的区别变模糊。 */
   background: var(--accent-dim);
   color: var(--fg);
   box-shadow: inset 0 0 0 1px var(--accent);
@@ -131,7 +174,8 @@ body {
 .noscript {
   margin: 0;
   padding: 10px 14px;
-  background: var(--bg-soft);
+  background-color: var(--bg-soft);
+  background-image: var(--grad-chip);
   border-bottom: 1px solid var(--line);
   color: var(--warn);
   font-size: 13px;
@@ -140,7 +184,8 @@ body {
 /* ---------- 通用控件 ---------- */
 
 button.mini, select.mini {
-  background: var(--bg-pane);
+  background-color: var(--bg-pane);
+  background-image: var(--grad-chip);
   color: var(--fg);
   border: 1px solid var(--line);
   border-radius: 6px;
@@ -154,7 +199,10 @@ button.mini:hover, select.mini:hover { border-color: var(--accent); }
 button.mini:active { transform: translateY(1px); }
 
 button.primary {
-  background: var(--accent);
+  /* 主按钮用渐变的强调色。用 --accent 系而不是另起色相，
+     保证和 --accent-dim / 边框 / 徽章仍是一套语言。 */
+  background-color: var(--accent);
+  background-image: var(--grad-accent);
   color: #fff;
   border: 1px solid var(--accent);
   border-radius: 6px;
@@ -168,7 +216,8 @@ button.primary:hover { filter: brightness(1.08); }
 button.primary:disabled, button.mini:disabled { opacity: .5; cursor: not-allowed; }
 
 input.text {
-  background: var(--bg);
+  background-color: var(--bg);
+  background-image: var(--grad-well);
   color: var(--fg);
   border: 1px solid var(--line);
   border-radius: 6px;
@@ -200,7 +249,8 @@ input.text:focus, select.mini:focus, button:focus-visible, textarea:focus {
   flex-direction: column;
   min-width: 0;
   min-height: 0;
-  background: var(--bg-pane);
+  background-color: var(--bg-pane);
+  background-image: var(--grad-pane);
   border: 1px solid var(--line);
   border-radius: var(--radius);
   overflow: hidden;
@@ -268,7 +318,8 @@ input.text:focus, select.mini:focus, button:focus-visible, textarea:focus {
 }
 
 .files button {
-  background: var(--bg-soft);
+  background-color: var(--bg-soft);
+  background-image: var(--grad-chip);
   border: 1px solid var(--line);
   color: var(--fg-dim);
   border-radius: 6px;
@@ -328,7 +379,8 @@ input.text:focus, select.mini:focus, button:focus-visible, textarea:focus {
   flex: 0 0 auto;
   max-height: 42vh;
   border-top: 1px solid var(--line);
-  background: var(--bg-soft);
+  background-color: var(--bg-soft);
+  background-image: var(--grad-bar);
 }
 
 .drawer-cols {
@@ -388,7 +440,8 @@ input.text:focus, select.mini:focus, button:focus-visible, textarea:focus {
 .opt-row.gated .name { text-decoration: line-through; }
 .opt-row input[type="text"], .opt-row input[type="number"] {
   width: 78px;
-  background: var(--bg);
+  background-color: var(--bg);
+  background-image: var(--grad-well);
   color: var(--fg);
   border: 1px solid var(--line);
   border-radius: 5px;
@@ -396,7 +449,8 @@ input.text:focus, select.mini:focus, button:focus-visible, textarea:focus {
   font: 12px var(--mono);
 }
 .opt-row select {
-  background: var(--bg);
+  background-color: var(--bg);
+  background-image: var(--grad-well);
   color: var(--fg);
   border: 1px solid var(--line);
   border-radius: 5px;
@@ -433,7 +487,8 @@ input.text:focus, select.mini:focus, button:focus-visible, textarea:focus {
   gap: 10px;
   padding: 6px 14px;
   border-top: 1px solid var(--line);
-  background: var(--bg-soft);
+  background-color: var(--bg-soft);
+  background-image: var(--grad-bar);
   font-size: 12px;
   min-height: 30px;
 }
@@ -450,7 +505,8 @@ input.text:focus, select.mini:focus, button:focus-visible, textarea:focus {
 #shortcutHint kbd {
   font: 11px var(--mono);
   color: var(--fg-dim);
-  background: var(--bg-pane);
+  background-color: var(--bg-pane);
+  background-image: var(--grad-chip);
   border: 1px solid var(--line);
   border-bottom-width: 2px;
   border-radius: 4px;
@@ -497,11 +553,20 @@ input.text:focus, select.mini:focus, button:focus-visible, textarea:focus {
    刻意**不**写 transition: all —— 那样会把布局属性也纳入过渡，
    抽屉开合与文本回流都会跟着变慢。逐项列出需要的颜色属性。
    不放在 :root 上是因为 color-scheme 切换需要立刻生效，
-   过渡只作用于真正可见的容器。 */
+   过渡只作用于真正可见的容器。
+
+   ⚠️ background-image 必须列进去：底色全部换成了 gradient，而
+   gradient 属于 background-image 而不是 background-color。只写
+   background-color 的话主题切换会**直接跳变**——渐变之间没有可插值的
+   颜色通道，浏览器只能整块替换。这条是实测发现的（切主题时只有边框
+   在过渡、底色是硬切）。 */
 body, .topbar, .pane, .drawer, .statusbar, .presets, .files button,
-button.mini, select.mini, input.text, .badge, .editor, .pane-head, .pane-foot {
+button.mini, select.mini, input.text, .badge, .editor, .pane-head, .pane-foot,
+.opt-row input[type="text"], .opt-row input[type="number"], .opt-row select,
+.noscript, #shortcutHint kbd {
   transition:
     background-color var(--dur-mid) var(--ease-out),
+    background-image var(--dur-mid) var(--ease-out),
     border-color var(--dur-mid) var(--ease-out),
     color var(--dur-mid) var(--ease-out);
 }
@@ -753,7 +818,9 @@ button.primary:hover:not(:disabled) { filter: brightness(1.1); }
      注意这里**不能**用 `*` 通配符：那会连上面那条 visibility 延迟一起清掉，
      抽屉收起时内容会瞬间失去可见性并产生闪烁。只压时长，不改时序。 */
   button.mini, button.primary, .files button, input.text, select.mini,
-  .badge, .editor, .presets button, .stats summary {
+  .badge, .editor, .presets button, .stats summary,
+  .opt-row input[type="text"], .opt-row input[type="number"], .opt-row select,
+  .noscript, #shortcutHint kbd {
     transition-duration: 1ms;
   }
   .panes > .pane, .drawer[data-open="1"] .opt-group, .files button,

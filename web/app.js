@@ -56,15 +56,26 @@ function loadCore() {
 }
 
 async function importCore() {
+  let status = 0;
   try {
     return await import('./src/index.js');
   } catch (e) {
-    const status = await probeCoreStatus();
+    status = await probeCoreStatus();
     if (status === 403 && !coreRetried) {
       coreRetried = true;
       corePromise = null;
       await pushLicense();
-      return import('./src/index.js?retry=' + Date.now());
+      // 重试本身也必须包在 try 里，否则它抛的原生 TypeError 会直接冒到
+      // run() 的 catch，被 `f.error = e.message` 原样显示成
+      // "Failed to fetch dynamically imported module"——用户看到的是浏览器
+      // 的黑话，而不是下面那句能指导操作的提示。
+      try {
+        return await import('./src/index.js?retry=' + Date.now());
+      } catch (e2) {
+        // 重试后又失败，原因可能已经变了（比如补登记仍被拒、或此刻断网），
+        // 所以重新取一次状态码，别沿用第一次的结论去选文案。
+        status = await probeCoreStatus();
+      }
     }
     // 失败不缓存：重新激活后再点一次就能直接重试，不必刷新页面
     corePromise = null;
