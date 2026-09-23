@@ -287,6 +287,36 @@ body {
 #themeBtn::before { content: '☀️'; margin-right: 6px; font-size: 13px; }
 html.light #themeBtn::before { content: '🌙'; }
 
+/* ---------- 矮窗口下的左栏压缩（只作用于桌面两栏布局）----------
+
+   左栏高度 = 品牌 + 强度预设卡 + 设置组 + 间距，宽屏下约 495px。窗口被压扁时
+   （笔记本半屏、手动拖矮窗口）这些内容会超出可视区，左栏于是出现滚动条，
+   用户得滚动才能看全——"混淆强度栏显示不全、要拖进度条"就是这么来的。
+
+   这一档把"需要滚动"直接消掉：预设项收成单行、各部分内边距与间距一起收紧，
+   620px 高度下整栏约 350px，420px 也能放下。宽屏高窗口的设计完全不受影响。
+
+   刻意加 min-width: 901px：窄屏那一档侧栏已经折成顶条，与这里无关，
+   不加限定的话手机横屏（宽 ≤900 且高 ≤620）会被这两组规则误伤。 */
+@media (min-width: 901px) and (max-height: 620px) {
+  .sidebar { gap: 10px; padding: 12px 14px; }
+  .side-group { padding: 8px; gap: 6px; }
+  .preset-desc { display: none; }        /* 档位名一行即够，说明文字省掉 */
+  .sidebar .presets { gap: 4px; }
+  .sidebar .presets button { padding: 7px 10px; }
+  .side-foot { gap: 6px; padding-top: 10px; }
+  .side-foot .mini { height: 30px; }
+  .brand .logo { width: 30px; height: 30px; font-size: 16px; }
+}
+
+/* 再矮一档（窗口拖到屏幕高度三分之一左右）继续收，仍保证不需要滚动 */
+@media (min-width: 901px) and (max-height: 420px) {
+  .sidebar { gap: 8px; padding: 10px 12px; }
+  .side-label { font-size: 10px; }
+  .sidebar .presets button { padding: 5px 10px; }
+  .side-foot .mini { height: 28px; }
+}
+
 /* ---------- 主列顶条 ---------- */
 
 /* 状态徽章和"选项"开关放在主列顶部一条，不设底色——
