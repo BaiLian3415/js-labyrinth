@@ -689,6 +689,18 @@ async function run() {
 // ---------- 同源服务探活（授权与策略）----------
 
 /**
+ * 把界面当前的语言带给服务端。
+ *
+ * 服务端文案的语言原本由它自己的环境变量决定，界面切英文后，API 返回的报错与
+ * 授权横幅仍是中文（"Activation failed: 激活失败: ..." 这种中英夹杂）。带上这个头，
+ * 服务端就按界面语言回（见 worker/index.js 的 resolveLang）。
+ * @returns {object} 请求头片段
+ */
+function langHeader() {
+  return { 'X-JSLB-Lang': state.lang === 'en' ? 'en' : 'zh' };
+}
+
+/**
  * 探一次 /api/health，判断同源是否真的挂了服务。
  *
  * 纯静态部署（只发 dist/、不带 API）里这个地址会返回 404 页面，界面据此提示
@@ -701,7 +713,7 @@ async function probeApi() {
   const timer = ctl ? setTimeout(() => ctl.abort(), 4000) : null;
   try {
     const res = await fetch(base + '/api/health', {
-      headers: { accept: 'application/json' },
+      headers: { accept: 'application/json', ...langHeader() },
       signal: ctl ? ctl.signal : undefined,
     });
     const data = res.ok ? await res.json().catch(() => null) : null;
@@ -727,7 +739,7 @@ async function probeApi() {
 async function syncServerPolicy() {
   const base = (state.apiBase || '').replace(/\/+$/, '');
   try {
-    const res = await fetch(base + '/api/plans', { headers: { accept: 'application/json' } });
+    const res = await fetch(base + '/api/plans', { headers: { accept: 'application/json', ...langHeader() } });
     const data = res.ok ? await res.json().catch(() => null) : null;
     if (data && data.web) platform.setWebConfig(data.web);
   } catch (e) { /* 拿不到就沿用当前策略 */ }
@@ -771,7 +783,7 @@ async function callLicenseApi(body) {
   try {
     const res = await fetch(base + '/api/license', {
       method: 'POST',
-      headers: { 'content-type': 'application/json', 'X-JSLB-Device': device },
+      headers: { 'content-type': 'application/json', 'X-JSLB-Device': device, ...langHeader() },
       body: JSON.stringify(body || {}),
     });
     const data = await res.json().catch(() => null);
@@ -929,6 +941,24 @@ async function refreshLicensePanel() {
   updatePresetHint();
 }
 
+/**
+ * 按当前授权状态刷新状态栏文案。
+ *
+ * 抽成函数是为了切语言时也能重刷：这些句子是 t() 拼出来的，语言一变就必须重算，
+ * 否则英文界面下会一直留着初始化时写下的中文（"试用模式（未激活）…"）。
+ * init 与语言切换共用这一处，避免两份逻辑漂移。
+ */
+async function refreshStatusFromLicense() {
+  const ens = await licenseWeb.ensure();
+  if (!ens.ok) {
+    setStatus(t('webActivateFailed', { reason: t('licReason_' + (ens.reason || 'missing')) }), 'err');
+  } else if (ens.trial) {
+    setStatus(t('webTrialBanner', { machine: await licenseWeb.machineId() }), 'warn');
+  } else {
+    setStatus(t('webActivated', { plan: (licenseWeb.entitlements() || {}).display || '' }), 'ok');
+  }
+}
+
 async function activate() {
   const key = els.licKey.value.trim();
   if (!key) return;
@@ -968,7 +998,9 @@ async function activate() {
       await refreshLicensePanel();
       return;
     }
-    setStatus(t('webActivateFailed', { reason: s.message || t('licReason_' + r.reason) }), 'err');
+    // 服务端返回的 message 已是完整句子（它按请求语言自己拼好"激活失败: …"），
+    // 这里直接显示；再套一层 webActivateFailed 会变成"激活失败: 激活失败: …"。
+    setStatus(s.message || t('webActivateFailed', { reason: t('licReason_' + r.reason) }), 'err');
     return;
   }
 
@@ -1121,7 +1153,7 @@ async function init() {
   renderOptions();
 
   // 事件绑定
-  els.lang.addEventListener('change', () => {
+  els.lang.addEventListener('change', async () => {
     state.lang = els.lang.value;
     setLang(state.lang);
     applyI18n();
@@ -1132,6 +1164,10 @@ async function init() {
     showResult();
     renderApiState();
     renderShortcutHint();
+    // 授权面板与配额、状态栏都是"渲染一次"的（不走 data-i18n），切语言必须重刷，
+    // 否则英文界面下这三处会一直停在初始化时的中文。
+    await refreshLicensePanel();
+    await refreshStatusFromLicense();
     saveState();
   });
 
@@ -1214,14 +1250,7 @@ async function init() {
   }
 
   // 授权：优先恢复已激活卡密，否则按网页版策略进入试用
-  const ens = await licenseWeb.ensure();
-  if (!ens.ok) {
-    setStatus(t('webActivateFailed', { reason: t('licReason_' + (ens.reason || 'missing')) }), 'err');
-  } else if (ens.trial) {
-    setStatus(t('webTrialBanner', { machine: await licenseWeb.machineId() }), 'warn');
-  } else {
-    setStatus(t('webActivated', { plan: (licenseWeb.entitlements() || {}).display || '' }), 'ok');
-  }
+  await refreshStatusFromLicense();
   await refreshLicensePanel();
 
   // 探一次同源的授权服务。连不上时（纯静态部署）界面会提示，但混淆本身在浏览器

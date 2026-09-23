@@ -148,6 +148,21 @@ curl -s -X POST https://<host>/api/obfuscate \
 响应状态码：`400` 非法请求体/选项、`401` 卡密无效、`402` 未激活且要求激活、
 `403` 选项被套餐闸门拦下、`413` 超出单文件限额、`422` 混淆失败、`429` 今日次数用尽。
 
+### 消息语言按请求协商
+
+响应里的 `message`、`banner`、`quotaText` 等文案是**本地化过的**，语言按请求判定
+（`worker/index.js` 的 `resolveLang`），优先级：
+
+1. `X-JSLB-Lang: zh | en` —— 网页界面用它，值与用户在界面上选的语言严格一致；
+2. `Accept-Language` —— 脚本 / curl 场景，浏览器也会自动带；
+3. 环境变量 `JSLABYRINTH_LANG`，都没有则 `zh`（与既有调用方行为一致）。
+
+只认 `zh` / `en`；其他取值一律回落，不会因为语言参数写错而让请求失败。
+跨域调用若要用这个头，记得它在 CORS 的 `access-control-allow-headers` 里已放行。
+
+> 为什么需要它：语言若只由服务端环境变量决定，界面切英文的访问者拿到的报错仍是中文
+> ——`Activation failed: 激活失败: 未找到许可证文件` 这种中英夹杂就是这么来的。
+
 ## 选项
 
 选项表在 `src/options-meta.js`：一处定义，网页界面控件与套餐闸门都从它生成。
@@ -378,7 +393,7 @@ base32，格式校验分不出来。喂错了只会摘两次摘要，签出一�
 
 | 变量 | 作用域 | 说明 |
 | --- | --- | --- |
-| `JSLABYRINTH_LANG` | 全部 | 语言 `zh`/`en`（浏览器可改用 `window.JSLB_ENV`） |
+| `JSLABYRINTH_LANG` | 全部 | 语言 `zh`/`en`（浏览器可改用 `window.JSLB_ENV`）。**Worker 侧只是兜底默认**：服务端文案的语言按请求判定（`X-JSLB-Lang` > `Accept-Language` > 本变量），见「Worker API」一节 |
 | `JSLABYRINTH_KEYGEN_STATE` | 发卡工具 | 编号计数器路径 |
 | `JSLABYRINTH_SIGNING_KEY_FILE` | 发卡工具 | 签发私钥文件路径（默认 `.jslb-signing-key`） |
 | `JSLB_SIGNING_KEY` | 发卡工具 | **签发私钥**（base64，32 字节种子）。**机密**，泄露 = 发卡权泄露 |

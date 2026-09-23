@@ -177,9 +177,17 @@ const STRINGS = {
     webActivateFailed: '激活失败: {reason}',
     webDeactivated: '已解除激活',
 
+    // 服务端文案（Worker / Pages Functions）。语言按**请求**判定，见 worker/index.js
+    // 的 resolveLang()：显式头 X-JSLB-Lang > Accept-Language > 环境变量/默认。
+    coreGate403: '核心模块仅对已激活设备开放',
+    workerReady: 'JsLabyrinth Worker 已就绪。API 见 /api/health；静态界面需要绑定 assets（见 wrangler.toml）。',
+
     // 网页版：界面
     guiTitle: 'JsLabyrinth 混淆器',
     guiInput: '输入',
+    // 两个编辑区空白时的占位文案（属性而非文本节点，必须走 data-i18n-ph）
+    guiInputPh: '// 在此粘贴 JavaScript，或把 .js / .html 文件拖进这个面板',
+    guiOutputPh: '// 混淆结果',
     guiOutput: '输出',
     guiRun: '开始混淆',
     guiRunning: '处理中…',
@@ -437,9 +445,17 @@ const STRINGS = {
     webActivateFailed: 'Activation failed: {reason}',
     webDeactivated: 'Deactivated',
 
+    // Server-side strings (Worker / Pages Functions). The language is decided
+    // per request — see resolveLang() in worker/index.js:
+    // X-JSLB-Lang > Accept-Language > env/default.
+    coreGate403: 'Core modules are available to activated devices only',
+    workerReady: 'JsLabyrinth Worker is ready. API: /api/health; the static UI needs an assets binding (see wrangler.toml).',
+
     // web: GUI
     guiTitle: 'JsLabyrinth Obfuscator',
     guiInput: 'Input',
+    guiInputPh: '// Paste JavaScript here, or drop a .js / .html file onto this pane',
+    guiOutputPh: '// obfuscated output',
     guiOutput: 'Output',
     guiRun: 'Obfuscate',
     guiRunning: 'Working…',

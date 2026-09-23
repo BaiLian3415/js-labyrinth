@@ -761,6 +761,24 @@ section('Cloudflare Worker 路由');
   ok(lic.status === 200 && licJson.ok === true && licJson.trial === true, 'GET /api/license 返回试用状态');
   ok(typeof licJson.machine === 'string' && licJson.machine.length === 24, 'API 侧机器码为 24 字符');
 
+  // 服务端文案要按**请求**语言回。原先语言只在模块加载时读一次 JSLABYRINTH_LANG，
+  // 于是界面切了英文的访问者拿到的 API 报错仍是中文（"Activation failed: 激活失败: …"）。
+  {
+    const bogus = 'JSLB-F-00-000-' + '0'.repeat(8) + '-' + '0'.repeat(16) + '-' + '0'.repeat(103);
+    const badKey = async (headers) => (await (await call('/api/license', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', ...headers },
+      body: JSON.stringify({ key: bogus }),
+    })).json()).message || '';
+    ok(/激活失败/.test(await badKey({})), '未指定语言时服务端报错为默认中文');
+    ok(/Activation failed/.test(await badKey({ 'X-JSLB-Lang': 'en' })),
+      'X-JSLB-Lang: en 时服务端报错为英文');
+    ok(/Activation failed/.test(await badKey({ 'Accept-Language': 'en-US,en;q=0.9,zh-CN;q=0.8' })),
+      'Accept-Language: en 时服务端报错为英文（脚本调用场景）');
+    ok(/激活失败/.test(await badKey({ 'X-JSLB-Lang': 'fr' })),
+      '未知语言取值回落默认语言，不影响请求（不会因 setLang 抛错而 500）');
+  }
+
   const bad = await call('/api/obfuscate', { method: 'POST', body: '{oops' });
   ok(bad.status === 400, '非法 JSON 请求体返回 400');
 
@@ -786,6 +804,9 @@ section('Cloudflare Worker 路由');
 
   const pre = await call('/api/obfuscate', { method: 'OPTIONS' });
   ok(pre.status === 204 && pre.headers.get('access-control-allow-origin') !== null, 'OPTIONS 预检带 CORS 头');
+  // 跨域调用方要能带语言头——不在 allow-headers 里会被浏览器预检拦掉
+  ok((pre.headers.get('access-control-allow-headers') || '').includes('x-jslb-lang'),
+    '预检放行 X-JSLB-Lang 头');
 
   // 激活流程：用 keygen 的签发路径造一张卡密，走 /api/license 激活
   const keys = [TEST_SIGNING_SEED, TEST_PUBLIC_KEY];

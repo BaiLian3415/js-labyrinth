@@ -100,7 +100,7 @@ function corsHeaders(env) {
   return {
     'access-control-allow-origin': origin,
     'access-control-allow-methods': 'GET, POST, OPTIONS',
-    'access-control-allow-headers': 'content-type, x-jslb-key, x-jslb-device',
+    'access-control-allow-headers': 'content-type, x-jslb-key, x-jslb-device, x-jslb-lang',
     'access-control-max-age': '86400',
     vary: 'origin',
   };
@@ -120,6 +120,9 @@ function corsHeaders(env) {
 function prepareEnv(env, request) {
   platform.setEnv(env || {});
   platform.loadWebConfigFromEnv();
+  // 语言也必须逐请求设定：i18n 的 current 是模块级变量，一个 isolate 会连续处理
+  // 不同语言的请求（见 resolveLang 的说明）。
+  i18n.setLang(resolveLang(request, env));
   licenseWeb.resetRequestState();
   // 无 KV 时 Worker 是无状态的：许可证与计数不跨请求保留，客户端每次都要带上
   // 卡密（见 /api/obfuscate）。绑 KV 后按设备码持久化，语义与浏览器侧一致。
@@ -136,6 +139,39 @@ function prepareEnv(env, request) {
   // cookie 兜底：浏览器侧的模块请求带不了自定义头，设备码只能从 cookie 拿
   const device = request.headers.get('X-JSLB-Device') || cookieDevice(request) || null;
   licenseWeb.setRequestDeviceId(device);
+}
+
+/**
+ * 本次请求该用哪种语言回消息。
+ *
+ * 服务端文案原先只由**模块加载时**读到的 JSLABYRINTH_LANG 决定，于是界面切了英文的
+ * 访问者拿到的报错仍是中文（`Activation failed: 激活失败: 未找到许可证文件` 这种
+ * 中英夹杂），这是"license 英文未适配"的来源。
+ *
+ * 改为按请求判定，优先级：
+ *   1. `X-JSLB-Lang` —— 界面自己带，值与用户在界面里选的语言严格一致
+ *   2. `Accept-Language` —— 脚本 API / 直接 curl 的场景，浏览器也会自动带
+ *   3. 环境变量 JSLABYRINTH_LANG，都没有则 zh（与改造前一致，不影响既有调用方）
+ *
+ * 只认 zh / en；其他取值一律回落，避免 i18n.setLang 抛错影响请求。
+ * @param {Request} request 请求
+ * @param {object} env 绑定
+ * @returns {string} 'zh' 或 'en'
+ */
+function resolveLang(request, env) {
+  const explicit = String(request.headers.get('X-JSLB-Lang') || '').trim().toLowerCase();
+  if (explicit === 'zh' || explicit === 'en') return explicit;
+  const accept = String(request.headers.get('accept-language') || '').toLowerCase();
+  if (accept) {
+    // 形如 "en-US,en;q=0.9,zh-CN;q=0.8"：按出现顺序取第一个认得出的主语言
+    // （不解析 q 值——界面已经用显式头优先，这里只是给脚本调用一个合理默认）
+    for (const part of accept.split(',')) {
+      const tag = part.split(';')[0].trim();
+      if (tag.startsWith('zh')) return 'zh';
+      if (tag.startsWith('en')) return 'en';
+    }
+  }
+  return (env && env.JSLABYRINTH_LANG) === 'en' ? 'en' : 'zh';
 }
 
 /** 请求体解析，失败时返回 null。 */
@@ -367,7 +403,7 @@ export default {
       if (dev) licenseWeb.setRequestDeviceId(dev);
       const ens = await licenseWeb.ensure({ selfAnchored: true });
       if (!ens.ok) {
-        return new Response('403 Forbidden — 核心模块仅对已激活设备开放\n', {
+        return new Response('403 Forbidden — ' + t('coreGate403') + '\n', {
           status: 403,
           headers: { 'content-type': 'text/plain; charset=utf-8', 'cache-control': 'no-store' },
         });
@@ -384,7 +420,7 @@ export default {
       return env.ASSETS.fetch(request);
     }
     return new Response(
-      'JsLabyrinth Worker 已就绪。API 见 /api/health；静态界面需要绑定 assets（见 wrangler.toml）。\n',
+      t('workerReady') + '\n',
       { status: 200, headers: { 'content-type': 'text/plain; charset=utf-8' } },
     );
   },
