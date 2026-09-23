@@ -14,6 +14,7 @@ export default {
   "stringSplitThreshold": 1,
   "stringSplitProbability": 1,
   "stringIndexMask": true,
+  "stringArrayCallsTransform": false,
   "controlFlowFlattening": true,
   "controlFlowThreshold": 1,
   "controlFlowProbability": 1,

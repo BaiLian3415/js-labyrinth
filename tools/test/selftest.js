@@ -171,7 +171,7 @@ for (let i = 0; i < 5; i++) c.inc(i);
 const list = [1, 2, 3, 4].map((x) => x * x).filter((x) => x > 2);
 async function main() {
   await Promise.resolve();
-  console.log(GREETING, tpl, obj['beta-gamma'].length, obj.nested.deep.key, c.value, list.join('|'), classify(400));
+  process.stdout.write([GREETING, tpl, obj['beta-gamma'].length, obj.nested.deep.key, c.value, list.join('|'), classify(400)].join(' ') + '\n');
 }
 main();
 `;
@@ -1220,18 +1220,18 @@ section('VM 保护与用户标识符冲突');
   const cases = [
     // 参数为 a + 两条 if + typeof
     'function f(a){ if(a===0) return "n0"; if(typeof a==="number") return "num"; return "end"; }'
-      + ' console.log(f(0), f(9), f("z"));',
+      + ' process.stdout.write([f(0), f(9), f("z")].join(" ") + "\\n");',
     // 局部变量 a 参与两条 if
     'function g(){ var a=7; if(a>5) return "big"; if(a<10) return "small"; return "no"; }'
-      + ' console.log(g());',
+      + ' process.stdout.write(g() + "\\n");',
     // a 作为循环变量（跳转回边）
-    'function h(n){ var s=0, a=0; for(a=0; a<n; a++) s+=a; return s; } console.log(h(5));',
+    'function h(n){ var s=0, a=0; for(a=0; a<n; a++) s+=a; return s; } process.stdout.write(h(5) + "\\n");',
     // 一批曾经会让解释器撞名的标识符
     'function k(a,b,c,v,n,f,o){ if(a>b) return "ab"; if(c<v) return "cv"; if(n!==f) return "nf";'
-      + ' return o; } console.log(k(2,1,3,4,5,6,"tail"));',
+      + ' return o; } process.stdout.write(k(2,1,3,4,5,6,"tail") + "\\n");',
     // a 上是对象，走 GETM / SETM / CALLM
     'function m(a){ if(a.length>2) return a.toUpperCase(); if(a.length===1) return "one";'
-      + ' return "other"; } console.log(m("abcd"), m("x"), m("yz"));',
+      + ' return "other"; } process.stdout.write([m("abcd"), m("x"), m("yz")].join(" ") + "\\n");',
   ];
   const runNode = (code, name) => {
     const file = path.join(TMP, name + '.js');

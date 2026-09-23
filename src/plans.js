@@ -24,6 +24,7 @@ export default {
       "shell": false,
       "consoleStub": false,
       "stringArrayMixedEncoding": false,
+      "stringArrayCallsTransform": false,
       "stringArrayEncoding": [
         "none",
         "base64"
@@ -68,6 +69,7 @@ export default {
       "shell": true,
       "consoleStub": false,
       "stringArrayMixedEncoding": true,
+      "stringArrayCallsTransform": false,
       "stringArrayEncoding": [
         "none",
         "xor",

@@ -337,10 +337,42 @@ export default function stringArray(ast, options, ctx) {
         .push({ stmt: parsed.program.body[0], name: accessorName, node: accFn });
     }
 
+    // 调用点包装链：每个 accessor 外面再包 2 到 5 层单表达式函数，每层把索引
+    // 再 XOR 一个构建期常量（与 mask 正交：要还原真实索引必须整条剥完链条、
+    // 并累出各层常量的异或和），最外层才是调用点入口。层间链式调用，每层另带
+    // 0 到 4 个从不使用的 junk 参数，逐层签名各不相同。包装层标记为
+    // __saMachinery——访问频度与 accessor 相同，debugProtection 同样跳过哨兵；
+    // 名字走 shortName 豁免 mangle。全部随机量（层数、常量、名字、junk 个数）
+    // 只在选项开启时消耗 PRNG：关闭它的预设随机流不动，产物逐字节可复现。
+    let entryName = accessorName;
+    let entryXor = 0;
+    let entryJunk = 0;
+    if (options.stringArrayCallsTransform === true) {
+      const layers = randInt(2, 5);
+      let prevName = accessorName;
+      for (let li = 0; li < layers; li++) {
+        const layerConst = randInt(0x100, 0xffffff);
+        entryXor ^= layerConst;
+        const idxParam = shortName();
+        const junkCount = randInt(0, 4);
+        const junkParams = [];
+        for (let jj = 0; jj < junkCount; jj++) junkParams.push(shortName());
+        const wName = shortName();
+        const wrapperSrc = "var " + wName + "=function(" + [idxParam].concat(junkParams).join(",") +
+          "){return " + prevName + "(" + idxParam + "^0x" + layerConst.toString(16) + ");};";
+        const wparsed = parse(wrapperSrc, { sourceType: "script" });
+        markMachinery(wparsed.program.body[0]);
+        iifeStatements.push(wparsed.program.body[0]);
+        prevName = wName;
+        entryJunk = junkCount;
+      }
+      entryName = prevName;
+    }
+
     for (const v of groupItems) {
       const pos = posMap.get(v);
       if (pos !== undefined && !valueToAccessor.has(v)) {
-        valueToAccessor.set(v, { accessorName, pos, mask });
+        valueToAccessor.set(v, { accessorName, pos, mask, entryName, entryXor, entryJunk });
       }
     }
   }
@@ -351,6 +383,17 @@ export default function stringArray(ast, options, ctx) {
   program.__poisonKey = poisonKey;
   program.__poisonKeys = poisonKeys;
 
+  // 调用点：走包装链入口（未开包装链时 entryName 即 accessor 本名）。实参是
+  // (pos ^ mask) ^ entryXor——entryXor 为链上各层常量的异或和，accessor 侧
+  // 逐层还原后收到的仍是 pos ^ mask，语义与无包装链完全一致。junk 实参个数
+  // 与入口层形参一一对应，值逐调用点随机。
+  const makeCall = (acc) => {
+    const args = [t.numericLiteral((acc.pos ^ acc.mask) ^ (acc.entryXor || 0))];
+    const jn = acc.entryJunk || 0;
+    for (let k = 0; k < jn; k++) args.push(t.numericLiteral(randInt(0, 0xffff)));
+    return t.callExpression(t.identifier(acc.entryName || acc.accessorName), args);
+  };
+
   let replaced = 0;
   for (const c of candidates) {
     if (c.parts) {
@@ -359,7 +402,7 @@ export default function stringArray(ast, options, ctx) {
       for (const p of c.parts) {
         const acc = valueToAccessor.get(p);
         if (!acc) { ok = false; break; }
-        exprs.push(t.callExpression(t.identifier(acc.accessorName), [t.numericLiteral(acc.pos ^ acc.mask)]));
+        exprs.push(makeCall(acc));
       }
       if (!ok) continue;
       let expr = exprs[0];
@@ -369,9 +412,7 @@ export default function stringArray(ast, options, ctx) {
     } else {
       const acc = valueToAccessor.get(c.value);
       if (!acc) continue;
-      c.path.replaceWith(
-        t.callExpression(t.identifier(acc.accessorName), [t.numericLiteral(acc.pos ^ acc.mask)])
-      );
+      c.path.replaceWith(makeCall(acc));
       replaced++;
     }
   }
