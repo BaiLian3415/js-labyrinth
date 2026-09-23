@@ -38,27 +38,22 @@
   <p class="noscript">JsLabyrinth 的界面需要 JavaScript 才能运行。命令行用法见项目 README。</p>
 </noscript>
 
-<!-- 仪表盘式两栏外壳：左导航（品牌 + 预设 + 设置），右主列（状态条 + 面板 + 选项抽屉 + 状态栏）。
-     布局对齐 obfuscator.io dashboard；app.js 全部按 id 取元素，容器怎么挪都不影响接线。 -->
+<!-- 单列外壳：原左导航整块已移除（2026-09-23），品牌 + 强度预设 + 语言/主题
+     合并到顶部条 .topbar；右主列保留状态条 + 面板 + 选项抽屉 + 状态栏。
+     app.js 全部按 id 取元素，容器怎么挪都不影响接线。 -->
 <div class="shell">
-  <aside class="sidebar">
-    <div class="brand">
-      <span class="logo" aria-hidden="true">🌀</span>
-      <div class="brand-text">
-        <h1 data-i18n="guiTitle">JsLabyrinth 混淆器</h1>
-        <span class="ver" id="ver"></span>
+  <div class="main">
+    <header class="topbar">
+      <div class="brand">
+        <span class="logo" aria-hidden="true">🌀</span>
+        <div class="brand-text">
+          <h1 data-i18n="guiTitle">JsLabyrinth 混淆器</h1>
+          <span class="ver" id="ver"></span>
+        </div>
       </div>
-    </div>
 
-    <div class="side-group">
-      <!-- 分组标题只在桌面（>900px）起作用：窄屏下侧栏折成顶条，标题会白占一行，
-           所以 ≤900px 时由 CSS 隐掉。文本走既有的 data-i18n 机制。 -->
-      <span class="side-label" data-i18n="guiPreset">预设</span>
       <div class="presets" id="presets" role="radiogroup" data-i18n-aria="guiAriaPresets" aria-label="preset"></div>
-    </div>
 
-    <div class="side-foot">
-      <span class="side-label" data-i18n="guiSettings">设置</span>
       <select id="lang" class="mini" data-i18n-aria="guiAriaLang" aria-label="language">
         <option value="zh">中文</option>
         <option value="en">English</option>
@@ -68,10 +63,8 @@
              data-i18n：applyI18n() 会把它一律刷成写死的那一个键，加载后永远显示"深色"。 -->
         <span>深色</span>
       </button>
-    </div>
-  </aside>
+    </header>
 
-  <div class="main">
     <header class="mainbar">
       <span class="mainbar-spacer"></span>
       <span class="badge" id="apiState" hidden></span>

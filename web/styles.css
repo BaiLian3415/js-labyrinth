@@ -122,17 +122,15 @@ body {
 
 /* ---------- 两栏外壳（布局语言对齐 obfuscator.io dashboard）---------- */
 
-/* grid 两栏：左导航固定宽，右主列自适应。body 是 flex column，
-   .shell 吃掉剩余高度；min-height:0 防止 grid/flex 子项把页面撑出滚动。
-   app.js 全按 id 取元素，容器结构怎么换都不影响接线——这是敢动布局的前提。
-
-   栏宽 216px：预设项改两行（名称 + 强度说明）后左对齐的导航行不再需要 236px，
-   收窄的 20px 全给右侧编辑区，同时让左栏的"空"看起来更收敛。 */
+/* 单列外壳：左导航已在 2026-09-23 整块移除（web/index.html 的注释里说），品牌 + 预设
+   + 设置合并到 .topbar，主列只剩状态条 + 面板 + 选项抽屉 + 状态栏。
+   body 是 flex column，.shell 吃掉剩余高度；min-height:0 防止 grid/flex 子项把页面撑出滚动。
+   app.js 全按 id 取元素，容器结构怎么换都不影响接线——这是敢动布局的前提。 */
 .shell {
   flex: 1 1 auto;
   min-height: 0;
   display: grid;
-  grid-template-columns: 216px minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1fr);
 }
 
 .main {
@@ -142,119 +140,65 @@ body {
   min-height: 0;
 }
 
-/* ---------- 侧边栏 ---------- */
+/* ---------- 顶部条（替代原侧栏，2026-09-23）---------- */
 
-.sidebar {
-  display: flex;
-  flex-direction: column;
-  gap: 14px;
-  padding: 16px 14px;
-  background-color: var(--bg-soft);
-  background-image: var(--grad-pane);
-  border-right: 1px solid var(--line);
-  min-height: 0;
-  overflow: auto;
-}
-
-.brand {
+/* 顶部条：左品牌 + 强度预设 + 语言/主题。
+   用同一张浅渐变卡与底部 1px 分隔线，与面板群呼应——它读起来仍是"工具的起点"，只是
+   不再独占一整列。预设描述（.preset-desc）在 ≤900px 时隐藏。 */
+.topbar {
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 0 2px 2px;
+  gap: 12px;
+  padding: 12px 14px;
+  background-color: var(--bg-soft);
+  background-image: var(--grad-pane);
+  border-bottom: 1px solid var(--line);
+  flex: 0 0 auto;
   min-width: 0;
 }
 
-/* 品牌标记做成圆角色块，与下面成排的控件共用同一套圆角与强调色。
-   原来只是一个裸 emoji，和控件不在同一视觉层级上。 */
-.brand .logo {
-  display: grid;
-  place-items: center;
+/* 品牌块：与原侧栏里的样式一致，但放进顶条横向排列后 logo 略小一点更协调。
+   min-width:0 防止 brand-text 在极窄屏被撑炸。 */
+.topbar .brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0;
+  min-width: 0;
   flex: 0 0 auto;
-  width: 34px;
-  height: 34px;
-  font-size: 18px;
-  line-height: 1;
-  border-radius: var(--radius);
-  background: var(--accent-dim);
-  box-shadow: inset 0 0 0 1px var(--line);
 }
-.brand-text { display: flex; flex-direction: column; min-width: 0; gap: 1px; }
-.brand h1 { font-size: 15px; margin: 0; font-weight: 700; letter-spacing: -.01em; white-space: nowrap; }
-.brand .ver { color: var(--fg-dim); font-size: 11.5px; }
+.topbar .brand .logo {
+  width: 30px;
+  height: 30px;
+  font-size: 16px;
+}
+.topbar .brand h1 { font-size: 15px; margin: 0; font-weight: 700; letter-spacing: -.01em; white-space: nowrap; }
+.topbar .brand .ver { color: var(--fg-dim); font-size: 11.5px; }
+.topbar .brand-text { display: flex; flex-direction: column; min-width: 0; gap: 1px; }
 
-/* 侧栏分组：小标题 + 内容，做成一张浅卡片。给导航以视觉重量，中段那段留白
-   因此读作"两张卡片之间的间距"，而不是"这一栏没放东西"。
-   卡片样式在 ≤900px 自动失效——那一档 .side-group 是 display:contents，不产生盒子。 */
-.side-group {
+/* 顶条里的预设：横向排成一列 chip，每档只一行（基线 .presets button 的 padding 5px 12px）。
+   .presets.blocked 仍由基线规则承担（套餐闸门拦住时整条标红）。
+   ⚠️ display:flex 必须显式写——只写 flex-direction 不会让 .presets 真的横向（2026-09-23
+   经验：缺它就退回 inline-block 像文字一样横排换行）。 */
+.topbar .presets {
   display: flex;
-  flex-direction: column;
-  gap: 8px;
-  padding: 10px;
-  border-radius: var(--radius);
-  background-color: var(--bg-pane);
-  background-image: var(--grad-chip);
-  border: 1px solid var(--line-soft);
-}
-
-/* 分组小标题在"预设/设置"两处复用，字体与颜色统一，作为左栏的视觉锚点：
-   它们把四散的控件收拢成两组，中间那段留白因此读起来是"分组之间"而不是"没放东西"。 */
-.side-label {
-  font-size: 11px;
-  font-weight: 600;
-  letter-spacing: .09em;
-  text-transform: uppercase;
-  color: var(--fg-dim);
-  padding: 0 2px;
-}
-
-/* 预设档位在侧边栏里是垂直导航项：拉满宽度、两行（档位名 + 强度说明）、左对齐。
-   选中态复用全局的 accent-dim + 内描边规则，看着就是激活的导航项。
-
-   ⚠️ display:flex 必须显式写。这里原先只有 flex-direction:column 而没有 display，
-   于是按钮按 inline-block 像文字一样横排换行（整列只占 71px 高），
-   加上 .side-foot 的 margin-top:auto，中间就空出 559px——左栏"留白过多"的根因。 */
-.sidebar .presets {
-  display: flex;
-  flex-direction: column;
-  align-items: stretch;
-  gap: 5px;
+  flex-direction: row;
+  flex-wrap: wrap;
+  gap: 4px;
   padding: 0;
   background: none;
   border: 0;
   border-radius: 0;
 }
 
-.sidebar .presets button {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 2px;
-  width: 100%;
-  min-width: 0;
-  text-align: left;
-  padding: 10px 12px;
-  border-radius: 8px;
-  position: relative;
-}
+/* 顶条里语言选择/主题按钮：占位紧凑。 */
+.topbar #lang,
+.topbar #themeBtn { height: 32px; }
+.topbar #lang { width: auto; min-width: 96px; }
+.topbar #themeBtn { width: auto; padding: 0 12px; }
 
-/* 选中态左侧强调条用伪元素，而不是再叠一层 box-shadow：
-   选中描边已经由 .presets button[aria-pressed=true] 负责，被套餐拦下时那条描边
-   还要转成红色，阴影叠加会互相覆盖。 */
-.sidebar .presets button::before {
-  content: '';
-  position: absolute;
-  left: 0;
-  top: 9px;
-  bottom: 9px;
-  width: 3px;
-  border-radius: 0 3px 3px 0;
-  background: var(--accent);
-  opacity: 0;
-  transition: opacity var(--dur-fast) var(--ease-out);
-}
-.sidebar .presets button[aria-pressed="true"]::before { opacity: 1; }
-.presets.blocked button[aria-pressed="true"]::before { background: var(--err); }
-
+/* 预设按钮里的文本片段：档位名加粗大写一行，描述文字小一号暗色。
+   这些从原侧栏规则里搬出来，现在适用于顶条横向 chip。 */
 .preset-name {
   font-size: 13px;
   font-weight: 600;
@@ -262,60 +206,11 @@ body {
   text-transform: capitalize;
 }
 .preset-desc { font-size: 11.5px; line-height: 1.35; color: var(--fg-dim); }
-/* 选中项描述跟着提亮一档：accent-dim 底上 #94a3b8 的对比度偏低 */
-.sidebar .presets button[aria-pressed="true"] .preset-desc { color: var(--fg); opacity: .78; }
+.presets button[aria-pressed="true"] .preset-desc { color: var(--fg); opacity: .78; }
 
-/* 悬停底色用带 alpha 的字面量：主题切换时它不需要过渡（悬停是瞬态），
-   而底下的 .sidebar 自己会过渡，两层观感一致 */
-.sidebar .presets button:hover { background: rgba(148,163,184,.10); }
-
-/* 底部设置组：与上面的预设组共用同一套标题、间距与控件尺寸语言。
-   两个控件统一 34px 高、满宽、同字号——原来是 30px 与 32px，并排看高度不齐。 */
-.side-foot {
-  margin-top: auto;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  padding-top: 12px;
-  border-top: 1px solid var(--line-soft);
-}
-
-.side-foot .mini { width: 100%; height: 34px; padding: 0 10px; }
-
-/* 主题按钮的图标与品牌标记同属 emoji 字形。图标只表示"点下去会切到哪一侧"，
-   文案仍由 JS 按当前主题写入——这里不参与任何逻辑。 */
+/* 主题按钮的图标：emoji 字形，与品牌标记同一族。文案仍由 JS 按当前主题写入。 */
 #themeBtn::before { content: '☀️'; margin-right: 6px; font-size: 13px; }
 html.light #themeBtn::before { content: '🌙'; }
-
-/* ---------- 矮窗口下的左栏压缩（只作用于桌面两栏布局）----------
-
-   左栏高度 = 品牌 + 强度预设卡 + 设置组 + 间距，宽屏下约 495px。窗口被压扁时
-   （笔记本半屏、手动拖矮窗口）这些内容会超出可视区，左栏于是出现滚动条，
-   用户得滚动才能看全——"混淆强度栏显示不全、要拖进度条"就是这么来的。
-
-   这一档把"需要滚动"直接消掉：预设项收成单行、各部分内边距与间距一起收紧，
-   620px 高度下整栏约 350px，420px 也能放下。宽屏高窗口的设计完全不受影响。
-
-   刻意加 min-width: 901px：窄屏那一档侧栏已经折成顶条，与这里无关，
-   不加限定的话手机横屏（宽 ≤900 且高 ≤620）会被这两组规则误伤。 */
-@media (min-width: 901px) and (max-height: 620px) {
-  .sidebar { gap: 10px; padding: 12px 14px; }
-  .side-group { padding: 8px; gap: 6px; }
-  .preset-desc { display: none; }        /* 档位名一行即够，说明文字省掉 */
-  .sidebar .presets { gap: 4px; }
-  .sidebar .presets button { padding: 7px 10px; }
-  .side-foot { gap: 6px; padding-top: 10px; }
-  .side-foot .mini { height: 30px; }
-  .brand .logo { width: 30px; height: 30px; font-size: 16px; }
-}
-
-/* 再矮一档（窗口拖到屏幕高度三分之一左右）继续收，仍保证不需要滚动 */
-@media (min-width: 901px) and (max-height: 420px) {
-  .sidebar { gap: 8px; padding: 10px 12px; }
-  .side-label { font-size: 10px; }
-  .sidebar .presets button { padding: 5px 10px; }
-  .side-foot .mini { height: 28px; }
-}
 
 /* ---------- 主列顶条 ---------- */
 
@@ -331,7 +226,7 @@ html.light #themeBtn::before { content: '🌙'; }
 
 .mainbar-spacer { flex: 1 1 auto; }
 
-/* 预设按钮基础态（侧边栏上下文在 .sidebar .presets 里覆盖尺寸/对齐） */
+/* 预设按钮基础态（顶条上下文由 .topbar .presets 覆盖尺寸/对齐） */
 .presets button {
   border: 0;
   background: transparent;
@@ -775,7 +670,7 @@ input.text:focus, select.mini:focus, button:focus-visible, textarea:focus {
    background-color 的话主题切换会**直接跳变**——渐变之间没有可插值的
    颜色通道，浏览器只能整块替换。这条是实测发现的（切主题时只有边框
    在过渡、底色是硬切）。 */
-body, .sidebar, .pane, .drawer, .statusbar, .files button,
+body, .topbar, .pane, .drawer, .statusbar, .files button,
 button.mini, select.mini, button.primary, input.text, .badge, .editor,
 .pane-head, .pane-foot,
 .opt-row input[type="text"], .opt-row input[type="number"], .opt-row select,
@@ -1048,36 +943,33 @@ button.primary:hover:not(:disabled) { filter: brightness(1.1); }
 }
 
 @media (max-width: 900px) {
-  /* 窄屏：侧边栏折回顶部横条（回到旧 topbar 的形态），预设横向换行。
-     桌面那套"分组标题 + 两行预设项"在这一档全部撤掉：横条里多一行标题就白占高度，
-     说明文字也会把每个档位撑成两行。display:contents 让 .side-group 自身不参与布局，
-     它的子元素（#presets）回到 .sidebar 的直接子项位置，与改造前完全一致。 */
+  /* 窄屏：单列布局已在基础 .shell 写好；这里把 .topbar 的内容排成两到三行——
+     品牌行（logo+标题+语言+主题），预设独占一行横向滚动；
+     说明文字省掉（.preset-desc），按钮在窄屏里不再需要解释。 */
   .shell { grid-template-columns: 1fr; grid-template-rows: auto 1fr; }
-  .sidebar {
-    flex-direction: row;
-    flex-wrap: wrap;
-    align-items: center;
-    gap: 8px;
-    padding: 8px 10px;
-    border-right: 0;
-    border-bottom: 1px solid var(--line);
-    overflow: visible;
-  }
-  .brand { padding: 0; }
-  .side-group { display: contents; }
-  .side-label { display: none; }
+  .topbar { flex-wrap: wrap; padding: 8px 10px; gap: 8px; border-bottom: 1px solid var(--line); }
+  .topbar .brand { flex: 1 1 auto; min-width: 0; }
+  .topbar #lang,
+  .topbar #themeBtn { flex: 0 0 auto; }
   .preset-desc { display: none; }
-  .sidebar .presets { flex-direction: row; flex-wrap: wrap; }
-  /* 桌面那条 width:100% 是为竖排导航写的，横条里必须放回内容宽度 */
-  .sidebar .presets button { width: auto; padding: 6px 12px; }
-  .side-foot {
-    margin-top: 0;
-    margin-left: auto;
-    padding-top: 0;
-    border-top: 0;
-    flex-direction: row;
+
+  /* 预设横滚条。order:3 + basis:100% 把它挪到品牌行之后独占一行；
+     负边距出血到屏幕边，滚动时首尾按钮才有从边缘滑入的自然感；
+     右侧渐隐提示后面还有档位。滚动条藏掉（横滚条用不上它）。 */
+  .topbar .presets {
+    order: 3;
+    flex: 1 1 100%;
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    margin: 2px -10px -2px;
+    padding: 2px 10px 6px;
+    scrollbar-width: none;
+    -webkit-mask-image: linear-gradient(90deg, #000 90%, transparent);
+    mask-image: linear-gradient(90deg, #000 90%, transparent);
   }
-  .side-foot .mini { width: auto; }
+  .topbar .presets::-webkit-scrollbar { display: none; }
+  .topbar .presets button { flex: 0 0 auto; }
+
   .panes { grid-template-columns: 1fr; grid-template-rows: 1fr 1fr; }
   .drawer-cols { grid-template-columns: 1fr; }
   #shortcutHint { display: none; }
@@ -1120,8 +1012,7 @@ button.primary:hover:not(:disabled) { filter: brightness(1.1); }
   .files button:hover { transform: none; }
   button.mini:hover, select.mini:hover { border-color: var(--line); }
   button.primary:hover:not(:disabled) { filter: none; }
-  .sidebar .presets button:hover { background: none; }
-  .presets button:hover { color: var(--fg-dim); }
+  .presets button:hover { color: var(--fg-dim); background: transparent; }
   .stats summary:hover { color: var(--fg-dim); }
 }
 
@@ -1133,27 +1024,10 @@ button.primary:hover:not(:disabled) { filter: brightness(1.1); }
    预设独占一行横向滚动；面板工具组独占整行并均分拉伸——手机上
    "开始混淆"必须一眼锁定，不能混在一排一样大的按钮里。 */
 @media (max-width: 640px) {
-  .sidebar { gap: 6px 8px; padding: 8px 12px; }
-  .brand { flex: 1 1 auto; min-width: 0; }
-  .brand h1 { font-size: 15px; }
-  .side-foot { flex: 0 0 auto; }
-
-  /* 预设横滚条。DOM 里 presets 在 side-foot 之前，order:3 + basis:100% 把它
-     挪到品牌行之后独占一行；负边距出血到屏幕边，滚动时首尾按钮才有从边缘
-     滑入的自然感；右侧渐隐提示后面还有档位。滚动条藏掉（横滚条用不上它）。 */
-  .sidebar .presets {
-    order: 3;
-    flex: 1 1 100%;
-    flex-wrap: nowrap;
-    overflow-x: auto;
-    margin: 2px -12px -2px;
-    padding: 2px 12px 6px;
-    scrollbar-width: none;
-    -webkit-mask-image: linear-gradient(90deg, #000 90%, transparent);
-    mask-image: linear-gradient(90deg, #000 90%, transparent);
-  }
-  .sidebar .presets::-webkit-scrollbar { display: none; }
-  .sidebar .presets button { flex: 0 0 auto; }
+  /* 极窄屏：顶条更紧，品牌字保持 15px（再小就辨不清"JsLabyrinth"了）。
+     预设横滚条规则已在 ≤900px 那组里覆盖，无需重复。 */
+  .topbar { gap: 6px 8px; padding: 8px 10px; }
+  .topbar .brand h1 { font-size: 15px; }
 
   .mainbar { padding: 8px 10px 0; }
   .panes { padding: 8px; gap: 8px; }
