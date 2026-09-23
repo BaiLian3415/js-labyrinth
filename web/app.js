@@ -270,7 +270,11 @@ function renderOption(opt) {
         ctl.appendChild(o);
       }
     }
-    const dv = state.touched.has(opt.key) ? state.touched.get(opt.key) : presetValue(opt.key);
+    // 预设下拉（顶部 chips 移除后的唯一预设入口）：显示当前预设而不是
+    // presetValue('preset')——预设对象里没有 preset 字段，按通用逻辑会落到 undefined。
+    const dv = opt.key === 'preset'
+      ? (state.touched.has('preset') ? state.touched.get('preset') : state.preset)
+      : (state.touched.has(opt.key) ? state.touched.get(opt.key) : presetValue(opt.key));
     ctl.value = String(dv);
     if (ctl.value !== String(dv)) ctl.value = String(opt.def);
   } else {
@@ -287,6 +291,23 @@ function renderOption(opt) {
   }
   ctl.className = 'opt-ctl';
   if (state.touched.has(opt.key)) ctl.classList.add('dirty');
+
+  if (opt.key === 'preset') {
+    // 预设切换沿用原 chips 的语义（"选预设 = 整套套用这份默认值"）：
+    // 连先前手改过的项一起清掉，否则改过的那几项会继续盖在新预设上，
+    // 选了跟没选一样——这正是"自定义之后再选预设没反应"的原因。
+    ctl.addEventListener('change', () => {
+      if (state.preset === ctl.value && state.touched.size === 0) return;
+      state.preset = ctl.value;
+      state.touched.clear();
+      renderOptions();   // 全部项跟着新预设走（含本行自己，dirty 态一并重置）
+      saveState();
+      refreshGateStyles();
+      updatePresetHint();
+    });
+    row.append(name, ctl);
+    return row;
+  }
 
   const commit = () => {
     let v = ctl.value;
@@ -329,62 +350,19 @@ function refreshGateStyles() {
   if (ent && !res.ok && res.kind === 'options') {
     for (const h of res.hits) blocked.set(h.key, h);
   }
-  if (ent && !res.ok && res.kind === 'preset') {
-    // 预设越界：把预设选择器标红，具体选项不逐个标
-    els.presets.classList.toggle('blocked', true);
-  } else {
-    els.presets.classList.remove('blocked');
-  }
+  // 预设越界：顶部 chips 已移除，把抽屉「基础」组里的预设行标红，
+  // 用户提交前就能看到哪一档会被拒，而不是等运行后报错。
+  const presetBlocked = !!(ent && !res.ok && res.kind === 'preset');
   for (const row of document.querySelectorAll('.opt-row')) {
     const hit = blocked.get(row.dataset.key);
-    row.classList.toggle('gated', !!hit);
+    const isPreset = row.dataset.key === 'preset';
+    row.classList.toggle('gated', !!hit || (isPreset && presetBlocked));
     if (hit) row.title = optionsGate.violationText(hit, ent);
+    else if (isPreset && presetBlocked) row.title = optionsGate.presetBlockedText(res, ent);
   }
 }
 
 // ---------- 预设 ----------
-
-function renderPresets() {
-  els.presets.textContent = '';
-  // 每档一句强度说明，补可读性（"更快还是更硬"一句话讲清）。
-  // 键必须写成字面量而不是拼字符串：selftest 会扫 t('...') 里的字面量来校验"界面用到的
-  // 文案键都已定义"，拼出来的键会被截成半截（presetDesc）而误判为缺失。
-  // 放在函数里而不是模块顶层，是为了切语言时跟着重新渲染。
-  const descs = {
-    low: t('presetDescLow'),
-    medium: t('presetDescMedium'),
-    high: t('presetDescHigh'),
-    max: t('presetDescMax'),
-  };
-  for (const name of PRESET_NAMES) {
-    const b = document.createElement('button');
-    b.type = 'button';
-    // 两行结构：档位名 + 强度说明。点击行为、aria-pressed 单选语义与原先完全一致。
-    const label = document.createElement('span');
-    label.className = 'preset-name';
-    label.textContent = name;
-    const desc = document.createElement('span');
-    desc.className = 'preset-desc';
-    desc.textContent = descs[name] || '';
-    b.append(label, desc);
-    b.setAttribute('role', 'radio');
-    b.setAttribute('aria-pressed', String(state.preset === name));
-    b.addEventListener('click', () => {
-      if (state.preset === name && state.touched.size === 0) return;
-      state.preset = name;
-      // 选预设就是"整套套用这份默认值"，所以连先前手改过的项一起清掉。
-      // 否则改过的那几项会继续盖在新预设上，选了跟没选一样——这正是"自定义之后
-      // 再选预设没反应"的原因。
-      state.touched.clear();
-      renderPresets();
-      renderOptions();   // 全部项跟着新预设走
-      saveState();
-      refreshGateStyles();
-      updatePresetHint();
-    });
-    els.presets.appendChild(b);
-  }
-}
 
 /**
  * 预设选择器下方的提示。授权带强度上限时把上限写出来：用户选了上层预设会被
@@ -1129,14 +1107,13 @@ function loadState() {
 // ---------- 初始化 ----------
 
 async function init() {
-  for (const id of ['presets', 'lang', 'themeBtn', 'optsBtn', 'mode', 'openBtn', 'clearBtn',
+  for (const id of ['lang', 'themeBtn', 'optsBtn', 'mode', 'openBtn', 'clearBtn',
     'fileInput', 'files', 'input', 'inInfo', 'output', 'outInfo', 'outSize', 'statsBox',
     'statsBody', 'runBtn', 'copyBtn', 'dlBtn', 'zipBtn', 'drawer', 'apiBase', 'apiHint',
     'licKey', 'actBtn', 'deactBtn', 'licInfo', 'licDevice', 'licBadge', 'seed', 'presetHint',
     'resetBtn', 'status', 'quota', 'ver', 'inputPane', 'outputPane', 'apiState', 'shortcutHint']) {
     els[id] = $(id);
   }
-  els.presets = $('presets');
 
   loadState();
   setLang(state.lang);
@@ -1149,7 +1126,6 @@ async function init() {
 
   applyI18n();
   renderThemeBtn();   // 必须在 applyI18n() 之后：见 renderThemeBtn 的说明
-  renderPresets();
   renderOptions();
 
   // 事件绑定
@@ -1159,7 +1135,6 @@ async function init() {
     applyI18n();
     renderThemeBtn();   // 主题文案不挂 data-i18n，切语言后要自己重渲染
     renderOptions();
-    renderPresets();
     renderFiles();
     showResult();
     renderApiState();

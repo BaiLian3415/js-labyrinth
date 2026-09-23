@@ -38,8 +38,9 @@
   <p class="noscript">JsLabyrinth 的界面需要 JavaScript 才能运行。命令行用法见项目 README。</p>
 </noscript>
 
-<!-- 单列外壳：原左导航整块已移除（2026-09-23），品牌 + 强度预设 + 语言/主题
-     合并到顶部条 .topbar；右主列保留状态条 + 面板 + 选项抽屉 + 状态栏。
+<!-- 单列外壳：原左导航整块已移除（2026-09-23），品牌 + 语言/主题合并到顶部条 .topbar；
+     强度预设 chips 同步移除（2026-09-23），预设选择走选项抽屉「基础」组的
+     「混淆强度预设」下拉，不再两处重复。右主列保留状态条 + 面板 + 选项抽屉 + 状态栏。
      app.js 全部按 id 取元素，容器怎么挪都不影响接线。 -->
 <div class="shell">
   <div class="main">
@@ -51,8 +52,6 @@
           <span class="ver" id="ver"></span>
         </div>
       </div>
-
-      <div class="presets" id="presets" role="radiogroup" data-i18n-aria="guiAriaPresets" aria-label="preset"></div>
 
       <select id="lang" class="mini" data-i18n-aria="guiAriaLang" aria-label="language">
         <option value="zh">中文</option>

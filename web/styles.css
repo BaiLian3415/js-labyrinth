@@ -142,9 +142,10 @@ body {
 
 /* ---------- 顶部条（替代原侧栏，2026-09-23）---------- */
 
-/* 顶部条：左品牌 + 强度预设 + 语言/主题。
+/* 顶部条：左品牌 + 右语言/主题。
    用同一张浅渐变卡与底部 1px 分隔线，与面板群呼应——它读起来仍是"工具的起点"，只是
-   不再独占一整列。预设描述（.preset-desc）在 ≤900px 时隐藏。 */
+   不再独占一整列。强度预设 chips 已移除（2026-09-23）：预设选择走选项抽屉
+   「基础」组的「混淆强度预设」下拉，页面顶部不再重复一份。 */
 .topbar {
   display: flex;
   align-items: center;
@@ -176,37 +177,12 @@ body {
 .topbar .brand .ver { color: var(--fg-dim); font-size: 11.5px; }
 .topbar .brand-text { display: flex; flex-direction: column; min-width: 0; gap: 1px; }
 
-/* 顶条里的预设：横向排成一列 chip，每档只一行（基线 .presets button 的 padding 5px 12px）。
-   .presets.blocked 仍由基线规则承担（套餐闸门拦住时整条标红）。
-   ⚠️ display:flex 必须显式写——只写 flex-direction 不会让 .presets 真的横向（2026-09-23
-   经验：缺它就退回 inline-block 像文字一样横排换行）。 */
-.topbar .presets {
-  display: flex;
-  flex-direction: row;
-  flex-wrap: wrap;
-  gap: 4px;
-  padding: 0;
-  background: none;
-  border: 0;
-  border-radius: 0;
-}
-
-/* 顶条里语言选择/主题按钮：占位紧凑。 */
+/* 顶条里语言选择/主题按钮：占位紧凑；margin-left:auto 把它们推到右端，
+   品牌独自占左。 */
 .topbar #lang,
 .topbar #themeBtn { height: 32px; }
-.topbar #lang { width: auto; min-width: 96px; }
+.topbar #lang { width: auto; min-width: 96px; margin-left: auto; }
 .topbar #themeBtn { width: auto; padding: 0 12px; }
-
-/* 预设按钮里的文本片段：档位名加粗大写一行，描述文字小一号暗色。
-   这些从原侧栏规则里搬出来，现在适用于顶条横向 chip。 */
-.preset-name {
-  font-size: 13px;
-  font-weight: 600;
-  line-height: 1.3;
-  text-transform: capitalize;
-}
-.preset-desc { font-size: 11.5px; line-height: 1.35; color: var(--fg-dim); }
-.presets button[aria-pressed="true"] .preset-desc { color: var(--fg); opacity: .78; }
 
 /* 主题按钮的图标：emoji 字形，与品牌标记同一族。文案仍由 JS 按当前主题写入。 */
 #themeBtn::before { content: '☀️'; margin-right: 6px; font-size: 13px; }
@@ -225,31 +201,6 @@ html.light #themeBtn::before { content: '🌙'; }
 }
 
 .mainbar-spacer { flex: 1 1 auto; }
-
-/* 预设按钮基础态（顶条上下文由 .topbar .presets 覆盖尺寸/对齐） */
-.presets button {
-  border: 0;
-  background: transparent;
-  color: var(--fg-dim);
-  padding: 5px 12px;
-  border-radius: 6px;
-  cursor: pointer;
-  font: inherit;
-  font-size: 13px;
-}
-
-.presets button:hover { color: var(--fg); }
-
-/* 当前授权不允许的预设档位：整条选择器标红 */
-.presets.blocked { box-shadow: inset 0 0 0 1px var(--err); }
-.presets.blocked button[aria-pressed="true"] { color: var(--err); box-shadow: inset 0 0 0 1px var(--err); }
-.presets button[aria-pressed="true"] {
-  /* 选中态用实色强调底 + 内描边，刻意不用渐变：
-     渐变在这么小的按钮里看不出层次，反而让"选中"和"未选中"的区别变模糊。 */
-  background: var(--accent-dim);
-  color: var(--fg);
-  box-shadow: inset 0 0 0 1px var(--accent);
-}
 
 .badge {
   font-size: 12px;
@@ -705,15 +656,6 @@ button.mini, button.primary {
    亮度是 filter，走合成层，不参与颜色过渡。 */
 button.primary:hover:not(:disabled) { filter: brightness(1.1); }
 
-/* ---------- 预设档位：选中态滑动感 ---------- */
-
-.presets button {
-  transition:
-    background-color var(--dur-mid) var(--ease-out),
-    color var(--dur-mid) var(--ease-out),
-    box-shadow var(--dur-mid) var(--ease-out);
-}
-
 /* ---------- 面板入场 ---------- */
 
 /* 首屏两块面板轻微上浮淡入。只播一次，不用 infinite。
@@ -931,7 +873,7 @@ button.primary:hover:not(:disabled) { filter: brightness(1.1); }
      注意这里**不能**用 `*` 通配符：那会连上面那条 visibility 延迟一起清掉，
      抽屉收起时内容会瞬间失去可见性并产生闪烁。只压时长，不改时序。 */
   button.mini, button.primary, .files button, input.text, select.mini,
-  .badge, .editor, .presets button, .stats summary,
+  .badge, .editor, .stats summary,
   .opt-row input[type="text"], .opt-row input[type="number"], .opt-row select,
   .noscript, #shortcutHint kbd {
     transition-duration: 1ms;
@@ -943,32 +885,14 @@ button.primary:hover:not(:disabled) { filter: brightness(1.1); }
 }
 
 @media (max-width: 900px) {
-  /* 窄屏：单列布局已在基础 .shell 写好；这里把 .topbar 的内容排成两到三行——
-     品牌行（logo+标题+语言+主题），预设独占一行横向滚动；
-     说明文字省掉（.preset-desc），按钮在窄屏里不再需要解释。 */
+  /* 窄屏：单列布局已在基础 .shell 写好；顶条内容一行放得下——
+     品牌居左，语言/主题靠右（#lang 的 margin-left:auto 在基础规则里）。
+     强度预设 chips 已移除，预设选择在选项抽屉「基础」组里。 */
   .shell { grid-template-columns: 1fr; grid-template-rows: auto 1fr; }
   .topbar { flex-wrap: wrap; padding: 8px 10px; gap: 8px; border-bottom: 1px solid var(--line); }
   .topbar .brand { flex: 1 1 auto; min-width: 0; }
   .topbar #lang,
   .topbar #themeBtn { flex: 0 0 auto; }
-  .preset-desc { display: none; }
-
-  /* 预设横滚条。order:3 + basis:100% 把它挪到品牌行之后独占一行；
-     负边距出血到屏幕边，滚动时首尾按钮才有从边缘滑入的自然感；
-     右侧渐隐提示后面还有档位。滚动条藏掉（横滚条用不上它）。 */
-  .topbar .presets {
-    order: 3;
-    flex: 1 1 100%;
-    flex-wrap: nowrap;
-    overflow-x: auto;
-    margin: 2px -10px -2px;
-    padding: 2px 10px 6px;
-    scrollbar-width: none;
-    -webkit-mask-image: linear-gradient(90deg, #000 90%, transparent);
-    mask-image: linear-gradient(90deg, #000 90%, transparent);
-  }
-  .topbar .presets::-webkit-scrollbar { display: none; }
-  .topbar .presets button { flex: 0 0 auto; }
 
   .panes { grid-template-columns: 1fr; grid-template-rows: 1fr 1fr; }
   .drawer-cols { grid-template-columns: 1fr; }
@@ -997,7 +921,6 @@ button.primary:hover:not(:disabled) { filter: brightness(1.1); }
 
   button.mini, select.mini { min-height: 36px; padding: 6px 14px; }
   button.primary { min-height: 40px; padding: 6px 20px; }
-  .presets button { min-height: 36px; }
   .files button { min-height: 32px; padding: 4px 14px; }
   .row input[type="checkbox"], .opt-row input[type="checkbox"] {
     width: 18px; height: 18px; flex: 0 0 auto;
@@ -1012,7 +935,6 @@ button.primary:hover:not(:disabled) { filter: brightness(1.1); }
   .files button:hover { transform: none; }
   button.mini:hover, select.mini:hover { border-color: var(--line); }
   button.primary:hover:not(:disabled) { filter: none; }
-  .presets button:hover { color: var(--fg-dim); background: transparent; }
   .stats summary:hover { color: var(--fg-dim); }
 }
 
