@@ -402,6 +402,49 @@ section('卡密的机器码绑定');
     const okRes = licCore.verifyLicenseData(rec, midA, pub);
     ok(!okRes.ok && okRes.reason === 'machine', '卡密绑定对但记录来自别的机器时判 machine', okRes.reason);
   }
+
+  // 端到端走 license-web.activate：绑定卡的"换机拒激活"必须在激活入口就生效。
+  // 回归点：activate 曾经漏掉 matchesMachine，绑定卡换机激活直接 ok 并获得完整
+  // 权益，restore 的 bind 拒绝根本来不及拦（激活的同一会话已白用了一整轮）。
+  {
+    platform.setKv(null);
+    platform.setStorage(platform.newMemoryStorage());
+    licenseWeb.setKeyMaterial(pub, null);
+    licenseWeb.resetRequestState();
+    const midHere = await licenseWeb.machineId();
+    const otherMid = midHere.slice(0, 23) + (midHere.endsWith('0') ? '1' : '0');
+    // 签发日必须取今天：到期时间由"签发日 + 天数"推出，restore 会验过期，
+    // 而上面 codec 层的用例用的是固定签发日（只验签、不过期）。
+    const today = Math.floor((Date.now() - codec.DAY_ZERO) / 86400000);
+
+    const foreign = codec.issueCode(seed, 'plus', 30, '24680', today, otherMid);
+    const badAct = await licenseWeb.activate(foreign);
+    ok(!badAct.ok && badAct.reason === 'bind',
+      '绑定卡在非绑定机器上 activate 即被拒（reason=bind）', badAct.reason);
+    ok(!licenseWeb.isLicensed(), '拒激活后不进入已授权状态');
+    ok((await licenseWeb.exportRecord()) === null, '拒激活不落盘');
+
+    const own = codec.issueCode(seed, 'plus', 30, '24681', today, midHere);
+    const goodAct = await licenseWeb.activate(own);
+    ok(goodAct.ok && goodAct.plan === 'plus', '绑定卡在绑定机器上 activate 成功');
+    const rest = await licenseWeb.restore();
+    ok(rest.ok, '绑定卡激活写下的记录可被 restore 恢复');
+
+    // 过期卡同一家族的漏洞：activate 不判过期的话，Worker 按卡密激活的 API
+    // 请求每次重放都绕过到期检查（restore 的 expired 拒绝来不及拦）。
+    // 换一份干净存储再测：上一例成功激活的记录还留在里面。
+    licenseWeb.resetRequestState();
+    platform.setStorage(platform.newMemoryStorage());
+    const stale = codec.issueCode(seed, 'plus', 30, '24682', today - 60, midHere);
+    const staleAct = await licenseWeb.activate(stale);
+    ok(!staleAct.ok && staleAct.reason === 'expired',
+      '过期卡 activate 即被拒（reason=expired）', staleAct.reason);
+    ok(!licenseWeb.isLicensed() && (await licenseWeb.exportRecord()) === null,
+      '过期卡拒激活后无权益、不落盘');
+
+    licenseWeb.resetRequestState();
+    platform.setStorage(null);
+  }
 }
 
 // ------------------------------------------------------------ 自锚定校验

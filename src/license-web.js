@@ -355,12 +355,21 @@ export async function activate(rawKey) {
   const parsed = codec.parseCode(publicKey, String(rawKey == null ? '' : rawKey).trim());
   if (!parsed.ok) return { ok: false, reason: parsed.reason };
   const mid = await machineId();
-  // 到期时间只由卡密里已签名的签发日与天数决定，激活时刻不参与——所以续期
-  // 得重新签卡，本地改 issuedAt 没用。issuedAt 仍然记下来，但只是"本机何时
-  // 激活"的台账，不参与任何判定。
+  // 机器绑定必须在激活这一刻就判定，不能留给 restore：激活成功立即获得完整
+  // 权益（本次会话直接可用；Worker 按卡密激活的 API 请求更是每次都要走这里），
+  // 等下次 restore 才以 reason:'bind' 拒绝，等于换机的绑定卡已经白用了一整轮。
+  // matchesMachine 对不绑定的卡（绑定段全 0）恒真，语义与 verifyLicenseData 一致。
+  if (!codec.matchesMachine(parsed.bindSeg, mid)) return { ok: false, reason: 'bind' };
   const issuedAt = platform.now();
   const expiresAt = licCore.expiryFromIssueDay(parsed);
+  // 到期时间同样是激活这一刻就判定的硬上限，不能留给 restore：过期卡若能在
+  // activate 里换到完整权益，Worker 按卡密激活的 API 请求每次重放都绕过过期检查。
+  if (expiresAt !== codec.PERPETUAL && platform.now() > expiresAt) {
+    return { ok: false, reason: 'expired' };
+  }
   const usage = { day: licCore.todayKey(), used: 0 };
+  // 到期时间只由卡密里已签名的签发日与天数决定，激活时刻不参与——续期得重新
+  // 签卡，本地改 issuedAt 没用。issuedAt 仍记下来，但只是"本机何时激活"的台账。
   const record = licCore.makeRecord({
     code: parsed.code, plan: parsed.plan, machine: mid, issuedAt, expiresAt, usage,
   }, publicKey);
