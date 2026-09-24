@@ -257,7 +257,10 @@ function obfuscateDocument(html, options) {
   let originalSize = 0;
   let obfuscatedSize = 0;
   const res = processHtml(html, (js, idx, blockMeta) => {
-    const opts = { ...options, seed: baseSeed + idx * 7919 };
+    // HTML 模式逐块混淆：每个内联块都插一段文件头横幅会污染页面，且块间
+    // 共享作用域下横幅守卫的自身源码核对拿不到整页文本，因此 HTML 模式跳过横幅；
+    // 其余增强保护（内核档、碎片化、Anti-LLM）照常生效。
+    const opts = { ...options, seed: baseSeed + idx * 7919, bannerSkip: true };
     if (blockMeta.sharedNames.length) opts.selfCheck = false;
     const out = obfuscate(js, opts);
     stats = out.stats;

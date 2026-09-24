@@ -1405,6 +1405,87 @@ section('其他');
 }
 
 // ---------------------------------------------------------------------------
+// ------------------------------------------------- 增强保护（内核档 / 横幅 / 碎片化 / Anti-LLM）
+
+section('增强保护：WASM 解释器内核 / 横幅 / 碎片化 / Anti-LLM');
+{
+  const src = 'function calc(a, b) { var t = a * 2 + b; if (t > 10) { t -= 3; } return t; }\n'
+    + 'function label(n) { return n > 5 ? "big" : "small"; }\n'
+    + 'var out = [];\nfor (var i = 0; i < 3; i++) { out.push(label(calc(i, 4))); }\n'
+    + 'process.stdout.write(out.join(",") + "|" + calc(1, 2));';
+  const want = 'small,big,big|4';
+  const r = obfuscate(src, { preset: 'max', seed: 4242 });
+  const st = {};
+  for (const s of r.stats || []) st[s.pass] = s.result;
+
+  // 内核档：解释循环整体在 WASM 内，构建期自检（锚定字/探针/表层解密）必须通过
+  ok(st.wasmvm && st.wasmvm.fns > 0, 'max 预设启用 WASM 解释器内核档', JSON.stringify(st.wasmvm));
+  ok(st.wasmvm && st.wasmvm.smoke === 'ok', '内核模块构建期自检通过（锚定字/探针/解密）');
+  ok(st.wasmvm && st.wasmvm.rtLayers >= 2, '自定义运行时层数生效', String(st.wasmvm && st.wasmvm.rtLayers));
+  ok(st.wasmvm && st.wasmvm.moduleBytes > 1000, 'WASM 模块非空');
+  ok(runNode(r.code, 'enh-max.js').trim() === want,
+    '内核档产物语义不变（max 预设）');
+
+  // 语义等价：内核档多 seed
+  let vmBad = 0;
+  for (const seed of [1, 2, 3]) {
+    const c = obfuscate(src, { preset: 'max', seed }).code;
+    if (runNode(c, 'enh-max-' + seed + '.js').trim() !== want) vmBad++;
+  }
+  ok(vmBad === 0, '内核档跨 seed 语义一致（3 个 seed）');
+
+  // 字符串碎片化：多载体计数 + 与关闭时结构不同
+  ok(st.stringArray && st.stringArray.scatterCarriers >= 2, '字符串碎片化多载体生效',
+    JSON.stringify(st.stringArray));
+  const rNo = obfuscate(src, { preset: 'max', seed: 4242, stringScatter: false });
+  const stNo = {};
+  for (const s of rNo.stats || []) stNo[s.pass] = s.result;
+  ok(stNo.stringArray && stNo.stringArray.scatterCarriers === 0, '关闭碎片化时不产生载体');
+  ok(r.code !== rNo.code, '碎片化开关改变产物');
+
+  // Anti-LLM：注记与伪业务分支
+  ok(st.antiLLM && (st.antiLLM.notes + st.antiLLM.decoys) > 0, 'Anti-LLM 注记/诱饵已注入',
+    JSON.stringify(st.antiLLM));
+
+  // 横幅：默认署名 + 首行位置 + 同 seed 复现
+  ok(r.code.startsWith('/*! JsLabyrinth'), '文件头横幅在产物最前面');
+  ok(r.code.includes('Author: Heling'), '默认横幅含作者署名');
+  ok(st.banner && st.banner.custom === false, '默认横幅标记为非自定义');
+  ok(obfuscate(src, { preset: 'max', seed: 4242 }).code === r.code, '同 seed 产物逐字节可复现');
+
+  // 防删：删掉文件头横幅，产物必须失效（密钥流与横幅互锁）
+  {
+    const cut = r.code.slice(r.code.indexOf('\n') + 1);
+    let broken = 'RUNS';
+    try { runNode(cut, 'enh-cut.js'); } catch (e) { broken = 'BREAKS'; }
+    ok(broken === 'BREAKS', '删除文件头横幅后产物失效（不可删除）', broken);
+  }
+
+  // 自定义横幅（付费档能力）与非法输入
+  {
+    const rc = obfuscate(src, { preset: 'max', seed: 4242, bannerText: 'ACME Internal Build\nAuthor: Heling' });
+    ok(rc.code.startsWith('/*! ACME Internal Build'), '自定义横幅写入文件头');
+    ok(runNode(rc.code, 'enh-custom.js').trim() === want, '自定义横幅产物可执行');
+    throws(() => obfuscate(src, { preset: 'low', bannerText: 'bad */ text' }), '横幅含注释终止符被拒');
+    throws(() => obfuscate(src, { preset: 'low', bannerText: 'x'.repeat(3000) }), '横幅超长被拒');
+  }
+
+  // 关掉外壳时横幅只做守卫（不额外引入 eval 层），产物仍可执行
+  {
+    const rs = obfuscate(src, { preset: 'max', seed: 9, shell: false });
+    ok(!/eval/.test(rs.code.split('\n').slice(0, 3).join('\n')), '无外壳时横幅不引入 eval 层');
+    ok(runNode(rs.code, 'enh-noshell.js').trim() === want, '无外壳 + 横幅产物可执行');
+  }
+
+  // shebang 顺序：hashbang 必须仍在第一行，横幅紧随其后
+  {
+    const sh = obfuscate('#!/usr/bin/env node\nprocess.stdout.write("ok");', { preset: 'low', seed: 3 });
+    ok(sh.code.split('\n')[0].startsWith('#!'), 'hashbang 仍在第一行');
+    ok(sh.code.split('\n')[1].startsWith('/*!'), '横幅紧随 hashbang');
+    ok(runNode(sh.code, 'enh-shebang.js').trim() === 'ok', '带 hashbang 的产物可执行');
+  }
+}
+
 // 线上验收（需要网络）
 //
 // 打已部署的 Cloudflare 站点，验证"本地构建的东西真的在线上跑着"。这一段是

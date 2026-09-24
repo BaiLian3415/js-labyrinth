@@ -12,6 +12,7 @@ const { setSeed, rand, randInt } = randUtil;
 import rtlib from './passes/rtlib.js';
 import vm from './passes/vm.js';
 import wasm from './passes/wasm.js';
+import wasmvm from './passes/wasmvm.js';
 import controlFlow from './passes/controlFlow.js';
 import objectKeys from './passes/objectKeys.js';
 import numberObf from './passes/numberObf.js';
@@ -21,6 +22,7 @@ import logicalExpr from './passes/logicalExpr.js';
 import conditionObf from './passes/conditionObf.js';
 import deadCode from './passes/deadCode.js';
 import opaquePredicates from './passes/opaquePredicates.js';
+import antiLLM from './passes/antiLLM.js';
 import debugProtection from './passes/debugProtection.js';
 import functionWrapper from './passes/functionWrapper.js';
 import callProxy from './passes/callProxy.js';
@@ -28,6 +30,7 @@ import mangle from './passes/mangle.js';
 import envFingerprint from './passes/envFingerprint.js';
 import integrityCheck from './passes/integrityCheck.js';
 import shellWrap from './passes/shell.js';
+import bannerMod from './passes/banner.js';
 import platform from './platform.js';
 import builtinLower from './ast/builtin-lower.js';
 import builtinUpper from './ast/builtin-upper.js';
@@ -216,13 +219,20 @@ function obfuscate(code, userOptions) {
   // 不透明谓词注入，用恒真谓词包裹真实语句
   if (options.opaquePredicates) applyPass(opaquePredicates, 'opaquePredicates');
 
+  // Anti-LLM 加固：误导性注记 + 伪业务分支。排在 stringArray 之前，
+  // 注入的字符串字面量随后会被收进池里加密，不额外留下明文
+  if (options.antiLLM) applyPass(antiLLM, 'antiLLM');
+
   // 反调试保护
   if (options.debugProtection) applyPass(debugProtection, 'debugProtection');
 
   if (options.envFingerprint) applyPass(envFingerprint, 'envFingerprint');
   if (options.functionWrapper) timePass('functionWrapper', () => functionWrapper(ast, options, ctx));
   if (options.callProxy) applyPass(callProxy, 'callProxy');
-  if (options.wasm) timePass('wasm', () => wasm(ast, options, ctx));
+  // WASM 解释器内核档与旧 wasm 档互斥：内核档把解释器整体搬进 WASM，旧档只搬
+  // 数据与原语，两者同时开会生成两个模块与两套取指假设，故内核档优先。
+  if (options.wasmInterpreter) timePass('wasmvm', () => wasmvm(ast, options, ctx));
+  else if (options.wasm) timePass('wasm', () => wasm(ast, options, ctx));
   if (options.mangle) timePass('mangle', () => mangle(ast, options, ctx));
   if (options.integrityCheck) timePass('integrityCheck', () => integrityCheck(ast, options, ctx));
 
@@ -248,17 +258,19 @@ function obfuscate(code, userOptions) {
 
   let finalCode = out.code;
 
+  // 载荷形态判定：ESM 不套 eval 外壳，CJS 用带形参的直接 eval 放行
+  const progNode = ast.type === 'File' ? ast.program : ast;
+  const isModuleSrc = progNode.body.some((s) =>
+    s.type === 'ImportDeclaration' || s.type === 'ExportNamedDeclaration' ||
+    s.type === 'ExportDefaultDeclaration' || s.type === 'ExportAllDeclaration');
+  const payloadCjs = !isModuleSrc && usesFreeCommonJs(ast, traverse);
+
   const tShell = platform.nowMs();
   if (options.shell !== false) {
-    const progNode = ast.type === 'File' ? ast.program : ast;
-    const isModuleSrc = progNode.body.some((s) =>
-      s.type === 'ImportDeclaration' || s.type === 'ExportNamedDeclaration' ||
-      s.type === 'ExportDefaultDeclaration' || s.type === 'ExportAllDeclaration');
     if (isModuleSrc) {
       stats.push({ pass: 'shell', result: { skipped: 'module' } });
-    } else if (usesFreeCommonJs(ast, traverse)) {
-      stats.push({ pass: 'shell', result: { skipped: 'commonjs' } });
     } else {
+      const cjs = payloadCjs;
       // 引导器子集：关掉 VM/字符串池/反调试等无法自举的 pass
       const bootOpts = Object.assign({}, options, {
         seed: randInt(1, 1000000000),
@@ -273,9 +285,9 @@ function obfuscate(code, userOptions) {
         templateToConcat: true, functionWrapper: true,
         callProxy: true, mangle: true,
       });
-      const sr = shellWrap(finalCode, options, (src) => obfuscate(src, bootOpts));
+      const sr = shellWrap(finalCode, options, (src) => obfuscate(src, bootOpts), cjs);
       finalCode = sr.code;
-      stats.push({ pass: 'shell', result: { layers: sr.layers } });
+      stats.push({ pass: 'shell', result: { layers: sr.layers, cjs } });
     }
   }
   const shellMs = platform.nowMs() - tShell;
@@ -287,6 +299,25 @@ function obfuscate(code, userOptions) {
     const shellEntry = stats.find((s) => s.pass === 'shell');
     if (shellEntry) shellEntry.ms = shellMs;
     else stats.push({ pass: '·shell', result: { skipped: 'off' }, ms: shellMs });
+  }
+
+  // ---- 文件头横幅：默认写混淆器信息与作者名，付费档可自定义；与密钥流互锁 ----
+  if (options.bannerSkip !== true) {
+    const bn = bannerMod.sanitizeBanner(options.bannerText);
+    if (!bn.ok) {
+      if (bn.reason === 'long') throw new Error(msg('bannerTooLong', { max: 2000, n: bn.n }));
+      throw new Error(msg('badBannerText', { p: String(options.bannerText).slice(0, 24) }));
+    }
+    const bw = bannerMod.wrapBanner(finalCode, {
+      text: bn.text,
+      cjs: payloadCjs,
+      // 只有套了外壳的载荷才用盐互锁；ESM 或显式 shell:false 时只做守卫
+      wrap: !isModuleSrc && options.shell !== false,
+      poisonKey: progNode.__poisonKey,
+      ctx,
+    });
+    finalCode = bw.code;
+    stats.push({ pass: 'banner', result: { custom: bw.custom, salt: bw.salt } });
   }
 
   // hashbang 必须晚于套壳（eval 里出现 #! 会 SyntaxError）

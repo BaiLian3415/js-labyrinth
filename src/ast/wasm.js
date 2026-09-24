@@ -108,6 +108,8 @@ const OP = {
   memory_size: 0x3f, memory_grow: 0x40,
   i32_const: 0x41, i64_const: 0x42, f64_const: 0x44,
   i32_eqz: 0x45, i32_eq: 0x46, i32_ne: 0x47, i32_lt_s: 0x48,
+  i32_lt_u: 0x49, i32_gt_s: 0x4a, i32_gt_u: 0x4b,
+  i32_le_s: 0x4c, i32_le_u: 0x4d, i32_ge_s: 0x4e, i32_ge_u: 0x4f,
   i64_eqz: 0x50, i64_eq: 0x51,
   f64_eq: 0x61, f64_ne: 0x62, f64_lt: 0x63, f64_gt: 0x64,
   i32_add: 0x6a, i32_sub: 0x6b, i32_mul: 0x6c,
@@ -157,7 +159,7 @@ function vec(itemsBytes) {
  * @param {Array<{module:string, name:string, typeIdx:number, kind:number}>} [spec.imports] 导入项，kind 0 表示函数
  * @param {Array<{typeIdx:number, locals:number[][], body:number[]}>} spec.funcs 函数定义，locals 为 [个数, 类型] 对，body 已含 end
  * @param {number} [spec.memPages] 线性内存初始页数，一页 64KB
- * @param {Array<{name:string, kind:number, idx:number}>} [spec.exports] 导出项，kind 0/1/2/3 依次为函数、表、内存、全局
+ * @param {Array<{name:string, kind:number, idx:number}>} [spec.exports] 导出项，kind 0/1/2/3 依次为函数、表、内存、全局（全局导出配合 spec.globals 使用）
  * @param {Array<{offsetBytes:number[], bytes:number[]}>} [spec.data] 数据段，偏移指令已编码在 offsetBytes 里
  * @param {number[]} [spec.nameBytes] 自定义 name 段的附加内容
  * @returns {Uint8Array} 模块字节
@@ -187,6 +189,15 @@ function buildModule(spec) {
   // 内存由模块自己定义；若改成导入内存，这一段要整省掉
   if (spec.memPages) {
     pushAll(parts, section(SEC_MEM, vec([[LIMIT_MIN, ...uleb(spec.memPages)]])));
+  }
+
+  // 可变 i32 全局段（wasmvm 解释器的帧顶指针/计数器/nonce）。
+  // init 是 i32 常量初值，编码为 i32.const 指令 + end。
+  if (spec.globals && spec.globals.length) {
+    const items = spec.globals.map((g) => [
+      T_I32, g.mutable === false ? 0x00 : 0x01, ...i32Const(g.init), OP.end,
+    ]);
+    pushAll(parts, section(SEC_GLOBAL, vec(items)));
   }
 
   if (spec.exports && spec.exports.length) {

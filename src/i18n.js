@@ -137,6 +137,10 @@ const STRINGS = {
     vmContinueOutsideLoop: 'vm: continue 不在循环内',
     vmUnsupportedStatement: 'vm: 不支持的语句 {type}',
     vmChainSolveFailed: 'vm: 链值字求解失败',
+    vmWasmTableFull: 'vm: 共享分发字空间不足（函数指令集过大）',
+    vmWasmTooManyParams: 'vm: 形参超过 64 个，无法进入 WASM 解释器内核档',
+    badBannerText: '自定义文件头注释非法：不得包含 "*/"，长度不得为 0 或以空白开头（收到 {p}）',
+    bannerTooLong: '自定义文件头注释过长（上限 {max} 字符，收到 {n}）',
     vmUnknownOpcode: 'vm: 未知操作码 {kind}',
     badStringArrayEvolve: 'stringArrayEvolve 非法: {v}（可用 "each" / "sparse" 或 0~7 整数）',
     // parser 与 generator
@@ -405,6 +409,10 @@ const STRINGS = {
     vmContinueOutsideLoop: 'vm: continue outside loop',
     vmUnsupportedStatement: 'vm: unsupported statement {type}',
     vmChainSolveFailed: 'vm: chain value-word solving failed',
+    vmWasmTableFull: 'vm: shared dispatch-word space exhausted (function instruction set too large)',
+    vmWasmTooManyParams: 'vm: more than 64 parameters, cannot use the WASM interpreter core tier',
+    badBannerText: 'invalid custom banner: must not contain "*/", must not be empty or start with whitespace (got {p})',
+    bannerTooLong: 'custom banner too long (limit {max} chars, got {n})',
     vmUnknownOpcode: 'vm: unknown opcode {kind}',
     badStringArrayEvolve: 'invalid stringArrayEvolve: {v} (use "each" / "sparse" or an integer 0..7)',
     // parser 与 generator

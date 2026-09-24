@@ -104,6 +104,11 @@ function splitInto(value) {
   return parts;
 }
 
+/** 字符串数组 → 字面量 JSON（碎片载体用）。 */
+function listLiteral(xs) {
+  return "[" + xs.map((s) => JSON.stringify(s)).join(",") + "]";
+}
+
 function globalRef() {
   return '(typeof globalThis!=="undefined"?globalThis:typeof self!=="undefined"?self:typeof window!=="undefined"?window:typeof global!=="undefined"?global:{})';
 }
@@ -130,6 +135,12 @@ export default function stringArray(ast, options, ctx) {
   // 多进制编码：各组可用不同编码算法，破坏统一还原器。无论是否混编，
   // 恒有至少一组走 xor 并带动态密钥和访问后原位重加密，这一特性不随
   // 用户指定的主编码算法而缺失
+  // 字符串碎片化：把每组的池内容拆成多个短载体分散声明，运行期拼回；
+  // 静态面上不再有任何一处集中存放整池密文
+  const scatter = options.stringScatter === true;
+  let scatterCarriers = 0;
+  let scatterItems = 0;
+
   const mixedEncoding = options.stringArrayMixedEncoding !== false;
   // 诱饵串：垃圾串池里混入高信号假串，包含假密钥、假 URL、假 token。
   // 语义分析和 LLM 归纳会被引向并不存在的外部资产
@@ -312,12 +323,54 @@ export default function stringArray(ast, options, ctx) {
     // 访问器名和池数组名：短随机名并豁免 mangle，调用点每次都会引用访问器名
     const accessorName = shortName();
     const listVar = shortName();
+    // 字符串碎片化：池内容按固定片数逐项切开，分散到多个载体数组里声明，
+    // 运行期按位拼回。静态看到的是若干互不相干的短串载体，没有任何一处
+    // 集中存放整池；片数、载体名与切点逐次随机。
+    let arrExpr = null;
+    if (scatter && encodedItems.length) {
+      const fragCount = Math.min(randInt(2, 4), Math.max(1, Math.floor(encodedItems[0].length / 2) || 1));
+      scatterItems += encodedItems.length;
+      scatterCarriers += fragCount;
+      const carriers = [];
+      for (let cf = 0; cf < fragCount; cf++) carriers.push([]);
+      for (const s of encodedItems) {
+        const n = s.length;
+        if (fragCount < 2 || n < fragCount) {
+          carriers[0].push(s);
+          for (let cf = 1; cf < fragCount; cf++) carriers[cf].push("");
+          continue;
+        }
+        let prev = 0;
+        for (let cf = 0; cf < fragCount; cf++) {
+          const end = cf === fragCount - 1 ? n : Math.max(prev + 1, Math.min(n - (fragCount - cf - 1), Math.round((n * (cf + 1)) / fragCount)));
+          carriers[cf].push(s.slice(prev, end));
+          prev = end;
+        }
+      }
+      const carrierNames = [];
+      for (let cf = 0; cf < fragCount; cf++) {
+        const nm2 = shortName();
+        carrierNames.push(nm2);
+        const stmt = parse("var " + nm2 + "=" + listLiteral(carriers[cf]) + ";", { sourceType: "script" }).program.body[0];
+        markMachinery(stmt);
+        if (options.stringArrayCallsTransform === true) {
+          iifeStatements.push(stmt);
+        } else {
+          iifeStatements.push(stmt);
+        }
+      }
+      const ps = [];
+      for (let cf = 0; cf < fragCount; cf++) ps.push("a" + cf);
+      arrExpr = "(function(" + ps.join(",") + "){var o=[],q;for(q=0;q<a0.length;q++){o[q]=" +
+        ps.map((p) => p + "[q]").join("+") + ";}return o;})(" + carrierNames.join(",") + ")";
+    }
+
     const iifeSource = buildIifeSource({
       listVar, encodedItems, encoding: groupEnc, key, rotation, mask,
       selfDefending: !!options.selfDefending, checksum, checksumRot, poisonKeys,
       rt: ctx.rt, cache: options.stringArrayCache !== false,
       evolveMask: evolveFixed !== null ? evolveFixed : randInt(1, 3),
-      nm,
+      nm, arrExpr,
     });
     const parsed = parse("var " + accessorName + "=" + iifeSource + ";", { sourceType: "script" });
     // 标记为引导机制函数。debugProtection 的内联哨兵每次调用都要重哈希自身
@@ -425,7 +478,8 @@ export default function stringArray(ast, options, ctx) {
       noScope: true,
     });
   }
-  return { count: replaced, items: items.length, groups: groupCount, split: splitCount };
+  return { count: replaced, items: items.length, groups: groupCount, split: splitCount,
+    scatterCarriers, scatterItems };
 };
 
 // 把解码器 IIFE 内的所有函数节点标为引导机制层，debugProtection 依据此标记
@@ -480,8 +534,10 @@ function hashItems(items) {
   return h >>> 0;
 }
 
-function buildIifeSource({ listVar, encodedItems, encoding, key, rotation, mask, selfDefending, checksum, checksumRot, poisonKeys, rt, cache, evolveMask, nm }) {
+function buildIifeSource({ listVar, encodedItems, encoding, key, rotation, mask, selfDefending, checksum, checksumRot, poisonKeys, rt, cache, evolveMask, nm, arrExpr }) {
   const arrLit = "[" + encodedItems.map((s) => JSON.stringify(s)).join(",") + "]";
+  // 碎片化时调用方给出「多载体拼回」表达式；默认仍是单个数组字面量
+  const arrArg = arrExpr || arrLit;
   const dynamicXor = encoding === "xor";
   // xor 组用内联演化解码器，decoderSource 只有非 xor 组才需要
   const dec = dynamicXor ? "" : decoderSource(encoding, key, randInt, rt);
@@ -606,7 +662,7 @@ function buildIifeSource({ listVar, encodedItems, encoding, key, rotation, mask,
     lines.push("return " + nm.o + ";");
   }
   lines.push("};");
-  lines.push("})(" + arrLit + "," + "0x" + rotation.toString(16) + ")");
+  lines.push("})(" + arrArg + "," + "0x" + rotation.toString(16) + ")");
   return lines.join("");
 }
 

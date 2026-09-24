@@ -38,6 +38,11 @@ export default {
       "opaquePredicatesMax": 2,
       "sentinelRate": 0,
       "integrityPoisonPoints": 2,
+      "bannerText": [""],
+      "wasmInterpreter": false,
+      "stringScatter": false,
+      "antiLLM": false,
+      "rtDepth": 1,
       "shellDepth": 1
     }
   },
@@ -85,6 +90,8 @@ export default {
       "opaquePredicatesMax": 6,
       "sentinelRate": 0.5,
       "integrityPoisonPoints": 4,
+      "wasmInterpreter": false,
+      "rtDepth": 4,
       "shellDepth": 1
     }
   },

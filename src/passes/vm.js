@@ -1099,8 +1099,26 @@ function compileFunction(fn, ctx) {
     (ctx.options.vmDecoyOps !== undefined ? ctx.options.vmDecoyOps | 0 : 1024) - opKinds.length);
   const totalSlots = opKinds.length + decoyTarget;
   const slotOrder = shuffle(Array.from({ length: totalSlots }, (_, i) => i));
-  opKinds.forEach((k, i) => opNums.set(k, slotOrder[i]));
-  const decoys = slotOrder.slice(opKinds.length);
+  let decoys = slotOrder.slice(opKinds.length);
+  if (ctx.__vmWasmShared) {
+    // WASM 解释器内核档：分发字全程序共享。解释器本体在 WASM 里，逐函数置换不再
+    // 增大静态分析成本，反而要求 WASM 侧按函数查表；共享编号让模块只留一张
+    // 「分发字 → 语义号」表。未被占用的槽位就是干扰字，映射只有模块数据段知道。
+    const sh = ctx.__vmWasmShared;
+    opNums.clear();
+    for (const k of opKinds) {
+      let w = sh.wordOf.get(k);
+      if (w === undefined) {
+        if (sh.next >= sh.slots.length) throw new Error(msg('vmWasmTableFull'));
+        w = sh.slots[sh.next++];
+        sh.wordOf.set(k, w);
+      }
+      opNums.set(k, w);
+    }
+    decoys = [];
+  } else {
+    opKinds.forEach((k, i) => opNums.set(k, slotOrder[i]));
+  }
   // 桶数随指令集规模扩展，桶内大致保持 24 项线性比对；无干扰项时沿用原公式
   const nbRaw = decoys.length
     ? Math.max(8, Math.min(64, Math.ceil((opKinds.length + decoys.length) / 24)))
@@ -1204,6 +1222,47 @@ function compileFunction(fn, ctx) {
       flat.push((words[z] ^ posMask(z + 1)) ^ MASK_M0 ^ c);
       c = words[z];
     }
+  }
+
+  // ---- WASM 解释器内核档：函数体降级成一句桥接调用，解释循环在共享模块内 ----
+  if (ctx.__vmWasmShared) {
+    if (!ctx.__vmBridgeName) ctx.__vmBridgeName = uniqueName(ctx.usedNames, '_0x');
+    const fIdx = (ctx.__vmWasmCount = (ctx.__vmWasmCount || 0) + 1) - 1;
+    const paramOrder = [];
+    for (const p of fn.params) {
+      for (const nm in t.getBindingIdentifiers(p)) paramOrder.push(nm);
+    }
+    if (paramOrder.length > 64) throw new Error(msg('vmWasmTooManyParams'));
+    const argslots = paramOrder.map((nm) => (slotOf.has(nm) ? slotOf.get(nm) : -1));
+    const dirStmtsW = (origDirectives || []).map((d) => {
+      const v = d.value && d.value.type === 'StringLiteral' ? d.value.value : d.value;
+      return t.expressionStatement(t.stringLiteral(v));
+    });
+    fn.__wasmVmMeta = {
+      fIdx, flat, MASK_K1, MASK_K2, MASK_M0, CHAIN_SEED,
+      nSlots: slotOf.size, segLen: flat.length, argslots,
+      kinds: [...usedOps],
+      stringsEnc, STR_P, STR_K1, STR_K2, STR_M0,
+    };
+    // 桥接体：G/H/K/J 仍按调用重建（闭包按词法解析回原作用域），参数经桥接转句柄
+    fn.body = t.blockStatement([
+      t.variableDeclaration('var', [
+        t.variableDeclarator(G, t.arrayExpression(getterNodes)),
+        t.variableDeclarator(H, t.arrayExpression(setterNodes)),
+        t.variableDeclarator(K, t.arrayExpression(consts)),
+        t.variableDeclarator(J, t.arrayExpression(stringsEnc.map((row) =>
+          t.arrayExpression(row.map((n) => t.numericLiteral(n)))))),
+        ...[...captured].map((name) => t.variableDeclarator(t.identifier(name))),
+      ]),
+      t.returnStatement(t.callExpression(t.identifier(ctx.__vmBridgeName), [
+        t.numericLiteral(fIdx), G, H, K, J,
+        t.arrayExpression(paramOrder.map((nm) => t.identifier(nm))),
+      ])),
+    ]);
+    fn.body.body.unshift(...dirStmtsW);
+    if (fn.type === 'ArrowFunctionExpression') fn.expression = false;
+    compiledSet.add(fn);
+    return { real: usedOps.size, decoy: 0 };
   }
 
   // 解释器 case 生成。
@@ -1944,6 +2003,13 @@ function hasStringLiteral(root) {
  */
 function vm(ast, options, ctx) {
   const threshold = options.vmThreshold !== undefined ? options.vmThreshold : 3;
+  // WASM 解释器内核档：建立全程序共享的分发字编号空间（解释器在 WASM 内查表分发）
+  ctx.__vmWasmShared = null;
+  if (options.wasmInterpreter === true) {
+    const space = Math.max(512, ctx.options.vmDecoyOps !== undefined ? ctx.options.vmDecoyOps | 0 : 1024);
+    const slots = shuffle(Array.from({ length: space }, (_, i) => i));
+    ctx.__vmWasmShared = { wordOf: new Map(), slots, next: 0, total: space };
+  }
   const mode = options.vmMode === 'comment' || options.vmMode === 'only-string'
     ? options.vmMode
     : 'global';

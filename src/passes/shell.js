@@ -145,9 +145,12 @@ function b64encode(bytes, alpha) {
  *        层形态变体，tailOrder 为校验尾字节序（0 大端，1 小端），evalStyle
  *        为取值器形态（0 用 (0,eval)，1 用 Function 间接取器），posHash 决定
  *        FNV 是否混合位置；省略时随机
+ * @param {{cjs?:boolean}} [mode] cjs 为真时用「带 CommonJS 形参的函数内直接
+ *        eval」放行载荷：require/module/exports/__dirname/__filename 因此在
+ *        载荷作用域内可用，`var` 声明也不再落进全局
  * @returns {string} 引导器源码，自执行，末尾复原并 eval 载荷
  */
-function makeShellLayer(payload, variant) {
+function makeShellLayer(payload, variant, mode) {
   const plain = utf8Bytes(payload);
   const L = plain.length;
   const N = L + 4; // 额外 4 字节校验尾
@@ -165,7 +168,11 @@ function makeShellLayer(payload, variant) {
   const s1 = randInt(1, 0x7ffffffe) >>> 0;
   const s2 = randInt(1, 0x7ffffffe) >>> 0;
   const s3 = randInt(1, 0x7ffffffe) >>> 0;
-  const K0 = (s1 ^ s2 ^ s3) >>> 0;
+  // 外部盐：横幅层用它把「横幅文本是否完好」耦合进密钥流。运行期从同名变量读，
+  // 变量缺失或被改成别的值都会让密钥流错位、校验尾失配，载荷被打碎后 eval 必抛。
+  const saltVar = mode && mode.saltVar ? mode.saltVar : null;
+  const SALT = mode && mode.salt !== undefined ? (mode.salt >>> 0) : 0;
+  const K0 = ((s1 ^ s2 ^ s3) ^ SALT) >>> 0;
   const SD_S = randInt(1, 0x7ffffffe) >>> 0; // S-box 表种子
   const SD_T = randInt(1, 0x7ffffffe) >>> 0; // 字母表乱序种子
   const SD_D = randInt(1, 0x7ffffffe) >>> 0; // 段乱序种子
@@ -222,7 +229,10 @@ function makeShellLayer(payload, variant) {
   const tailExpr = tailOrder === 0
     ? '(((_0q[_0L]<<24)|(_0q[_0L+1]<<16)|(_0q[_0L+2]<<8)|_0q[_0L+3])>>>0)'
     : '(((_0q[_0L+3]<<24)|(_0q[_0L+2]<<16)|(_0q[_0L+1]<<8)|_0q[_0L])>>>0)';
+  const isCjs = !!(mode && mode.cjs);
   const evalTake = evalStyle === 0 ? '(0,eval)' : 'Function("return eval")()';
+  // CommonJS 载荷：形参名必须与载荷引用的绑定名逐字一致，直接 eval 才能看见它们
+  const cjsTake = 'Function("require","module","exports","__dirname","__filename","payload","return eval(payload)")';
 
   const B = [];
   const put = (...xs) => B.push(...xs);
@@ -239,7 +249,9 @@ function makeShellLayer(payload, variant) {
   put('var _0sb=new Array(256);for(_0i=0;_0i<256;_0i++){_0sb[_0i]=_0i;}');
   put('_0sb=shfl(_0sb,_0S[0]);');
   put('var _0s3=' + s3 + ';'); // 第三密钥分片放在表派生之后，让声明散布开
-  put('var _0e=_0s1^_0s2^_0s3;');
+  put(saltVar
+    ? 'var _0e=(_0s1^_0s2^_0s3)^(' + saltVar + '|0);'
+    : 'var _0e=_0s1^_0s2^_0s3;');
   put('var _0d=new Array(_0SG);for(_0i=0;_0i<_0SG;_0i++){_0d[_0i]=_0i;}');
   put('_0d=shfl(_0d,_0S[2]);');
   put('var _0r=new Uint8Array(_0N);var _0n=0;var _0acc=0;var _0pc=0;var _0bd2=0;');
@@ -283,7 +295,12 @@ function makeShellLayer(payload, variant) {
     put('if(_0p.length>=512){_0s2+=String.fromCharCode.apply(null,_0p);_0p=[];}}');
     put('if(_0p.length){_0s2+=String.fromCharCode.apply(null,_0p);}');
   }
-  put(evalTake + '(_0s2);');
+  if (isCjs) {
+    put('var _0cm={exports:{}};');
+    put(cjsTake + '.call(_0cm.exports,typeof require==="function"?require:void 0,_0cm,_0cm.exports,"","",_0s2);');
+  } else {
+    put(evalTake + '(_0s2);');
+  }
   put('})();');
 
   const consts =
@@ -304,12 +321,12 @@ function makeShellLayer(payload, variant) {
  *        其中固定为 shell:false
  * @returns {{code:string, layers:number}} 套壳后的源码与实际层数
  */
-function shellWrap(code, options, bootObfuscate) {
+function shellWrap(code, options, bootObfuscate, cjs) {
   const depth = Math.max(1, options.shellDepth | 0 || 1);
   let layers = 0;
   let cur = code;
   for (let l = 0; l < depth; l++) {
-    const boot = makeShellLayer(cur);
+    const boot = makeShellLayer(cur, undefined, { cjs: !!cjs });
     if (bootObfuscate) {
       cur = bootObfuscate(boot, options).code;
     } else {

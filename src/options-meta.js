@@ -19,6 +19,7 @@ export const VALUE_OPTIONS = {
   preset: { kind: 'enum', values: PRESET_NAMES, caseInsensitive: true, group: 'basic', zh: '混淆强度预设', en: 'Strength preset' },
   identifierPrefix: { kind: 'string', group: 'basic', zh: '标识符前缀', en: 'Identifier prefix' },
   extraGlobals: { kind: 'string', group: 'basic', zh: '宿主全局白名单', en: 'Extra host globals', hintZh: '逗号分隔，如 WebSocketPair', hintEn: 'comma separated, e.g. WebSocketPair' },
+  bannerText: { kind: 'string', group: 'basic', zh: '自定义文件头注释', en: 'Custom header banner', hintZh: '付费档可自定义；留空写默认署名与反 LLM 声明', hintEn: 'paid tiers; empty writes the default notice' },
   dirSkip: { kind: 'string', group: 'basic', guiHide: true, zh: '目录模式追加跳过', en: 'Extra skipped dirs' },
   indent: { kind: 'count', group: 'output', def: 2, zh: '缩进宽度', en: 'Indent width' },
   stringArrayEncoding: { kind: 'enum', values: ['none', 'xor', 'base64', 'rc4'], group: 'strings', zh: '字符串编码方式', en: 'String encoding' },
@@ -43,6 +44,7 @@ export const VALUE_OPTIONS = {
   vmThreshold: { kind: 'count', group: 'vm', zh: 'VMP 函数最小语句数', en: 'VMP minimum statements' },
   vmDecoyOps: { kind: 'count', group: 'vm', zh: '分发器干扰字总数', en: 'Dispatcher decoy ops' },
   wasmThreshold: { kind: 'count', group: 'vm', zh: 'WASM 搬入最小字节码字数', en: 'WASM minimum bytecode words' },
+  rtDepth: { kind: 'int', min: 1, max: 8, group: 'vm', zh: '自定义运行时层数', en: 'Custom RT layers' },
   shellDepth: { kind: 'int', min: 1, group: 'defense', zh: '套壳层数', en: 'Shell layers' },
 };
 
@@ -109,6 +111,9 @@ const BOOL_LABELS = {
   controlFlowFlattening: ['控制流扁平化', 'Control flow flattening'],
   controlFlowLoopFlattening: ['循环扁平化', 'Loop flattening'],
   vmProtection: ['虚拟机保护（VMP）', 'Virtual machine protection'],
+  wasmInterpreter: ['WASM 解释器内核', 'WASM interpreter core'],
+  stringScatter: ['字符串碎片化', 'String fragmentation'],
+  antiLLM: ['Anti-LLM 防护', 'Anti-LLM protection'],
   wasm: ['WASM 虚拟机档', 'WASM VM tier'],
   logicalExpressions: ['逻辑表达式混淆', 'Logical expression obfuscation'],
   conditionObfuscation: ['条件表达式混淆', 'Condition obfuscation'],
@@ -140,6 +145,7 @@ const BOOL_GROUPS = {
   logicalExpressions: 'flow', conditionObfuscation: 'flow',
   opaquePredicates: 'flow', deadCodeInjection: 'flow', decoyFunctions: 'flow',
   vmProtection: 'vm', wasm: 'vm',
+  wasmInterpreter: 'vm', stringScatter: 'strings', antiLLM: 'defense',
   debugProtection: 'defense', debugPoison: 'defense', consoleStub: 'defense',
   selfDefending: 'defense', envFingerprint: 'defense', integrityCheck: 'defense',
   selfCheck: 'defense', shell: 'defense',

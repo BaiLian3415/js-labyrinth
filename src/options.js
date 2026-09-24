@@ -56,5 +56,10 @@ export default {
   "selfCheck": true,
   "shell": true,
   "shellDepth": 1,
-  "extraGlobals": []
+  "extraGlobals": [],
+  "wasmInterpreter": false,
+  "rtDepth": 2,
+  "stringScatter": false,
+  "antiLLM": false,
+  "bannerText": ""
 };

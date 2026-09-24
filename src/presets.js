@@ -57,7 +57,12 @@ export default {
     "integrityPoisonPoints": 2,
     "shell": false,
     "shellDepth": 1,
-    "extraGlobals": []
+    "extraGlobals": [],
+    "wasmInterpreter": false,
+    "rtDepth": 1,
+    "stringScatter": false,
+    "antiLLM": false,
+    "bannerText": ''
   },
   "medium": {
     "compact": true,
@@ -117,7 +122,12 @@ export default {
     "integrityPoisonPoints": 3,
     "shell": true,
     "shellDepth": 1,
-    "extraGlobals": []
+    "extraGlobals": [],
+    "wasmInterpreter": false,
+    "rtDepth": 2,
+    "stringScatter": false,
+    "antiLLM": false,
+    "bannerText": ''
   },
   "high": {
     "compact": true,
@@ -177,7 +187,12 @@ export default {
     "integrityPoisonPoints": 4,
     "shell": true,
     "shellDepth": 1,
-    "extraGlobals": []
+    "extraGlobals": [],
+    "wasmInterpreter": false,
+    "rtDepth": 2,
+    "stringScatter": false,
+    "antiLLM": false,
+    "bannerText": ''
   },
   "max": {
     "compact": true,
@@ -237,6 +252,11 @@ export default {
     "integrityPoisonPoints": 4,
     "shell": true,
     "shellDepth": 2,
-    "extraGlobals": []
+    "extraGlobals": [],
+    "wasmInterpreter": true,
+    "rtDepth": 4,
+    "stringScatter": true,
+    "antiLLM": true,
+    "bannerText": ''
   }
 };
