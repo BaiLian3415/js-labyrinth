@@ -97,12 +97,16 @@ const CASES = [
 
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'jslb-sem-'));
 
+// stdio 显式写成数组：默认的 stdin 管道在部分 Windows 环境（父进程标准句柄来自
+// 上层宿主）会让 spawnSync 直接 EBUSY，整份比对会在第一个用例崩掉。
+const SYNC_STDIO = ['ignore', 'pipe', 'pipe'];
+
 /** 跑一段代码，返回 stdout（去掉尾空白）；抛错则返回带标记的字符串。 */
 function runCode(code, tag) {
   const f = path.join(TMP, tag + '.js');
   fs.writeFileSync(f, code);
   try {
-    return execFileSync(process.execPath, [f], { encoding: 'utf8', timeout: 20000 }).trim();
+    return execFileSync(process.execPath, [f], { encoding: 'utf8', timeout: 20000, stdio: SYNC_STDIO }).trim();
   } catch (e) {
     const out = (e.stdout || '').toString().trim();
     const err = (e.stderr || '').toString().split('\n')[0].slice(0, 60);

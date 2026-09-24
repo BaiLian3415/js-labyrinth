@@ -30,10 +30,17 @@ export default function deadCode(ast, options, ctx) {
   // 成 O(1) 判断。初值在运行期取值未知时，判死要先求出 g，或走真实数据流
   // 推理。
   //
-  // 主形态取 g === g + 1，它不能靠自反规则 x === x → true 或幂等规则
-  // x & 0 → 0 之类的代数改写消去，必须先求出 g 的运行期取值。次形态
-  // g !== g 可被自反规则直接折叠为 false，保留它只为形态多样性，不承担
-  // 静态阻力。
+  // 主形态曾用 g === g + 1：它不能靠自反规则 x === x → true 消去，但只要把握
+  // 运算符的分配律就能整式化简（x === x + 1 恒假），现代压缩器的常量传播加
+  // 代数简化会把它当死分支直接删掉，死块随之消失。
+  //
+  // 现在改为**数论不透明谓词**：分支条件对任意整数取值恒假，但要判定它是恒假
+  // 必须用到模运算性质（h³ ≡ h (mod 3)）、按位取反的性质（x|~x 恒为 -1）或
+  // 整数奇偶性（x ^ (x-1) 恒为奇数），编译器的代数简化与常量传播都覆盖不到。
+  //
+  // 取值必须先收窄：guard 初值是 Date.now() 派生的 int32，直接做 h³ 会溢出到
+  // 双精度并丢掉精确的模 3 性质，所以先 & 0xff 取到 0..255，三次方最大
+  // 16581375，全程精确整数。
   const guardInit = () => t.binaryExpression('&',
     t.binaryExpression('|',
       t.callExpression(
@@ -43,24 +50,53 @@ export default function deadCode(ast, options, ctx) {
 
   function makeUnreachableGuard(body) {
     const guard = uniqueName(used, '_0x');
-    if (randInt(0, 3) === 0) {
-      // g !== g，g 非 NaN 时恒假
-      return [
-        t.variableDeclaration('var', [t.variableDeclarator(t.identifier(guard), guardInit())]),
-        t.ifStatement(
-          t.binaryExpression('!==', t.identifier(guard), t.identifier(guard)),
-          t.blockStatement(body)
-        ),
-      ];
+    const g = () => t.identifier(guard);
+    const pick = randInt(0, 9);
+    let cond;
+    if (pick <= 3) {
+      // (h³ - h) % 3 !== 0，h = g & 0xff。h³ - h = h(h-1)(h+1) 是三个连续整数的
+      // 乘积，必含一个 3 的倍数，故模 3 恒为 0，条件恒假。
+      //
+      // 判定它需要模运算知识：常量传播与代数化简都不覆盖 % 3 的同余性质，而
+      // 求值必须先拿到 g 的运行期取值。取值先 & 0xff 收窄到 0..255，三次方最大
+      // 16581375，全程精确整数——直接对 Date.now() 派生的 int32 求三次方会溢出
+      // 到双精度，同余性质不再成立（那时就不是恒假了）。
+      const h = uniqueName(used, '_0x');
+      const narrowed = () => t.binaryExpression('&', g(), t.numericLiteral(0xff));
+      const cubeMinus = t.binaryExpression('-',
+        t.binaryExpression('*',
+          t.binaryExpression('*', t.identifier(h), t.identifier(h)),
+          t.identifier(h)),
+        t.identifier(h));
+      cond = t.callExpression(
+        t.functionExpression(null, [t.identifier(h)], t.blockStatement([
+          t.returnStatement(t.binaryExpression('!==',
+            t.binaryExpression('%', cubeMinus, t.numericLiteral(3)),
+            t.numericLiteral(0))),
+        ])),
+        [narrowed()]);
+    } else if (pick <= 6) {
+      // (g | ~g) > -1：按位取反后与原值按位或，结果恒为 -1，恒不大于 -1。
+      // 判定要先算出 g 的完整位模式
+      cond = t.binaryExpression('>',
+        t.binaryExpression('|', g(), t.unaryExpression('~', g(), true)),
+        t.numericLiteral(-1));
+    } else if (pick <= 8) {
+      // ((g ^ (g - 1)) & 1) === 0：相邻两个整数异或得到的是低位起连续的 1，
+      // 恒为奇数，与 1 相与恒为 1，条件恒假。判定需用到进位传播的性质
+      cond = t.binaryExpression('===',
+        t.binaryExpression('&',
+          t.binaryExpression('^', g(), t.binaryExpression('-', g(), t.numericLiteral(1))),
+          t.numericLiteral(1)),
+        t.numericLiteral(0));
+    } else {
+      // g !== g，g 非 NaN 时恒假。自反规则可直接折叠为 false，形态多样性用，
+      // 概率压到十分之一
+      cond = t.binaryExpression('!==', g(), g());
     }
-    // g === g + 1，任意值下恒假，但需先求出 g 的运行期取值才能判死
     return [
       t.variableDeclaration('var', [t.variableDeclarator(t.identifier(guard), guardInit())]),
-      t.ifStatement(
-        t.binaryExpression('===', t.identifier(guard),
-          t.binaryExpression('+', t.identifier(guard), t.numericLiteral(1))),
-        t.blockStatement(body)
-      ),
+      t.ifStatement(cond, t.blockStatement(body)),
     ];
   }
 

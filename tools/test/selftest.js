@@ -174,11 +174,25 @@ async function main() {
 main();
 `;
 
+/**
+ * 同步跑一个子进程并拿回输出。
+ *
+ * stdio 必须**显式写成数组**：默认管道（含 `stdin: 'ignore'` 简写之外的默认
+ * 'pipe'）在部分 Windows 环境会直接以 EBUSY 失败——父进程的标准句柄来自上层
+ * 宿主（IDE 内置终端、CI 包装器）时，spawnSync 建 stdin 管道这一步就过不去，
+ * 整套测试会在第一个用例崩掉。stdout/stderr 仍是管道，返回值照常。
+ * `stdio: 'ignore'`（三项全忽略，无管道）在同样环境下是好的，无需改动。
+ */
+const SYNC_STDIO = ['ignore', 'pipe', 'pipe'];
+function runSync(exe, args, opts) {
+  return execFileSync(exe, args, { stdio: SYNC_STDIO, ...(opts || {}) });
+}
+
 /** 用 node 跑一段产物，返回 stdout。 */
 function runNode(code, name) {
   const file = path.join(TMP, name || ('run-' + Math.random().toString(36).slice(2) + '.js'));
   fs.writeFileSync(file, code);
-  return execFileSync(process.execPath, [file], { encoding: 'utf8', timeout: 60000 });
+  return runSync(process.execPath, [file], { encoding: 'utf8', timeout: 60000 });
 }
 
 // ---------------------------------------------------------------- 核心
@@ -300,7 +314,9 @@ section('卡密与令牌');
   ok(!codec.parseCode(key, flipChar(code, 6)).ok, '改编号段一位即被拒');
   ok(!codec.parseCode(key, flipChar(code, 16)).ok, '改信息段一位即被拒');
   ok(!codec.parseCode(key, flipChar(code, code.length - 1)).ok, '改校验码一位即被拒');
-  ok(!codec.parseCode(key, code.slice(0, -1) + '0').ok, '改末位失败');
+  // 末位改成与当前值**不同**的字符：直接写死 '0' 时，若签发出的校验码末位本就是
+  // '0'，这行等于没改，解析自然成功——概率性假红（1/32），与上面的 flipChar 同理
+  ok(!codec.parseCode(key, code.slice(0, -1) + (code.endsWith('0') ? '1' : '0')).ok, '改末位失败');
   ok(!codec.parseCode(key, 'JSLB-' + '0'.repeat(8) + '-' + '0'.repeat(16) + '-' + '0'.repeat(4)).ok,
     '全零编号+全零信息+全零校验被拒');
 
@@ -342,7 +358,7 @@ section('卡密与令牌');
   ok(!codec.verifyToken(secret.B64_CODE_KEY, token, mid, 0, '2026-01-01', 3), '换密钥后令牌验签失败');
 
   // 纯 JS HMAC 与 node:crypto 的一致性由 tools/test/hashtest.js 覆盖，这里只跑它
-  const ht = execFileSync(process.execPath, [path.join(ROOT, 'tools', 'test', 'hashtest.js')], { encoding: 'utf8' });
+  const ht = runSync(process.execPath, [path.join(ROOT, 'tools', 'test', 'hashtest.js')], { encoding: 'utf8' });
   ok(ht.includes('全部通过'), 'hash 实现与 node:crypto 逐位一致', ht.trim().split('\n').pop());
 }
 
@@ -496,12 +512,12 @@ section('签发工具命令行（v5 随机编号）');
     ...process.env,
     JSLB_CODE_KEY: FAKE_KEY,
   };
-  const gen = (args) => execFileSync(process.execPath, [KEYGEN, ...args], {
+  const gen = (args) => runSync(process.execPath, [KEYGEN, ...args], {
     encoding: 'utf8', timeout: 30000, env,
   });
   const genFail = (args, customEnv) => {
     try {
-      execFileSync(process.execPath, [KEYGEN, ...args], { encoding: 'utf8', timeout: 30000, env: customEnv || env });
+      runSync(process.execPath, [KEYGEN, ...args], { encoding: 'utf8', timeout: 30000, env: customEnv || env });
       return null;
     } catch (e) {
       return String((e.stderr || '') + (e.stdout || ''));
@@ -541,17 +557,25 @@ section('签发工具命令行（v5 随机编号）');
   ok(bindErr !== null && /绑定/.test(bindErr), '--bind 已废除并给出指引',
     String(bindErr).trim().split('\n')[0]);
 
-  // 缺密钥时明确报错（单独的干净环境，不注入 JSLB_CODE_KEY；磁盘上也没有
-  // .jslb-code-key，走的是"完全无密钥"路径）
+  // 无环境变量、磁盘上也没有 .jslb-code-key 时，keygen 按设计**回退内置密钥**
+  // （CODE_KEY 的兜底分支：内置密钥部署下签发与 --check 同源，开箱即用）。
+  // 这里曾经断言"必须报错"，那是回退逻辑加进来之前的旧口径，已随实现过期。
   const noKeyEnv = { ...process.env };
   delete noKeyEnv.JSLB_CODE_KEY;
-  const noKey = genFail(['--plan', 'plus'], noKeyEnv);
-  ok(noKey !== null && /密钥/.test(noKey), '缺密钥时报错并指出设置方式',
-    String(noKey).trim().split('\n')[0]);
+  const fallbackIssue = genFail(['--plan', 'plus'], noKeyEnv);
+  ok(fallbackIssue === null, '无密钥时回退内置密钥签发（开箱即用，不再报错）',
+    String(fallbackIssue).trim().split('\n')[0]);
 
-  // --machine 不需要密钥：即使在缺密钥的环境下也必须正常
-  const machineOut = execFileSync(process.execPath, [KEYGEN, '--machine', '--json'], {
-    encoding: 'utf8', timeout: 30000, env: noKeyEnv,
+  // 真正走报错分支的是"密钥存在但不可用"：32 字节 base64 之外的取值一律拒绝，
+  // 免得把配置错误表现成"所有卡密都校验失败"
+  const badKeyEnv = { ...process.env, JSLB_CODE_KEY: 'not-a-32-byte-base64-key' };
+  const badKey = genFail(['--plan', 'plus'], badKeyEnv);
+  ok(badKey !== null && /密钥/.test(badKey), '密钥不可用时明确报错并指出设置方式',
+    String(badKey).trim().split('\n')[0]);
+
+  // --machine 不需要密钥：即使在密钥不可用的环境下也必须正常
+  const machineOut = runSync(process.execPath, [KEYGEN, '--machine', '--json'], {
+    encoding: 'utf8', timeout: 30000, env: badKeyEnv,
   });
   let parsedMachine = null;
   try { parsedMachine = JSON.parse(machineOut.trim()); } catch { /* 下面断言报错 */ }
@@ -1152,6 +1176,144 @@ section('自防御：篡改检出');
   }
 }
 
+// ---------------------------------------------------------------- 密钥耦合（完整性 → 解密密钥）
+
+section('密钥耦合：校验输出直接当解密密钥');
+{
+  // 改造前是"报警式"防护：校验失败置毒标志，解码器读到才损坏输出——攻击者定位到
+  // 那个 `if(毒标志)` 分支 NOP 掉即可恢复。现在把校验算出的「重算哈希 ^ 期望哈希」
+  // 偏移累加进一个健康载体，字符串池每次访问都拿它当解密密钥偏移：没有可 NOP 的
+  // 分支，改动任一被校验函数或横幅都让整池字符串静默变乱码。
+  //
+  // 这一节钉四件事：干净产物逐位正确（偏移为 0 时耦合式子必须严格退化成恒等）、
+  // 耦合的三个角色都在产物里、**把毒标志全部中和之后**篡改仍被检出（证明隐式那
+  // 一路真的独立生效，而不是靠标志位）、以及 low 档（关了完整性校验）不启用耦合。
+  // 输出走 process.stdout.write 而不是 console.log：max 档开了 consoleStub，会把
+  // console 系列换成桩函数（那是它的既有语义，不是缺陷），拿 console 比对只会得到
+  // 空输出，把干净产物误判成坏了
+  const src = 'const s="hello world";function fib(n){if(n<2)return n;return fib(n-1)+fib(n-2);}\n'
+    + 'process.stdout.write(fib(8)+" "+s.length+" "+s+" "+("beta-gamma".split("-").join("").length)+"\\n");';
+  const want = runNode(src, 'kc-plain.js').trim();
+
+  let bad = '';
+  for (const preset of ['medium', 'high', 'max']) {
+    for (const seed of [1, 2]) {
+      const c = obfuscate(src, { preset, seed }).code;
+      const got = runNode(c, 'kc-' + preset + '-' + seed + '.js').trim();
+      if (got !== want) { bad = preset + '/' + seed + ' -> ' + got.slice(0, 40); break; }
+    }
+    if (bad) break;
+  }
+  ok(bad === '', '启用耦合后干净产物仍逐位正确（偏移为 0 时退化成恒等）', bad);
+
+  {
+    // 用行为断言而不是文本匹配：产物里的常量会被 numberObf 展开成恒等式，按源码
+    // 形态去正则匹配很脆（实测 readOff 就因此漏判）。这里直接验证语义——把健康载体
+    // 钉成"健康值 + 1"，池侧算出的偏移就不再是 0，整池字符串必须解成乱码。
+    const c = obfuscate(src, { preset: 'medium', seed: 3, shell: false }).code;
+    const nameM = /\["(__c[0-9a-f]{9,})"\]/.exec(c);
+    const okM = /\]\s*=\s*\(\(0x([0-9a-f]+)\+\(/.exec(c); // 横幅自检写入绝对健康值
+    ok(!!(nameM && okM), '产物中找得到健康载体名与健康常量',
+      'name=' + (nameM && nameM[1]) + ' ok=' + (okM && okM[1]));
+    if (nameM && okM) {
+      const off = (parseInt(okM[1], 16) + 1) >>> 0;
+      const at = c.indexOf('*/', c.indexOf('/*!'));
+      const pin = ';(function(){var G=(typeof globalThis!=="undefined"?globalThis:this);'
+        + 'try{Object.defineProperty(G,"' + nameM[1] + '",{configurable:false,'
+        + 'get:function(){return 0x' + off.toString(16) + ';},set:function(){}});}catch(e){}})();';
+      const pinned = at >= 0 ? c.slice(0, at + 2) + pin + c.slice(at + 2) : null;
+      let got = want;
+      try { got = pinned ? runNode(pinned, 'kc-offset.js').trim() : want; } catch (e) { got = 'ERR'; }
+      ok(got !== want, '把健康载体改成非健康值即整池乱码（读取端确实在用它当密钥偏移）',
+        '仍然输出 ' + String(got).slice(0, 40));
+    }
+    const low = obfuscate(src, { preset: 'low', seed: 3, shell: false }).code;
+    ok(!/\["__c[0-9a-f]{9,}"\]/.test(low), 'low 档（无完整性校验）不启用耦合');
+  }
+
+  {
+    // 「报警式」那一层的隔离**不能在源码里做**：毒标志的写入点本身就落在被哈希
+    // 校验的函数体内，实测改一个十六进制数值都会立刻被哈希面命中（篡改检测正常
+    // 工作，正是"改一个字节就被发现"）。所以改成**在运行环境里把毒标志钉死**：
+    // 产物启动时会把每个毒标志升级成不可配置的访问器，这里预先用自己的"永远返回
+    // 0"的不可配置访问器占位，产物的 defineProperty 会失败（它在 try/catch 内），
+    // 毒化从此写不进去。一个字节都不动产物，哈希面自然不会命中。
+    const art = obfuscate(src, { preset: 'high', seed: 4, mangle: false, shell: false }).code;
+    const keys = [...new Set((art.match(/__x[0-9a-f]+/g) || []))];
+    ok(keys.length > 0, '产物里找得到毒标志键（共 ' + keys.length + ' 个）');
+    const pin = ';(function(){var G=(typeof globalThis!=="undefined"?globalThis:this);'
+      + keys.map((k) => 'try{Object.defineProperty(G,"' + k + '",{configurable:false,get:function(){return 0;},set:function(){}});}catch(e){}').join('')
+      + '})();';
+    // 插在横幅注释之后、自检引导之前：不破坏"文件头是这段横幅"的尽力腿
+    const afterBanner = art.indexOf('*/', art.indexOf('/*!'));
+    const pinned = afterBanner >= 0
+      ? art.slice(0, afterBanner + 2) + pin + art.slice(afterBanner + 2)
+      : null;
+    ok(!!pinned, '能在横幅之后插入毒标志钉死代码');
+    let cleanPinned = 'ERR';
+    try { cleanPinned = pinned ? runNode(pinned, 'kc-pinned-clean.js').trim() : 'ERR'; } catch (e) { cleanPinned = 'ERR'; }
+    ok(cleanPinned === want, '钉死毒标志后干净产物仍正确', cleanPinned.slice(0, 40));
+
+    const head = pinned ? pinned.match(/function\s+fib\s*\(/) : null;
+    ok(!!head, '关掉重命名后能定位到根级函数声明（耦合用例）');
+    if (pinned && head) {
+      const i = pinned.indexOf(head[0]);
+      const j = pinned.indexOf('{', i);
+      const patched = j >= 0 ? pinned.slice(0, j + 1) + '0;' + pinned.slice(j + 1) : null;
+      let got = want;
+      try { got = patched ? runNode(patched, 'kc-pinned-tamper.js').trim() : want; } catch (e) { got = 'ERR'; }
+      ok(got !== want, '毒标志被钉死后，改函数体仍被检出（密钥耦合独立生效，不依赖标志位）',
+        '篡改后仍然输出 ' + String(got).slice(0, 40));
+    }
+  }
+}
+
+// ---------------------------------------------------------------- 多时钟源与数论谓词
+
+section('多时钟源交叉校验与数论不透明谓词');
+{
+  // 冻结 Date.now：同源双读（Date.now 与 new Date().getTime()）立刻互相矛盾，且
+  // performance 与 Date 的增量也对不上。这正是"只 hook 一个时钟"的最小复现——
+  // 原来的性能检查只看"有没有明显停顿"，对这种假时钟无能为力。
+  //
+  // 单次构建里这项检查按 70% 概率入选，所以按"多数种子检出"判定，避免偶发假红。
+  const src = 'console.log([1,2,3].map(function(x){return x*3;}).join("|"));';
+  const want = runNode(src, 'ck-plain.js').trim();
+  const seeds = [1, 2, 3, 4];
+  let cleanBad = '';
+  let hits = 0;
+  for (const seed of seeds) {
+    const code = obfuscate(src, { preset: 'medium', seed }).code;
+    const clean = runNode(code, 'ck-clean-' + seed + '.js').trim();
+    if (clean !== want) { cleanBad = 'seed ' + seed + ' 干净产物已异常: ' + clean.slice(0, 30); break; }
+    let got = want;
+    try { got = runNode('Date.now=function(){return 0;};' + code, 'ck-hooked-' + seed + '.js').trim(); }
+    catch (e) { got = 'ERR'; }
+    if (got !== want) hits++;
+  }
+  ok(cleanBad === '', '多时钟源检查不误伤干净产物', cleanBad);
+  ok(!cleanBad && hits >= 2, '冻结 Date.now 被检出（' + hits + '/' + seeds.length + ' 个种子）',
+    cleanBad || '命中数过低，检查可能没进产物');
+
+  // 恒假形态升级：旧的 x === x + 1 能被代数化简整式折叠成 false，死块随之被删。
+  // 现在改用数论/位运算不透明谓词——h³-h 恒被 3 整除、x|~x 恒为 -1、x^(x-1) 恒为
+  // 奇数——都要先求出运行期取值、且判定需要模运算或进位传播的性质。
+  //
+  // 必须在 shell:false 下找：外壳档会把载荷编码，源码形态根本不出现在产物文本里
+  // （这也是为什么"在源码里改毒标志"那类断言要格外小心）。
+  let weakFound = '';
+  let strong = 0;
+  for (let seed = 1; seed <= 6; seed++) {
+    const c = obfuscate('var t=0;for(var i=0;i<5;i++){t+=i;}function g(x){return x*2;}process.stdout.write(""+t+g(3));',
+      { preset: 'medium', seed, shell: false }).code;
+    const m = /([A-Za-z0-9_$\u0080-\uffff]+)===\1\+1/.exec(c);
+    if (m) weakFound = 'seed ' + seed + ' 仍出现 ' + m[0];
+    if (/%3!==0/.test(c) || /\|~/.test(c) || /&1\)===0/.test(c)) strong++;
+  }
+  ok(weakFound === '', '恒假形态不再使用可被代数化简的 x === x + 1', weakFound);
+  ok(strong > 0, '产物中出现数论/位运算不透明谓词（' + strong + '/6 个种子）');
+}
+
 // ---------------------------------------------------------------- ESM 说明符绑定
 
 section('ESM 说明符绑定');
@@ -1269,12 +1431,12 @@ section('VM 保护与用户标识符冲突');
   const runNode = (code, name) => {
     const file = path.join(TMP, name + '.js');
     fs.writeFileSync(file, code);
-    return execFileSync(process.execPath, [file], { encoding: 'utf8', timeout: 30000 }).trim();
+    return runSync(process.execPath, [file], { encoding: 'utf8', timeout: 30000 }).trim();
   };
   let mismatch = 0;
   let firstBad = '';
   for (let ci = 0; ci < cases.length; ci++) {
-    const want = execFileSync(process.execPath, ['-e', cases[ci]], { encoding: 'utf8' }).trim();
+    const want = runSync(process.execPath, ['-e', cases[ci]], { encoding: 'utf8' }).trim();
     // vmProtection 只在 medium 及以上开启，low 也一并测作对照
     for (const preset of ['low', 'medium', 'high', 'max']) {
       for (let seed = 1; seed <= 3; seed++) {

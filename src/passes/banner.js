@@ -156,6 +156,26 @@ function guardSource(saltVar, bannerComment, ctx, opts) {
   P('  } catch (e) { }');
   P('  return ' + nH + ';');
   P('})();');
+  // 密钥耦合（P0）：把横幅哈希的偏移并进字符串池的解密密钥，并且**在这里写入
+  // 绝对健康值**。
+  //
+  // 位置很关键：自检引导是整份产物里最早执行的代码（外壳与载荷都在它之后），
+  // 因此这是唯一能保证"任何字符串池访问之前健康载体已有有效值"的落点。此前
+  // 把健康值交给 integrityCheck 的引导块写，就出过顺序问题——有些构建里
+  // WASM 载入器同步成功、debugProtection 的哨兵在引导块之前就跑了，池读到
+  // "尚未写入"（undefined）算出偏移 -OK，干净产物自己变乱码。
+  //
+  // 校验器此后只做**增量**：每次校验把「重算哈希 ^ 期望哈希」累加上去，未被
+  // 改动时增量为 0，载体保持这里写下的值；改动任一被校验函数 → 增量为非零
+  // → 整池字符串解码成乱码。整段校验器被删掉则不再有增量，但横幅这一层仍然
+  // 有效（改横幅同样让偏移非零），且删掉校验器意味着毒化路径与入口交叉校验
+  // 一并消失，代价并不比改造前更低。
+  if (opts.couple) {
+    const cref = '(typeof globalThis!=="undefined"?globalThis:typeof self!=="undefined"?self:typeof window!=="undefined"?window:typeof global!=="undefined"?global:{})'
+      + '["' + opts.couple.name + '"]';
+    const clean = fnv32(bannerComment);
+    P(cref + '=((0x' + (opts.couple.ok >>> 0).toString(16) + '+(' + saltVar + '-0x' + (clean >>> 0).toString(16) + '))|0);');
+  }
   if (opts.wrap === false && saltVar) {
     // 无外壳：自检失败时投毒（字符串池毒键可用时）或异步抛出
     P('if (' + saltVar + ' === ' + badSalt + ') {');
@@ -182,7 +202,7 @@ export function wrapBanner(code, opts) {
   const saltVar = opts.saltVar || rand.uniqueName(ctx.usedNames, ctx.identifierPrefix || '_0x');
   const salt = fnv32(bannerComment);
 
-  const guard = guardSource(saltVar, bannerComment, ctx, opts);
+  const guard = guardSource(saltVar, bannerComment, ctx, { couple: ctx.couple || null, ...opts });
   // wrap=false（ESM 或用户显式关掉外壳）时不套 eval 层：横幅与守卫仍注入，
   // 篡改时走毒键/异步抛出，强度弱一档但尊重"无外壳"约定，也不会把产物
   // 重新包进 eval（那与 shell:false 的语义直接冲突）。

@@ -250,6 +250,9 @@ export default function stringArray(ast, options, ctx) {
     "i", "s", "o", "m", "mc", "cc", "ka", "kl", "k",
     "c", "cu", "cu2", "j", "j2", "kp", "kp2", "zk", "zi", "zc",
     "n2", "r", "h", "z", "q", "u", "tp", "zr", "dec",
+    // 密钥耦合偏移（P0）：首次访问时从健康载体读出的解密密钥偏移量。
+    // 未启用耦合时这个绑定不会出现在产物里
+    "dk",
   ]) shortName(slot);
   // 访问期自检用的计数器与重算临时量，见 buildIifeSource 里的抽样校验。
   // 只在自检开启时分配：短名分配会消耗 PRNG，低档预设关了自检，多分配五个
@@ -371,6 +374,8 @@ export default function stringArray(ast, options, ctx) {
       rt: ctx.rt, cache: options.stringArrayCache !== false,
       evolveMask: evolveFixed !== null ? evolveFixed : randInt(1, 3),
       nm, arrExpr,
+      // 密钥耦合：把完整性校验的偏移量混进解密密钥，见 buildIifeSource 的说明
+      couple: ctx.couple || null,
     });
     const parsed = parse("var " + accessorName + "=" + iifeSource + ";", { sourceType: "script" });
     // 标记为引导机制函数。debugProtection 的内联哨兵每次调用都要重哈希自身
@@ -534,7 +539,7 @@ function hashItems(items) {
   return h >>> 0;
 }
 
-function buildIifeSource({ listVar, encodedItems, encoding, key, rotation, mask, selfDefending, checksum, checksumRot, poisonKeys, rt, cache, evolveMask, nm, arrExpr }) {
+function buildIifeSource({ listVar, encodedItems, encoding, key, rotation, mask, selfDefending, checksum, checksumRot, poisonKeys, rt, cache, evolveMask, nm, arrExpr, couple }) {
   const arrLit = "[" + encodedItems.map((s) => JSON.stringify(s)).join(",") + "]";
   // 碎片化时调用方给出「多载体拼回」表达式；默认仍是单个数组字面量
   const arrArg = arrExpr || arrLit;
@@ -547,6 +552,43 @@ function buildIifeSource({ listVar, encodedItems, encoding, key, rotation, mask,
   const cco = (expr, i) => (rt && rt.cco) ? rt.cco + "(" + expr + "," + i + ")" : expr + ".charCodeAt(" + i + ")";
   // gref 和熵绑定由共享引导语句在根作用域声明，这里只引用
   const gref = nm.g;
+  // ---- 密钥耦合（P0）----
+  //
+  // 解密密钥偏移 dk 从健康载体（一个随机全局属性）读出，装载期由 integrityCheck
+  // 写入「健康常量 + 累计偏移」，横幅自检再追加横幅偏移。代码未被改动时
+  // dk === 0，下面每一处耦合式子都退化成恒等，密文与明文逐位不变；任一处被改
+  // → dk ≠ 0 → 解码整体偏移，字符串静默变乱码。
+  //
+  // 惰性求值：池 IIFE 可能在装载早期就执行，那时校验器还没跑；而 dk 只影响
+  // 解码结果、不影响装配，所以推迟到首次访问时定值即可，且顺带绕开
+  // 「头部块插入顺序」这一层实现依赖。
+  //
+  // 读取端用 (值|0)-OK：校验器被整体删除时读到 undefined，得到 -OK 而非 0，
+  // 于是「删掉校验器」也修不好字符串——这条没有对应的 if，攻击者找不到可以
+  // NOP 的判断。
+  const cRef = couple ? gref + "[\"" + couple.name + "\"]" : null;
+  const OK_LIT = couple ? "0x" + (couple.ok >>> 0).toString(16) : null;
+  // 每次访问重算偏移，不做"首次定值 + 缓存"：池访问器可能在装载早期就被调用
+  // （例如 WASM 载入器同步成功时 debugProtection 的哨兵会立刻跑），那时校验器
+  // 还没写健康值，缓存下来的 -OK 会把正常产物自己打成乱码。每次读一个属性、
+  // 做一次减法，成本可忽略；好处是横幅的偏移、各校验点累加的偏移在任何时刻
+  // 到达都能立刻生效，不存在"先解出的明文留着好数据"的窗口。
+  const dkDecl = couple ? "var " + nm.dk + "=((" + cRef + "|0)-" + OK_LIT + ");" : "";
+  // 非 xor 组的密钥不以整数形式参与，改在解码结果上做一次恒等扰动：把首码元异或
+  // 一个由 dk 折叠出的掩码。折叠走按位或——只有 dk 每一位都是 0 才得到 0，不存在
+  // 「dk 非零但掩码为零」的白名单情形；dk === 0 时整式恒等于原字符串（逐位可
+  // 验证），正常产物不受影响。
+  //
+  // **空串必须跳过**：池里的空串有实际用途（拼名时的 join("") 分隔符），而空串没有
+  // 首码元，charCodeAt(0) 是 NaN，fromCharCode(NaN) 会把它变成 "\u0000" 之类的脏
+  // 字符，拼出来的方法名就错了（实测表现为 "undefined is not a function"）。长度
+  // 判断只影响空串、与毒化语义无关。
+  const dkMix = couple
+    ? "(((" + nm.dk + "|(" + nm.dk + ">>>8)|(" + nm.dk + ">>>16)|(" + nm.dk + ">>>24))&0xffff)&0xff)"
+    : null;
+  const dkMutate = couple
+    ? "if(" + nm.o + ".length){" + nm.o + "=" + fcc(cco(nm.o, "0") + "^" + dkMix) + "+" + nm.o + ".slice(1);}"
+    : null;
   // 多点毒药检查：任一标志置位就损坏输出，与 integrityCheck 的置位集合联动
   const poisonTest = poisonKeys
     .map((k) => gref + '["' + k + '"]')
@@ -565,6 +607,8 @@ function buildIifeSource({ listVar, encodedItems, encoding, key, rotation, mask,
     // 密钥码表在装配期展开一次，热路径不再逐字符对密钥串取码，密钥游标用
     // 自增回绕替代每字符取模。原始码元密文下，解码和重加密每码元各一次
     // CCO 或 XOR 加 FCC。密文演化序列、槽位内容和访问语义都不变。
+    // 密钥耦合的偏移不在这里并入（会固化成装配期的值），改在解码/重加密的
+    // 每码元 XOR 里各带一次，见下面的 cu、cu2。
     lines.push("var " + nm.kl + "=" + nm.k + ".length;var " + nm.ka + "=[];" +
       "for(var " + nm.zk + "=0;" + nm.zk + "<" + nm.kl + ";" + nm.zk + "++)" + nm.ka + "[" + nm.zk + "]=" + cco(nm.k, nm.zk) + ";");
     lines.push("var " + nm.cc + "=[];for(var " + nm.zi + "=0;" + nm.zi + "<" + listVar + ".length;" + nm.zi + "++)" + nm.cc + "[" + nm.zi + "]=0;");
@@ -594,6 +638,8 @@ function buildIifeSource({ listVar, encodedItems, encoding, key, rotation, mask,
   }
   lines.push("return function(" + nm.i + "){");
   lines.push(nm.i + "=+" + nm.i + ";");
+  // 每次访问现算密钥偏移，见 dkDecl 的说明
+  if (couple) lines.push(dkDecl);
   if (mask > 0) {
     lines.push(nm.i + "=" + nm.i + "^0x" + mask.toString(16) + ";");
   }
@@ -615,7 +661,7 @@ function buildIifeSource({ listVar, encodedItems, encoding, key, rotation, mask,
     lines.push(cacheOpen);
     // 首段的 O=""; 让 cache=false 时的 var O= 拼接成合法的链式赋值
     lines.push(nm.o + '="";var ' + nm.c + "=[];for(var " + nm.j + "=0," + nm.kp + "=" + nm.cc + "[" + nm.i + "]%" + nm.kl + ";" + nm.j + "<" + nm.s + ".length;" + nm.j + "++){");
-    lines.push("var " + nm.cu + "=" + cco(nm.s, nm.j) + "^" + nm.ka + "[" + nm.kp + "];" + nm.c + "[" + nm.c + ".length]=" + nm.cu + ";" + nm.o + "+=" + fcc(nm.cu) + ";");
+    lines.push("var " + nm.cu + "=" + cco(nm.s, nm.j) + "^" + nm.ka + "[" + nm.kp + "]" + (couple ? "^" + nm.dk : "") + ";" + nm.c + "[" + nm.c + ".length]=" + nm.cu + ";" + nm.o + "+=" + fcc(nm.cu) + ";");
     lines.push(nm.kp + "++;if(" + nm.kp + ">=" + nm.kl + "){" + nm.kp + "=0;}}");
     lines.push(cacheClose);
     // 重加密的码元源：缓存开启时取明文码元表，stringArrayCache=false 时从刚
@@ -629,7 +675,7 @@ function buildIifeSource({ listVar, encodedItems, encoding, key, rotation, mask,
     lines.push("var " + nm.n2 + "=" + nm.cc + "[" + nm.i + "]+1+(((" + nm.i + "^" + nm.e + ")+(" + nm.i + "&" + nm.e + "))&0xff);");
     lines.push('var ' + nm.r + '="";');
     lines.push("for(var " + nm.j2 + "=0," + nm.kp2 + "=" + nm.n2 + "%" + nm.kl + ";" + nm.j2 + "<" + nm.c2 + ".length;" + nm.j2 + "++){");
-    lines.push("var " + nm.cu2 + "=" + nm.c2 + "[" + nm.j2 + "]^" + nm.ka + "[" + nm.kp2 + "];" + nm.r + "+=" + fcc(nm.cu2) + ";");
+    lines.push("var " + nm.cu2 + "=" + nm.c2 + "[" + nm.j2 + "]^" + nm.ka + "[" + nm.kp2 + "]" + (couple ? "^" + nm.dk : "") + ";" + nm.r + "+=" + fcc(nm.cu2) + ";");
     lines.push(nm.kp2 + "++;if(" + nm.kp2 + ">=" + nm.kl + "){" + nm.kp2 + "=0;}}");
     lines.push(listVar + "[" + nm.i + "]=" + nm.r + ";");
     lines.push(nm.cc + "[" + nm.i + "]=" + nm.n2 + ";}");
@@ -643,8 +689,9 @@ function buildIifeSource({ listVar, encodedItems, encoding, key, rotation, mask,
     lines.push("if(" + poisonTest + "){" + nm.o + "=" + corrupt + ";}");
     lines.push("return " + nm.o + ";");
   } else {
-    lines.push(cache ? "var " + nm.o + "=" + nm.m + "[" + nm.i + "];if(" + nm.o + "===undefined){" + nm.o + "=" + nm.dec + "(" + nm.s + ");" + nm.m + "[" + nm.i + "]=" + nm.o + ";}"
-      : "var " + nm.o + "=" + nm.dec + "(" + nm.s + ");");
+    lines.push(cache ? "var " + nm.o + "=" + nm.m + "[" + nm.i + "];if(" + nm.o + "===undefined){" + nm.o + "=" + nm.dec + "(" + nm.s + ");"
+      + (couple ? dkMutate : "") + nm.m + "[" + nm.i + "]=" + nm.o + ";}"
+      : "var " + nm.o + "=" + nm.dec + "(" + nm.s + ");" + (couple ? dkMutate : ""));
     const corrupt = (rt && rt.cor) ? rt.cor + "(" + nm.o + ")"
       : nm.o + ".slice(0,1)+" + fcc("0xfffd") + "+" + nm.o + ".slice(2)";
     // 访问期全池校验和重算。静态组的池内容不再变化，装配期算出的校验和全程

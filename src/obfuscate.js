@@ -164,6 +164,34 @@ function obfuscate(code, userOptions) {
 
   const ctx = { traverse, t, usedNames, options, rng: () => rand() };
 
+  // 密钥耦合（P0）。把完整性校验的输出当作字符串池解密密钥的一部分：
+  // integrityCheck 在装载期算出「重算哈希 ^ 期望哈希」的偏移和写进一个随机全局
+  // 属性，横幅自检再追加它自己的偏移；字符串池首次访问时读这个值当密钥偏移。
+  // 代码未被改动时偏移恒为 0，所有耦合式子退化成恒等；改动任一被校验函数或
+  // 修改横幅 → 偏移非零 → 整池字符串解码成乱码。
+  //
+  // 相比原先「解码器读到毒标志再损坏输出」，这里没有可 NOP 的分支：攻击者必须
+  // 复原整条链路（哪些函数入哈希、哈希怎么折叠、偏移怎么参与密钥、健康常量是
+  // 多少）才能让字符串恢复。删掉校验器同样修不好——读取端读到 undefined，
+  // (undefined|0)-OK 得到 -OK，照样非零。
+  //
+  // 三个角色必须同开同关：池读取端（stringArray）、偏移入端（integrityCheck 的
+  // 增量、banner 的绝对健康值）。有人读没人写会让正常产物自己变乱码，所以三处
+  // 都读 ctx.couple，缺了即整条链路不启用（低档预设关了 integrityCheck 自动关闭，
+  // 产物与改造前逐字节一致）。
+  //
+  // 横幅必须存在：绝对健康值由横幅自检写入，它是产物里最早执行的代码，也只有
+  // 它能保证"字符串池第一次访问之前载体已有有效值"。跳过横幅（bannerSkip）时
+  // 没人写这个值，读取端会算出 -OK，等于自己把自己打成乱码，因此一并关闭。
+  if (options.integrityCheck !== false && options.bannerSkip !== true) {
+    ctx.couple = {
+      // 健康载体名：随机全局属性，存「健康常量 + 累计偏移」
+      name: '__c' + randInt(0x10000000, 0x7fffffff).toString(16) + randInt(0x1000, 0xffff).toString(16),
+      // 健康常量。必须是奇数且 < 2^31，读取端做 (值|0)-OK 求偏移，得 0 才算健康
+      ok: randInt(0x100000, 0x7fffff) * 2 + 1,
+    };
+  }
+
   const stats = [];
 
   const timePass = (name, fn) => {

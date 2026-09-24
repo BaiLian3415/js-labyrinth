@@ -95,6 +95,9 @@ export default function integrityCheck(ast, options, ctx) {
   if (options.integrityCheck === false) return { checked: 0, sentinels: 0, entryPoints: 0 };
   // rtlib 关掉时 ctx.rt 不存在，下面的 rt && rt.x 会各自走回退形态
   const rt = ctx.rt || {};
+  // 密钥耦合配置（见 obfuscate.js 的 ctx.couple）：health 载体名 + 健康常量。
+  // 为空表示整条耦合链路不启用，本 pass 的行为与改造前一致。
+  const couple = ctx.couple || null;
   const program = ast.type === 'File' ? ast.program : ast;
 
   // 根作用域定位，functionWrapper 的产物是单条 IIFE 调用表达式语句。
@@ -282,6 +285,9 @@ export default function integrityCheck(ast, options, ctx) {
   const nCh = uniqueName(ctx.usedNames, '_0x');
   const nK = uniqueName(ctx.usedNames, '_0x');
   const nEnt = uniqueName(ctx.usedNames, '_0x');
+  // 期望哈希的两个通道（去掉掩码后），密钥耦合的偏移与失配判定都基于它们
+  const nEA = uniqueName(ctx.usedNames, '_0x');
+  const nEB = uniqueName(ctx.usedNames, '_0x');
   for (const s of sentinels) keyOf.set(s.node, keyLit());
   const nLoop = uniqueName(ctx.usedNames, '_0x');
   const nHf = uniqueName(ctx.usedNames, '_0x');
@@ -332,8 +338,17 @@ export default function integrityCheck(ast, options, ctx) {
   // 无法同时还原
   const maskLitA = '0x' + (hashMaskA >>> 0).toString(16);
   const maskLitB = '0x' + (hashMaskB >>> 0).toString(16);
-  verifierLines.push('if((' + nHashA + '>>>0)!==((' + nEnt + '[0]^' + maskLitA + ')>>>0)' +
-    '||(' + nHashB + '>>>0)!==((' + nEnt + '[1]^' + maskLitB + ')>>>0)){' +
+  verifierLines.push('var ' + nEA + '=' + nEnt + '[0]^' + maskLitA + ';var ' + nEB + '=' + nEnt + '[1]^' + maskLitB + ';');
+  // 密钥耦合（P0）：把「重算 ^ 期望」的偏移**无条件**累加到健康载体上。
+  // 未被改动时两项都是 0，载体保持健康常量，读取端算出的密钥偏移为 0；
+  // 改任一被校验函数即让偏移非零，字符串池的解密密钥整体偏移，整池字符串
+  // 静默变乱码。这里没有 if——不存在「校验分支被 NOP 掉就恢复」的路径。
+  if (couple) {
+    const cref = globalRef() + '["' + couple.name + '"]';
+    verifierLines.push(cref + '=(((' + cref + '|0)+(' + nHashA + '^' + nEA + ')+(' + nHashB + '^' + nEB + '))|0);');
+  }
+  verifierLines.push('if((' + nHashA + '>>>0)!==(' + nEA + '>>>0)' +
+    '||(' + nHashB + '>>>0)!==(' + nEB + '>>>0)){' +
     setPoisonSrc() + '}');
   verifierLines.push('}');
   // 哨兵精确子串校验器，每个哨兵一个运行期闭包，marker 经掩码重组
@@ -344,6 +359,10 @@ export default function integrityCheck(ast, options, ctx) {
   // 一次精确子串校验，防的是针对哨兵体内容的定向重写
   const headLines = [];
   headLines.push('(function(){');
+  // 健康载体**不在这里初始化**：绝对健康值由横幅自检写入，它是整份产物里最早
+  // 执行的代码，能保证任何字符串池访问之前载体都有效。本块的校验调用只做增量
+  // 累加（未被改动时每一项都是 0）。这里若再写一次绝对值，会把横幅那份偏移
+  // 抹掉，横幅耦合就失效了。
   headLines.push('var ' + nHf + '=[' + refPairs.join(',') + '];');
   headLines.push('for(var ' + nHi + '=0;' + nHi + '<' + nHf + '.length;' + nHi + '++){' +
     verifierName + '(' + nHf + '[' + nHi + '][0],' + nHf + '[' + nHi + '][1]);}');

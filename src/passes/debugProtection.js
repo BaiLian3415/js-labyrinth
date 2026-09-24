@@ -82,6 +82,10 @@ export default function debugProtection(ast, options, ctx) {
   const STALL_MS = Math.max(9000, interval * 10);
   const REARMS = randInt(2, 3);
   const extraDebuggers = randInt(0, 1);
+  // 多时钟源交叉验证的判定阈值：同源双读（Date.now 与 new Date）允许的漂移，
+  // 以及"两个不同时钟源增量互相矛盾"的确认阈值。
+  const CROSS_ALLOW = randInt(60, 120);
+  const CROSS_CONFIRM = CROSS_ALLOW + randInt(300, 600);
 
   // 可选检测点，源码形态，命中动作为 _0xdg()，构建级子集抽取
   const checks = [
@@ -161,6 +165,34 @@ export default function debugProtection(ast, options, ctx) {
     // 被替换即说明整条原生链被接管
     '(function(){if(typeof String!=="undefined"&&String.prototype&&typeof String.prototype.split==="function"){' +
     'if(' + IOF('(""+String.prototype.split)', M('native code')) + '===-1){_0xdg();}}})();',
+    // 多时钟源交叉验证。上面的 performance 检查只看"有没有明显停顿"，对"时钟被
+    // 整体换掉但照样返回数字"无能为力；而 hook Date.now / performance.now 正是
+    // 调试与去断点的第一步。
+    //
+    // 三段互相印证：
+    //   ① 同源双读——Date.now() 与 new Date().getTime() 必须落在同一个时刻；
+    //   ② 跨源增量——同一段真实计算里，performance.now 的增量与 Date.now 的增量
+    //      必须同量级。只 hook 其中一个会让"performance 说过了很久、Date 说几乎
+    //      没动"这种自相矛盾出现（真挂起会同时推高两者，因此不会误判）；
+    //   ③ Node 侧再掺入 process.hrtime，三个时钟源两两对照，单独伪造一个必然
+    //      与另两个对不上。
+    '(function(){if(typeof Date!=="undefined"&&typeof Date.now==="function"){' +
+    'var _0cy=new Date().getTime();var _0cz=Date.now();' +
+    'if(_0cy-_0cz>' + CROSS_ALLOW + '||_0cz-_0cy>' + CROSS_ALLOW + '){_0xdg();}' +
+    'if(typeof performance!=="undefined"&&performance&&typeof performance.now==="function"){' +
+    'var _0cq=performance.now();var _0cd=_0cz;' +
+    'if(typeof process!=="undefined"&&process&&typeof process.hrtime==="function"){var _0ch0=process.hrtime();}' +
+    'var _0cj=0;for(var _0ci=0;_0ci<2000;_0ci++){_0cj=(_0cj+_0ci)%7;}' +
+    'if(_0cj===-1){_0xdg();}' +
+    'var _0cr=performance.now();var _0ce=Date.now();' +
+    'var _0cP=_0cr-_0cq;var _0cD=_0ce-_0cd;' +
+    'if(_0cP>' + CROSS_CONFIRM + '&&_0cD*4<_0cP){' + confirmSrc('_0xG') + '}' +
+    'if(typeof process!=="undefined"&&process&&typeof process.hrtime==="function"){' +
+    'var _0ch1=process.hrtime();' +
+    'var _0cH=((_0ch1[0]-_0ch0[0])*1000)+((_0ch1[1]-_0ch0[1])/1000000);' +
+    'if(_0cH-_0cP>' + CROSS_CONFIRM + '||_0cP-_0cH>' + CROSS_CONFIRM + '){_0xdg();}' +
+    '}' +
+    '}}})();',
   ];
 
   const headChecks = [];

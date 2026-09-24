@@ -1,6 +1,6 @@
 import t from '../ast/types.js';
 import rand from '../utils/rand.js';
-const { randInt } = rand;
+const { randInt, uniqueName } = rand;
 import vmBoundary from './vmBoundary.js';
 const { insideVmFunction } = vmBoundary;
 /**
@@ -23,8 +23,18 @@ const { insideVmFunction } = vmBoundary;
  *     调用计成本，多一层表达式调用会被放大）
  */
 
-/** 恒等式生成：返回求值严格等于 V 的表达式节点。 */
-function identity(V) {
+/**
+ * 运行时状态版恒等式的抽取概率。其余形式都是纯常量表达式，求值器一折就回到 V；
+ * 这一形式要贵一点（每个字面量一次乘加与一次变量读写），按比例抽取。
+ */
+const RUNTIME_FORM_RATE = 0.25;
+
+/** 恒等式生成：返回求值严格等于 V 的表达式节点。
+ * @param {number} V 目标值
+ * @param {object|null} rtState 运行时状态计数器 { id: () => Identifier }，
+ *   为空表示不生成运行时形式（本 pass 未启用该形式时）
+ */
+function identity(V, rtState) {
   const forms = [];
   if (V >= 2) {
     // a ^ b，操作数与结果都落在 [0, 2^31)
@@ -62,6 +72,34 @@ function identity(V) {
       return t.binaryExpression('+',
         t.binaryExpression('^', t.numericLiteral(a), t.numericLiteral(a ^ x1)),
         t.binaryExpression('-', t.numericLiteral(x2 + d), t.numericLiteral(d)));
+    });
+  }
+  // 运行时状态形式（P1）：以上五种操作数全是字面量，常量传播能把整棵表达式折回
+  // V，等于给静态分析送答案。这一形式让中间量 depend on 运行期才存在的值：
+  //
+  //   ((C = (C * A + B) & MASK), ((a ^ C) ^ ((a ^ V) ^ C)))
+  //
+  // 逗号左侧推进共享计数器，右侧展开后 C 与 C 相消，恒等于 V。于是每个被替换的
+  // 字面量既依赖运行期取值（首值来自 Date.now），又依赖前一个字面量刚写下的计
+  // 数值，形成数据流依赖链：静态求值无法确定 C，折叠失效；要化简必须先认出这条
+  // 链并证明两侧的 C 是同一个值。
+  //
+  // 计数器全程收窄在 2^17 以内（乘数 < 2^15），乘加不溢出双精度，取值精确。
+  if (rtState && randInt(0, 99) < Math.round(RUNTIME_FORM_RATE * 100)) {
+    forms.push(() => {
+      const a = randInt(1, 0x3fffffff);
+      const upd = t.assignmentExpression('=', rtState.id(),
+        t.binaryExpression('&',
+          t.binaryExpression('+',
+            t.binaryExpression('*', rtState.id(), t.numericLiteral(rtState.a)),
+            t.numericLiteral(rtState.b)),
+          t.numericLiteral(0x1ffff)));
+      const expr = t.binaryExpression('^',
+        t.binaryExpression('^', t.numericLiteral(a), rtState.id()),
+        t.binaryExpression('^',
+          t.binaryExpression('^', t.numericLiteral(a), t.numericLiteral(V)),
+          rtState.id()));
+      return t.sequenceExpression([upd, expr]);
     });
   }
   return forms[randInt(0, forms.length - 1)]();
@@ -104,12 +142,45 @@ export default function numberObf(ast, options, ctx) {
   });
 
   let replaced = 0;
+  // 运行时状态计数器：**首次真的抽到运行时形式时才注入**，否则不引入多余绑定
+  // （低档预设或阈值很低时不该多出无用声明）。声明放在程序最前，跳过指令序言
+  // 与 import。
+  //
+  // 初值刻意用**纯字面量**，不调 Date.now 之类的运行期接口：本 pass 排在第 2 位，
+  // 之后 objectKeys / stringArray 会把 `Date.now` 这类成员访问改写成字符串池
+  // 计算式，而池访问器的声明位于头部带内、在程序最前那条声明**之后**——于是
+  // 那句初始化会在池就绪前执行并直接抛错（实测："$2a is not a function"）。
+  // 字面量初值没有这个问题，注入语句里也没有任何可被后续 pass 改写的结构。
+  //
+  // 运行期依赖由**使用点**承担：每个抽中该形式的字面量都先 `C = C * A + B` 再
+  // 取值，于是第 n 个字面量的掩码取决于前 n-1 次求值，形成跨表达式的数据流依赖
+  // 链——AST 常量折叠与局部代数化简都失效（它们只能看到单个表达式的常量树）。
+  const body = ast.type === 'File' ? ast.program.body : ast.body;
+  let rtName = null;
+  const rtState = {
+    // 乘数取奇数且小于 2^15，计数器掩码在 2^17 以内：乘加全程不溢出双精度
+    a: randInt(0x1000, 0x7fff) * 2 + 1,
+    b: randInt(1, 0xffff),
+    id: () => {
+      if (!rtName) {
+        rtName = uniqueName(ctx.usedNames, '_0x');
+        const decl = t.variableDeclaration('var', [t.variableDeclarator(
+          t.identifier(rtName),
+          t.numericLiteral(randInt(1, 0xffff)))]);
+        let at = 0;
+        while (at < body.length
+          && (body[at].type === 'Directive' || body[at].type === 'ImportDeclaration')) at++;
+        body.splice(at, 0, decl);
+      }
+      return t.identifier(rtName);
+    },
+  };
   // 先收集后替换：identity() 会消耗 PRNG，遍历中改 AST 会让后续节点的
   // 随机数消耗序列跟着变，固定 seed 下不可复现
   for (const path of targets) {
     const v = path.node.value;
-    path.replaceWith(identity(v));
+    path.replaceWith(identity(v, rtState));
     replaced++;
   }
-  return { replaced };
+  return { replaced, runtimeState: rtName ? 1 : 0 };
 }
