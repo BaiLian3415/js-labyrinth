@@ -526,6 +526,20 @@ function compileFunction(fn, ctx) {
   const opts = ctx.options;
   const threshold = opts.vmThreshold !== undefined ? opts.vmThreshold : 3;
 
+  // P4 多态寄存器模型：逐函数随机抽一种执行结构不同的模型。
+  //   M0 纯栈式     —— 只有值栈 S，push/pop 直连，产物里没有寄存器变量
+  //   M1 寄存器优先 —— 环形寄存器窗口，值优先落寄存器
+  //   M2 双栈分立   —— 操作数栈 + 地址栈，GETM/SETM/CALLM 走地址栈
+  // WASM 解释器内核档对栈模型有硬编码假设，该档强制 M0；vmModel 可显式锁定
+  // （自测用：M0/M1/M2 三档语义必须等价）。
+  let vmModel = 'M0';
+  if (!ctx.__vmWasmShared) {
+    const forced = opts.vmModel;
+    if (forced === 'M0' || forced === 'M1' || forced === 'M2') vmModel = forced;
+    else vmModel = opts.vmPolymorph ? 'M' + randInt(0, 2) : 'M1';
+  }
+  ctx.vmModel = vmModel;
+
   // 运行时名字走 uniqueName，避免与源码标识符冲突
   const nV = uniqueName(ctx.usedNames, '_0x');
   const nG = uniqueName(ctx.usedNames, '_0x');
@@ -553,6 +567,18 @@ function compileFunction(fn, ctx) {
   const ROT_A = randInt(0x10001, 0x7ffffffe) | 1;     // 轮换函数乘数，取奇数，imul 上可逆
   const ROT_B = randInt(0x1000, 0xffffff);            // 轮换函数异或分量
   const posMask = (i) => (Math.imul(i, MASK_K1) >>> 8) ^ MASK_K2;
+
+  // P4 分块自解密。块密钥由块号运行期派生：BK(b) = imul(b, BK_A) ^ BK_B，
+  // 块长取 2 的幂（BL = 1 << BL_SH），块号 = 字下标 >>> BL_SH。
+  // 存储字多异或一项 BK(b(z))，取指必须带上同一项——静态面没有 BK_A/BK_B/BL_SH
+  // 的明文（旧 wasm 档把它们搬进模块数据段），不知道块长与派生常数就解不出任何字。
+  // WASM 解释器内核档（桥接函数没有 JS 取指）自动关闭，产物与不开时逐字节一致。
+  const useBlock = !!opts.vmBlockDecrypt && !ctx.__vmWasmShared;
+  const BL_SH = useBlock ? randInt(4, 6) : 0;              // 块长指数（16/32/64 字）
+  const BL = useBlock ? (1 << BL_SH) : 0;                  // 块长（字）
+  const BK_A = useBlock ? (randInt(0x10001, 0x7ffffffe) | 1) : 0; // 派生乘数，奇数
+  const BK_B = useBlock ? randInt(0x1000, 0xffffff) : 0;   // 派生异或分量
+  const bkOf = useBlock ? (z) => (Math.imul(z >>> BL_SH, BK_A) ^ BK_B) | 0 : () => 0;
 
   // 字符串表加密参数。产物里没有明文字符串字面量，字符串以码元密文表存在，
   // 每个码元与「项序号、项内下标」的位置散列异或，只有 VM 解释器执行 MKS 指令
@@ -779,8 +805,8 @@ function compileFunction(fn, ctx) {
       else emit('SET', getSetIdx(left.name));
       return;
     }
-    // MemberExpression 目标，模式目标已由片段判定接走
-    emitExpr(left.object);
+    // MemberExpression 目标（赋值流，对象不进地址栈，与 M0 布局一致），模式目标已由片段判定接走
+    emitMemberObject(left.object, false);
     if (left.computed) emitExpr(left.property);
     else emit('MKS', litString(left.property.name));
     if (operator === '=') {
@@ -808,6 +834,7 @@ function compileFunction(fn, ctx) {
   // 嵌套函数由 compileInnerFns 独立编译，各自处理自己的字符串。
   const FRAG_FN_TYPES = new Set(['FunctionExpression', 'ArrowFunctionExpression',
     'FunctionDeclaration', 'ClassMethod', 'ObjectMethod', 'ClassExpression', 'ClassDeclaration']);
+
   function rewriteFragStrings(root) {
     const conv = (n) => (n && typeof n.type === 'string' && n.type === 'StringLiteral')
       ? t.callExpression(t.memberExpression(K, t.numericLiteral(strThunkArrow(litString(n.value))), true), [])
@@ -836,10 +863,20 @@ function compileFunction(fn, ctx) {
     go(root, true);
   }
 
+  // 成员目标压栈。M2 下只有「读」流（GETM / CALLM_）把对象搬到地址栈 SA；
+  // 「赋值目标」流（SETM / GETMK 前导）保持对象在操作数栈，与 M0/M1 逐字一致。
+  // 这样 GETMK 的 o,k 不变式、JANDK 系的 splice 计数与 SETM 的三弹栈逻辑
+  // 在三种模型下完全相同，地址栈只负责读路径，语义分叉面最小。
+  // 用编译期搬栈（而不是在 emitExpr 里按模型分流）的好处：emitExpr 保持单一实现，
+  // 三种模型只在「对象最终落在哪张栈」上分叉，字节码操作数布局不变。
+  function emitMemberObject(obj, toSA) {
+    emitExpr(obj);
+    if (vmModel === 'M2' && toSA) emit('STA');
+  }
+
   function emitExpr(node) {
     if (!node) { emit('LDC', UNDEF); return; }
-    if (isFragmentExpr(node)) {
-      compileInnerFns(node);
+    if (isFragmentExpr(node)) {      compileInnerFns(node);
       rewriteFragStrings(node);
       emit('FRAG', pushThunk(wrapFrag(node)));
       return;
@@ -892,7 +929,7 @@ function compileFunction(fn, ctx) {
       }
       case 'AssignmentExpression': emitAssignment(node); return;
       case 'MemberExpression':
-        emitExpr(node.object);
+        emitMemberObject(node.object, true);
         if (node.computed) emitExpr(node.property);
         else emit('MKS', litString(node.property.name));
         emit('GETM');
@@ -900,7 +937,7 @@ function compileFunction(fn, ctx) {
       case 'CallExpression': {
         const callee = node.callee;
         if (callee.type === 'MemberExpression') {
-          emitExpr(callee.object);
+          emitMemberObject(callee.object, true);
           if (callee.computed) emitExpr(callee.property);
           else emit('MKS', litString(callee.property.name));
         } else {
@@ -1119,9 +1156,11 @@ function compileFunction(fn, ctx) {
   } else {
     opKinds.forEach((k, i) => opNums.set(k, slotOrder[i]));
   }
-  // 桶数随指令集规模扩展，桶内大致保持 24 项线性比对；无干扰项时沿用原公式
+  // 桶数随指令集规模扩展，桶内大致保持 24 项线性比对；无干扰项时沿用原公式。
+  // P3 随机化补强：基数乘一个 1.0~1.4 的随机因子，桶数公式本身逐构建漂移，
+  // 「桶内 24 项」这条可被脚本化的结构规律因此不成立。桶数最终仍取 2 的幂。
   const nbRaw = decoys.length
-    ? Math.max(8, Math.min(64, Math.ceil((opKinds.length + decoys.length) / 24)))
+    ? Math.max(8, Math.min(64, Math.ceil((opKinds.length + decoys.length) * (1 + randInt(0, 40) / 100) / 24)))
     : Math.max(2, Math.min(6, Math.ceil(opKinds.length / 3)));
   let nbuckets = 1;
   while (nbuckets < nbRaw) nbuckets <<= 1;
@@ -1212,14 +1251,14 @@ function compileFunction(fn, ctx) {
     }
   }
   if (words.some((w) => w === null)) throw new Error(msg('vmChainSolveFailed'));
-  // 逐字求链值并生成密文
+  // 逐字求链值并生成密文。分块开启时密文多异或一项块密钥（P4）。
   const chainAt = new Array(words.length);
   const flat = [];
   {
     let c = CHAIN_SEED;
     for (let z = 0; z < words.length; z++) {
       chainAt[z] = c;
-      flat.push((words[z] ^ posMask(z + 1)) ^ MASK_M0 ^ c);
+      flat.push(((words[z] ^ posMask(z + 1)) ^ MASK_M0 ^ c ^ bkOf(z)) | 0);
       c = words[z];
     }
   }
@@ -1288,6 +1327,16 @@ function compileFunction(fn, ctx) {
   };
   const bAt = (dst) => {
     const fetch = t.memberExpression(B, t.updateExpression('++', PC, false), true);
+    // P4 分块自解密：块密钥项 (imul((npc-1) >>> BL_SH, BK_A) ^ BK_B)。
+    // npc 已自增为字下标+1，块号要用取指前的下标（npc-1）。BL_SH/BK_A/BK_B
+    // 是逐函数随机的字面量，散进 XOR 树里与位置分量、掩码、链值并列。
+    const blkTerm = useBlock ? t.binaryExpression('^',
+      rtlib.mulCall(ctx,
+        t.binaryExpression('>>>',
+          t.binaryExpression('-', t.identifier(npc), t.numericLiteral(1)),
+          t.numericLiteral(BL_SH)),
+        t.numericLiteral(BK_A)),
+      t.numericLiteral(BK_B)) : null;
     const dec = xorTree([
       fetch,
       t.binaryExpression('^',
@@ -1297,6 +1346,7 @@ function compileFunction(fn, ctx) {
         t.numericLiteral(MASK_K2)),
       MASK,
       t.identifier(nCHAIN),
+      ...(blkTerm ? [blkTerm] : []),
     ]);
     // 序列式结果：nCHN = v, nCHAIN = nCHN, 可选 dst = nCHN，整个表达式的值取 nCHN
     const parts = [
@@ -1310,6 +1360,10 @@ function compileFunction(fn, ctx) {
   const Slen = () => t.memberExpression(S, t.identifier('length'), false);
   const topElem = () => t.memberExpression(S,
     t.binaryExpression('-', Slen(), t.numericLiteral(1)), true);
+  // 任意数组的栈顶引用。地址栈与操作数栈共用同一形态
+  const topOf = (arr) => t.memberExpression(arr,
+    t.binaryExpression('-',
+      t.memberExpression(arr, t.identifier('length'), false), t.numericLiteral(1)), true);
   const declConst = (name, init) =>
     t.variableDeclaration('const', [t.variableDeclarator(t.identifier(name), init)]);
   const idn = (n) => t.identifier(n);
@@ -1341,12 +1395,26 @@ function compileFunction(fn, ctx) {
   // 一组轮转伪寄存器，每个 case 内的 push/pop 值先落到寄存器再进出栈，静态数据流
   // 因此必须同时追踪寄存器组与栈两层。轮转槽位由构建期逐 case 随机起点决定，
   // 跨 case 的寄存器占用图不规则。
-  const REGN = randInt(3, 5); // 寄存器组大小
+  const REGN = ctx.vmModel === 'M0' ? 0 : (ctx.vmModel === 'M1' ? 5 : randInt(3, 5)); // 寄存器组大小（M0 纯栈式无寄存器）
   const REGS = Array.from({ length: REGN }, () => uniqueName(ctx.usedNames, '_0x'));
-  let regSpin = randInt(0, REGN - 1); // 每个 case 的起点随机
-  const nextReg = () => { const r = REGS[regSpin % REGN]; regSpin = (regSpin + 1) % REGN; return r; };
-  // 压栈经寄存器：R = 值; push(R)
+  let regSpin = randInt(0, Math.max(0, REGN - 1)); // 起点随机
+  // P3 随机化补强：每个 case 重新随机起点，而不是全函数一条固定的轮转序列。
+  // 跨 case 的寄存器占用图因此不规则，静态按「第 k 次 push 落在哪号寄存器」
+  // 做归纳会失败。
+  const reseedSpin = () => { if (REGN > 0) regSpin = randInt(0, REGN - 1); };
+  // REGN === 0（M0 纯栈式）时 nextReg 不应被调用；真被调用时明确抛错而不是
+  // 静默产出 REGS[NaN] 这种无名 Identifier 节点（会让生成器报"AST 已损坏"）。
+  const nextReg = () => {
+    if (REGN === 0) throw new Error(msg('vmUnknownOpcode', { kind: 'nextReg@M0' }));
+    const r = REGS[regSpin % REGN]; regSpin = (regSpin + 1) % REGN; return r;
+  };
+  // 压栈经寄存器：R = 值; push(R)。M0 纯栈式模型下没有寄存器，直接落栈。
+  // （P4 多态寄存器模型：M0 纯栈 / M1 寄存器优先 / M2 双栈分立，见 ctx.vmModel）
   const pushR = (val) => {
+    if (REGN === 0) {
+      return [t.expressionStatement(t.callExpression(
+        t.memberExpression(S, t.identifier('push'), false), [val]))];
+    }
     const r = nextReg();
     return [
       t.expressionStatement(t.assignmentExpression('=', idn(r), val)),
@@ -1354,8 +1422,11 @@ function compileFunction(fn, ctx) {
         t.memberExpression(S, t.identifier('push'), false), [idn(r)])),
     ];
   };
-  // 出栈经寄存器：R = pop()，表达式值就是 R 的引用
+  // 出栈经寄存器：R = pop()，表达式值就是 R 的引用。M0 下直接 pop。
   const popR = () => {
+    if (REGN === 0) {
+      return t.callExpression(t.memberExpression(S, t.identifier('pop'), false), []);
+    }
     const r = nextReg();
     return t.sequenceExpression([
       t.assignmentExpression('=', idn(r),
@@ -1368,6 +1439,21 @@ function compileFunction(fn, ctx) {
     t.memberExpression(S, t.identifier('push'), false), [x]));
   const popCall = () => t.callExpression(t.memberExpression(S, t.identifier('pop'), false), []);
 
+  // P4 模型 M2：地址栈。成员访问类指令（GETM/SETM/CALLM）的目标对象与键不改从
+  // 操作数栈出，而从第二张栈 SA 出。静态上「一个栈」的模型不再成立：同一条指令
+  // 序列里出现两套 push/pop，且哪套用在哪种指令上不按位置规律。
+  // M0/M1 下 SA 为 null，指令实现与改造前逐字节一致。
+  const SA = vmModel === 'M2' ? t.identifier(uniqueName(ctx.usedNames, '_0x')) : null;
+  const pushA = (x) => t.expressionStatement(t.callExpression(
+    t.memberExpression(SA, t.identifier('push'), false), [x]));
+  const popA = () => t.callExpression(t.memberExpression(SA, t.identifier('pop'), false), []);
+  // 模型 M2 的成员指令栈序：目标对象走 SA，键留在 S，操作数在 S。
+  // 编译期压栈顺序是 [obj, key, ...args]（与栈机一致），所以出栈顺序是倒序。
+  const popMemberTarget = (kind) => {
+    if (vmModel !== 'M2') return { obj: () => popR(), key: () => popR() };
+    return { obj: () => popA(), key: () => popR() };
+  };
+
   // MKS 的临时名逐函数唯一，避免与 case 体里其它分支的局部名互相遮蔽
   const nSX = uniqueName(ctx.usedNames, '_0x'); // 字符串表下标
   const nSS = uniqueName(ctx.usedNames, '_0x'); // 该字符串的码元表
@@ -1375,6 +1461,7 @@ function compileFunction(fn, ctx) {
   const nSJ = uniqueName(ctx.usedNames, '_0x'); // 码元游标
 
   function caseBody(kind) {
+    reseedSpin(); // P3：每条指令重新随机寄存器轮转起点
     if (kind === 'LDC') return pushR(t.memberExpression(K, bAt(), true));
     if (kind === 'LOD') return pushR(t.memberExpression(V, bAt(), true));
     if (kind === 'STR') return [t.expressionStatement(t.assignmentExpression('=',
@@ -1409,20 +1496,29 @@ function compileFunction(fn, ctx) {
       ...pushR(idn(nSO)),
     ];
     if (kind === 'GETM') return [
-      declConst(N_B, popR()), declConst(N_A, popR()),
+      declConst(N_B, popMemberTarget().key()), declConst(N_A, popMemberTarget().obj()),
       ...pushR(t.memberExpression(idn(N_A), idn(N_B), true)),
     ];
+    // SETM：赋值流的对象从未离开操作数栈（见 emitMemberObject 的 toSA 约定），
+    // 三种模型统一从这里弹 3 个值（值、键、对象）。
     if (kind === 'SETM') return [
       declConst(N_C, popR()), declConst(N_B, popR()), declConst(N_A, popR()),
       t.expressionStatement(t.assignmentExpression('=',
         t.memberExpression(idn(N_A), idn(N_B), true), idn(N_C))),
       ...pushR(idn(N_C)), // 成员存完之后压回，作为赋值表达式的结果
     ];
-    if (kind === 'GETMK') return [pushCall(t.memberExpression(
-      t.memberExpression(S, t.binaryExpression('-', Slen(), t.numericLiteral(2)), true),
-      topElem(), true))];
+    // GETMK：把成员目标对象、键与当前值（o[k]）压栈，供 SETM 回写或提前定值弹栈。
+    // 赋值流的对象不进地址栈（toSA=false），所以这里在三种模型下都是同一形态：
+    // 复制栈顶两个（o、k）再求 o[k]，S = [..., o, k, o[k]]。
+    if (kind === 'GETMK') {
+      return [pushCall(t.memberExpression(
+        t.memberExpression(S, t.binaryExpression('-', Slen(), t.numericLiteral(2)), true),
+        topElem(), true))];
+    }
     if (kind === 'DUP') return [pushCall(topElem())];
     if (kind === 'POP') return [t.expressionStatement(popCall())];
+    // P4 模型 M2：把操作数栈顶搬到地址栈。只在 M2 的成员目标处出现。
+    if (kind === 'STA') return [pushA(popCall())];
     // 跳转类取目标字与目标链值字，跳转之后 PC 与链状态一起重置。
     // N_A 要用 var 预声明：bAt 的序列式里含 N_A=nCHN 的赋值，若用 const
     // 初始化器会在内部自引用触发 TDZ。
@@ -1502,6 +1598,17 @@ function compileFunction(fn, ctx) {
     }
     if (kind.startsWith('CALLM_')) {
       const args = argNames(+kind.slice(6));
+      if (vmModel === 'M2') {
+        // M2：目标对象走地址栈 SA，键与参数走操作数栈。
+        // 编译期每 c.args 的压栈次序：先 c.obj → SA，再 c.key → S，再实参 → S。
+        // 出栈倒序：先实参，再键，最后对象。
+        return [
+          ...args.slice().reverse().map((nm) => declConst(nm, popR())),
+          declConst(N_K, popMemberTarget().key()),
+          declConst(N_O, popMemberTarget().obj()),
+          ...pushR(t.callExpression(t.memberExpression(idn(N_O), idn(N_K), true), args.map(idn))),
+        ];
+      }
       return [
         ...args.slice().reverse().map((nm) => declConst(nm, popR())),
         declConst(N_K, popR()), declConst(N_O, popR()),
@@ -1537,15 +1644,23 @@ function compileFunction(fn, ctx) {
   const nT1 = uniqueName(ctx.usedNames, '_0x');
   const scratchDecls = [
     t.variableDeclarator(idn(nDV), t.arrayExpression(
-      Array.from({ length: randInt(4, 8) }, () => t.numericLiteral(0)))),
-    t.variableDeclarator(idn(nT0), t.numericLiteral(0)),
-    t.variableDeclarator(idn(nT1), t.numericLiteral(0)),
+      // P3 随机化补强：初值改为随机非零小整数。全零初值本身就是「这是垃圾数组」
+      // 的静态特征（真实槽位面几乎不会是全零），随机初值让它与 V 槽位面同形。
+      Array.from({ length: randInt(4, 8) }, () => t.numericLiteral(randInt(1, 0x7fff))))),
+    t.variableDeclarator(idn(nT0), t.numericLiteral(randInt(1, 0xffff))),
+    t.variableDeclarator(idn(nT1), t.numericLiteral(randInt(1, 0xffff))),
   ];
   const junkNames = [];
   const junkDecls = [];
   const JN = decoys.length ? Math.min(24, Math.max(10, Math.ceil(decoys.length / 48))) : 0;
   const slenE = () => t.memberExpression(S, t.identifier('length'), false);
-  const junkReg = () => idn(REGS[randInt(0, REGN - 1)]);
+  // M0 纯栈式没有寄存器，干扰体一律改用垃圾数组做寄存器式算术（形态仍与真实
+  // 寄存器窗口一致：读-改-写一个下标面），静态上分辨不出这里与真实寄存器动作。
+  const junkReg = () => (REGN === 0
+    ? t.memberExpression(idn(nDV), t.binaryExpression('%',
+      t.binaryExpression('+', PC, t.numericLiteral(randInt(0, 7))),
+      t.memberExpression(idn(nDV), t.identifier('length'), false)), true)
+    : idn(REGS[randInt(0, REGN - 1)]));
   const junkStmt = () => {
     switch (randInt(0, 6)) {
       case 0: // 寄存器算术，形态与真实 case 的寄存器窗口一致
@@ -1677,7 +1792,11 @@ function compileFunction(fn, ctx) {
       t.numericLiteral(DISP_Q1)),
     t.numericLiteral(DISP_SH));
 
-  const dispatchForm = randInt(0, 2); // 0 为 A，1 为 B，2 为 C
+  // 分发形态每函数随机：vmDispatchEnc 关闭时 A/B/C 三选一；开启时 75% 走
+  // 形态 D（表密文化），25% 仍走 A/B/C，避免「全库单一形态」的新指纹。
+  const dispatchForm = ctx.options.vmDispatchEnc
+    ? (randInt(0, 3) === 0 ? randInt(0, 2) : 3)  // 75% 走 D，25% 仍走 A/B/C（避免形态单一）
+    : randInt(0, 2); // 0 为 A，1 为 B，2 为 C，3 为 D
   let dispSwitchNode = null;   // 形态 A 的 switch 判别式节点
   // 解释器循环之前先声明干扰项共享的垃圾体，三种分发形态都要；形态 B 再追加表
   let preLoopStmts = junkDecls.slice();
@@ -1780,6 +1899,253 @@ function compileFunction(fn, ctx) {
           ])),
       ])),
       ]);
+  } else if (dispatchForm === 3) {
+    // 形态 D（P3）：分发条目表密文化 + 动作函数表间接调度。
+    //
+    // 这是「分发字 → 语义」映射唯一不以明文出现在产物里的形态。构造：
+    //
+    //   1. 动作函数表 A[i]：第 i 项是某个真实语义的箭头函数（return 转 [0,值] 穿透，
+    //      与形态 B 同一套转换）。**语义只以「在 A 里的下标」存在**，产物里没有
+    //      「分发字 = 语义」的对应。
+    //   2. 条目密文表 C：把 (bucket, word, actIdx) 三元组编码成整数流，逐项与
+    //      「位置散列 ^ 桶盐 ^ 表掩码」异或。产物里 C 是一串看似随机的整数。
+    //   3. 运行期在解释器循环**之前**一次性解出 C，填充桶索引 BI[bucket]，
+    //      BI[b] 给出该桶在解出的 (word, actIdx) 并行数组里的下标区间 [lo, hi)。
+    //   4. 分发时按 BI[bucket] 取区间，线性比对 word，命中即调 A[actIdx]。
+    //   5. 解完把 C 就地清空（C.length = 0），运行期内存里也不再保留密文表。
+    //
+    // 静态面的收益：读源码只能看到「一串整数」「一张箭头函数表」，以及
+    // 「按桶号取区间、比对解出的值、调表里某下标」的调度骨架。要还原指令集语义，
+    // 必须先算出 C 的解密密钥（依赖 DISP_P1/Q1、DE_S1、DE_M0，全部逐构建随机），
+    // 再与 A 的下标对齐——而 A 的下标本身也不与语义名对应。
+    const A_TBL = uniqueName(ctx.usedNames, '_0x'); // 动作函数表
+    const C_TBL = uniqueName(ctx.usedNames, '_0x'); // 条目密文表（运行期就地解密）
+    const BI_TBL = uniqueName(ctx.usedNames, '_0x'); // 桶 2 → 条目区间 [lo,hi) 的平铺表
+    const DBI = uniqueName(ctx.usedNames, '_0x');   // 解密临时：条目掩码
+    const DDR = uniqueName(ctx.usedNames, '_0x');   // 解密游标
+    // 位置散列乘数（奇数）与异或分量、表掩码，全部逐构建随机。
+    const DE_S1 = randInt(0x10001, 0x7ffffffe) | 1;
+    const DE_S2 = randInt(0x1000, 0xffffff);
+    const DE_M0 = randInt(0x1000, 0x3fffffff);
+    const deMask = (i) => (Math.imul(i + 1, DE_S1) >>> 9) ^ DE_S2 ^ DE_M0;
+
+    // 动作函数表：只装真实语义（干扰条目在解密后指向一个共享的垃圾箭头下标，
+    // 与真实项混排，静态上无法按下标规律区分真假）。
+    // toFnBody 复用形态 B 的实现思路：return 一律转 [0, 值] / [0]，由调度层穿透。
+    const toFnBodyD = (k) => {
+      const stmts = caseBody(k).map((s) => s);
+      const conv = (n) => {
+        if (!n || typeof n !== 'object' || typeof n.type !== 'string') return;
+        if (n.type === 'ReturnStatement') {
+          n.argument = n.argument
+            ? t.arrayExpression([t.numericLiteral(0), n.argument])
+            : t.arrayExpression([t.numericLiteral(0)]);
+          return;
+        }
+        for (const key of Object.keys(n)) {
+          if (key === 'loc') continue;
+          const v = n[key];
+          if (Array.isArray(v)) for (const c of v) conv(c);
+          else if (v && typeof v === 'object' && typeof v.type === 'string') conv(v);
+        }
+      };
+      stmts.forEach(conv);
+      return t.blockStatement(stmts);
+    };
+    // 表里每一项都是箭头函数。干扰条目引用共享的垃圾箭头（与形态 B 一致）。
+    // 无干扰项（vmDecoyOps=0 的低档）时 junkNames 为空，跳过干扰动作占位。
+    const actElems = [];
+    const actIdxOfKind = new Map();
+    for (const k of opKinds) {
+      actIdxOfKind.set(k, actElems.length);
+      actElems.push(t.arrowFunctionExpression([], toFnBodyD(k)));
+    }
+    const junkActIdx = junkNames.length ? actElems.length : -1;
+    if (junkNames.length) actElems.push(t.identifier(junkNames[0])); // 干扰动作，引用共享垃圾箭头
+    // 每桶的条目序列（已洗牌），扁平化后编码
+    const flatEntries = []; // {bucket, word, actIdx}
+    const bucketRange = new Map(); // bucket -> [lo, hi)
+    for (let b = 0; b < nbuckets; b++) {
+      const es = byBucket.get(b);
+      if (!es.length) continue;
+      const lo = flatEntries.length;
+      for (const e of es) {
+        flatEntries.push({
+          bucket: b,
+          word: e.word,
+          actIdx: e.real ? actIdxOfKind.get(e.kind) : junkActIdx,
+        });
+      }
+      bucketRange.set(b, [lo, flatEntries.length]);
+    }
+    // 编码：每项拆成三个字，分别异或同一位置掩码（三字共用掩码，但字的「位段」
+    // 不同，静态上也读不出哪三位是一组）。产物里是纯整数流。
+    const cWords = [];
+    flatEntries.forEach((en, i) => {
+      const m = deMask(i);
+      cWords.push((en.bucket ^ m) | 0);
+      cWords.push((en.word ^ m) | 0);
+      cWords.push((en.actIdx ^ m) | 0);
+    });
+    // 桶区间表也平铺成一维（桶号 -> lo, hi），同样异或掩码，避免桶边界明文可读。
+    // 构建期掩码必须与运行期 biMask **逐字同构**（注意这里没有 deMask 的 +1 偏移），
+    // 否则解出的区间整体错位、分发永远落空。
+    const biMaskOf = (b) => (Math.imul(b ^ (DE_S2 & 0xff), DE_S1) >>> 9) ^ DE_S2 ^ DE_M0;
+    const biWords = [];
+    for (let b = 0; b < nbuckets; b++) {
+      const r = bucketRange.get(b);
+      const m = biMaskOf(b);
+      biWords.push((b ^ m) | 0);
+      biWords.push((((r ? r[0] : 0) + 1) ^ m) | 0); // +1 偏移避开 0 值特征
+      biWords.push((((r ? r[1] : 0) + 1) ^ m) | 0);
+    }
+
+    preLoopStmts.push(
+      t.variableDeclaration('var', [
+        t.variableDeclarator(t.identifier(A_TBL), t.arrayExpression(actElems)),
+        t.variableDeclarator(t.identifier(C_TBL),
+          t.arrayExpression(cWords.map((n) => t.numericLiteral(n)))),
+        t.variableDeclarator(t.identifier(BI_TBL),
+          t.arrayExpression(biWords.map((n) => t.numericLiteral(n)))),
+      ]),
+    );
+    // 解密：一次性把 C 与 BI 解回明文结构（桶索引表 与 条目并行数组）。
+    // 解密式与编码式同构：value = word ^ (imul(i+1, DE_S1) >>> 9) ^ DE_S2 ^ DE_M0。
+    const deExpr = (idxNode) => t.binaryExpression('^',
+      t.binaryExpression('^',
+        t.binaryExpression('>>>',
+          rtlib.mulCall(ctx, t.binaryExpression('+', idxNode, t.numericLiteral(1)),
+            t.numericLiteral(DE_S1)),
+          t.numericLiteral(9)),
+        t.numericLiteral(DE_S2)),
+      t.numericLiteral(DE_M0));
+    // BI 的索引掩码与 C 不同（用 b ^ (DE_S2 & 0xff)），这里同构重算。
+    const biMask = (bIdxNode) => t.binaryExpression('^',
+      t.binaryExpression('>>>',
+        rtlib.mulCall(ctx,
+          t.binaryExpression('^', bIdxNode, t.numericLiteral(DE_S2 & 0xff)),
+          t.numericLiteral(DE_S1)),
+        t.numericLiteral(9)),
+      t.binaryExpression('^', t.numericLiteral(DE_S2), t.numericLiteral(DE_M0)));
+    const NB_LIT = nbuckets;
+    // 解密后的明文结构装在三个并行数组：DW（分发字）、DA（动作下标）、
+    // BB（该条目所属桶，用于把条目归位到桶区间）。归位在解密循环里一并完成。
+    const DW = uniqueName(ctx.usedNames, '_0x');
+    const DA = uniqueName(ctx.usedNames, '_0x');
+    const BLO = uniqueName(ctx.usedNames, '_0x');
+    const BHI = uniqueName(ctx.usedNames, '_0x');
+    const decStmts = [
+      t.variableDeclaration('var', [
+        t.variableDeclarator(idn(DW), t.arrayExpression([])),
+        t.variableDeclarator(idn(DA), t.arrayExpression([])),
+      ]),
+      // 解出全部条目
+      t.forStatement(
+        t.variableDeclaration('var', [
+          t.variableDeclarator(idn(DDR), t.numericLiteral(0)),
+        ]),
+        t.binaryExpression('<', idn(DDR),
+          t.binaryExpression('/', t.memberExpression(t.identifier(C_TBL), t.identifier('length'), false),
+            t.numericLiteral(3))),
+        t.updateExpression('++', idn(DDR), false),
+        t.blockStatement([
+          // 三字共用一处掩码，先算一次
+          t.variableDeclaration('var', [
+            t.variableDeclarator(idn(DBI), deExpr(idn(DDR))),
+          ]),
+          t.expressionStatement(t.callExpression(
+            t.memberExpression(idn(DW), t.identifier('push'), false), [
+              t.binaryExpression('^',
+                t.memberExpression(t.identifier(C_TBL),
+                  t.binaryExpression('+', t.binaryExpression('*', idn(DDR), t.numericLiteral(3)),
+                    t.numericLiteral(1)), true),
+                idn(DBI)),
+            ])),
+          t.expressionStatement(t.callExpression(
+            t.memberExpression(idn(DA), t.identifier('push'), false), [
+              t.binaryExpression('^',
+                t.memberExpression(t.identifier(C_TBL),
+                  t.binaryExpression('+', t.binaryExpression('*', idn(DDR), t.numericLiteral(3)),
+                    t.numericLiteral(2)), true),
+                idn(DBI)),
+            ])),
+        ])),
+      // 解出桶区间（每桶三项：桶号、lo+1、hi+1），按桶号归位
+      t.variableDeclaration('var', [
+        t.variableDeclarator(idn(BLO), t.arrayExpression([])),
+        t.variableDeclarator(idn(BHI), t.arrayExpression([])),
+      ]),
+      t.forStatement(
+        t.variableDeclaration('var', [
+          t.variableDeclarator(idn(DDR), t.numericLiteral(0)),
+        ]),
+        t.binaryExpression('<', idn(DDR), t.numericLiteral(NB_LIT)),
+        t.updateExpression('++', idn(DDR), false),
+        t.blockStatement([
+          t.variableDeclaration('var', [
+            t.variableDeclarator(idn(DBI), biMask(idn(DDR))),
+          ]),
+          t.expressionStatement(t.assignmentExpression('=',
+            t.memberExpression(idn(BLO), idn(DDR), true),
+            t.binaryExpression('^',
+              t.memberExpression(t.identifier(BI_TBL),
+                t.binaryExpression('+', t.binaryExpression('*', idn(DDR), t.numericLiteral(3)),
+                  t.numericLiteral(1)), true),
+              idn(DBI)))),
+          t.expressionStatement(t.assignmentExpression('=',
+            t.memberExpression(idn(BHI), idn(DDR), true),
+            t.binaryExpression('^',
+              t.memberExpression(t.identifier(BI_TBL),
+                t.binaryExpression('+', t.binaryExpression('*', idn(DDR), t.numericLiteral(3)),
+                  t.numericLiteral(2)), true),
+              idn(DBI)))),
+        ])),
+      // 密文表就地清空：运行期内存里不再保留可 dump 的密文表
+      t.expressionStatement(t.assignmentExpression('=',
+        t.memberExpression(t.identifier(C_TBL), t.identifier('length'), false),
+        t.numericLiteral(0))),
+      t.expressionStatement(t.assignmentExpression('=',
+        t.memberExpression(t.identifier(BI_TBL), t.identifier('length'), false),
+        t.numericLiteral(0))),
+    ];
+    // 解密语句在每次函数调用时执行（DW/DA/BLO/BHI 随调用重建，与形态 B 的表
+    // 每调用重建同一成本量级；条目数 = 真实 + 干扰，循环体只是算术与 push）。
+    preLoopStmts = preLoopStmts.concat(decStmts);
+
+    // 分发体：桶号 → 取区间 [BLO[b]-1, BHI[b]-1) → 线性比对 DW[i]，命中调 A[DA[i]]。
+    const _q = uniqueName(ctx.usedNames, '_0x');
+    const _rr = uniqueName(ctx.usedNames, '_0x');
+    dispatchBody = t.blockStatement([
+      t.forStatement(
+        t.variableDeclaration('var', [
+          t.variableDeclarator(idn(_q),
+            t.binaryExpression('-',
+              t.memberExpression(idn(BLO), idn(_bk), true), t.numericLiteral(1))),
+        ]),
+        t.binaryExpression('<', idn(_q),
+          t.binaryExpression('-',
+            t.memberExpression(idn(BHI), idn(_bk), true), t.numericLiteral(1))),
+        t.updateExpression('++', idn(_q), false),
+        t.blockStatement([
+          t.ifStatement(
+            t.binaryExpression('===',
+              t.memberExpression(idn(DW), idn(_q), true),
+              idn(_dispT)),
+            t.blockStatement([
+              t.variableDeclaration('var', [
+                t.variableDeclarator(idn(_rr), t.callExpression(
+                  t.memberExpression(t.identifier(A_TBL),
+                    t.memberExpression(idn(DA), idn(_q), true), true), [])),
+              ]),
+              t.ifStatement(
+                t.binaryExpression('!==', idn(_rr),
+                  t.unaryExpression('void', t.numericLiteral(0), true)),
+                t.blockStatement([t.returnStatement(
+                  t.memberExpression(idn(_rr), t.numericLiteral(1), true))])),
+              t.breakStatement(),
+            ])),
+        ])),
+    ]);
   } else {
     // 形态 C：嵌套 if 桶链
     const outer = [];
@@ -1800,7 +2166,7 @@ function compileFunction(fn, ctx) {
   }
 
   // 解释器循环形态逐构建随机，for(;;) 与 while(true) 二选一。循环骨架是解释器最外层
-  // 指纹之一，这两种形态与 dispatchForm 的三种分发正交组合出 6 种骨架，针对单一骨架
+  // 指纹之一，这两种形态与 dispatchForm 的四种分发正交组合出 8 种骨架，针对单一骨架
   // 模板写的还原规则无法跨构建复用。
   const interpBody = t.blockStatement([
     t.variableDeclaration('var', [
@@ -1831,6 +2197,8 @@ function compileFunction(fn, ctx) {
       t.arrayExpression(row.map((n) => t.numericLiteral(n)))))),
     t.variableDeclarator(B, t.arrayExpression(flat.map((n) => t.numericLiteral(n)))),
     t.variableDeclarator(S, t.arrayExpression([])),
+    // P4 模型 M2 的地址栈。仅在 M2 下声明；M0/M1 下 SA 为 null，声明里不出现。
+    ...(SA ? [t.variableDeclarator(SA, t.arrayExpression([]))] : []),
     t.variableDeclarator(PC, t.numericLiteral(0)),
     t.variableDeclarator(MASK, t.numericLiteral(MASK_M0)),
     t.variableDeclarator(t.identifier(nCHAIN), t.numericLiteral(CHAIN_SEED)), // 链值状态
@@ -1898,6 +2266,7 @@ function compileFunction(fn, ctx) {
     nM,                   // 掩码变量名，wasm 用来定位 MASK 声明与轮换写回
     nNM,                  // 轮换掩码临时变量名
     MASK_K1, MASK_K2, MASK_M0,
+    BL_SH, BL, BK_A, BK_B,   // P4 分块自解密参数，旧 wasm 档 CN 用；关闭时全 0
     npc,                 // 位置计数变量名，wasm 用它特征匹配取指表达式
     nCHAIN, nCHN,        // 链状态与暂存名，wasm 据此改写 cr 复位点
     CHAIN_SEED,           // 链式取指初值，wasm 档可放进 WASM data 段
@@ -1917,7 +2286,7 @@ function compileFunction(fn, ctx) {
   };
 
   compiledSet.add(fn);
-  return { real: opKinds.length, decoy: decoys.length, total: entries.length };
+  return { real: opKinds.length, decoy: decoys.length, total: entries.length, form: dispatchForm };
 }
 
 // 目标筛选，由 vmMode 决定，取值 global、comment 或 only-string
@@ -2034,6 +2403,11 @@ function vm(ast, options, ctx) {
   let opsReal = 0;
   let opsDecoy = 0;
   const rtNames = ctx.rtNames || new Set();
+  // 分发形态计数（A=0/B=1/C=2/D=3）。形态 D 的验收用例据此断言「D 真的出现了」，
+  // 也用于观察 vmDispatchEnc 开关下的形态分布。
+  const formCount = { A: 0, B: 0, C: 0, D: 0 };
+  // 寄存器模型计数（P4 多态验收用）
+  const modelCount = { M0: 0, M1: 0, M2: 0 };
   // comment 模式的最近声明头判定要用到全部候选函数的头下标
   const allHeads = fns.map((fn) => fnHeadIdx(fn));
   for (const fn of fns) {
@@ -2051,6 +2425,8 @@ function vm(ast, options, ctx) {
         compiled++;
         opsReal += r.real;
         opsDecoy += r.decoy;
+        if (r.form !== undefined) formCount['ABCD'[r.form]]++;
+        if (ctx.vmModel) modelCount[ctx.vmModel]++;
       }
     } catch (e) {
       failed++; // 保守处理，该函数保持原样
@@ -2064,6 +2440,8 @@ function vm(ast, options, ctx) {
     mode,
     // 指令集规模。每个编译函数的分发器要枚举 real+decoy 个分发字，干扰项通常不少于 1000
     ops: { real: opsReal, decoy: opsDecoy, total: opsReal + opsDecoy },
+    forms: formCount,
+    models: modelCount,
   };
 };
 

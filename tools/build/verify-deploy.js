@@ -28,6 +28,7 @@
 import { randomBytes } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import plan from '../../src/plan.js';
+import { VERSION } from '../../src/version.js';
 
 const args = process.argv.slice(2);
 let base = '';
@@ -109,6 +110,10 @@ console.log('1) /api/health');
     report(!!j && j.ok === true, 'ok=true', j ? 'runtime=' + j.runtime + ' version=' + j.version : '响应不是 JSON');
     // 静态站点里 runtime 应为 worker（Worker 或 Pages Functions 都是 workerd）
     if (j) report(j.runtime === 'worker', 'runtime=worker', '实得 ' + j.runtime);
+    // 版本一致性：线上报的版本必须等于本地 src/version.js（单一真源）。
+    // 版本断言从这里读取而不是硬编码，升级版本号时本文件无需改动；
+    // 部署了旧构建（改完代码忘了 deploy）时这一项会立刻失败。
+    if (j) report(j.version === VERSION, '线上版本 = ' + VERSION, '实得 ' + (j.version ?? '（缺失）'));
   }
 }
 

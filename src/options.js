@@ -24,6 +24,16 @@ export default {
   "vmMode": "global",
   "vmThreshold": 1,
   "vmDecoyOps": 256,
+  // P3：分发条目表密文化。分发器的 (分发字 → 语义动作) 对应关系不再以
+  // 明文比较链/表字面量出现，改为密文数组 + 运行期一次解密 + 动作函数表间接引用。
+  "vmDispatchEnc": true,
+  // P4：多态寄存器模型。逐函数从 M0 纯栈 / M1 寄存器优先 / M2 双栈分立 中随机抽一种。
+  "vmPolymorph": false,
+  // P4：字节码按块自解密。块边界逐构建随机，块密钥运行期派生，任一时刻内存里
+  // 最多只有 1~2 块明文，线性 dump 拿不到完整指令流。
+  "vmBlockDecrypt": false,
+  // 测试用：强制单一寄存器模型（auto 表示按 vmPolymorph 随机）
+  "vmModel": "auto",
   "wasm": true,
   "wasmThreshold": 1,
   "objectKeyEncoding": true,

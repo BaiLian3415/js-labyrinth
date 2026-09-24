@@ -1455,6 +1455,245 @@ section('VM 保护与用户标识符冲突');
   ok(mismatch === 0, 'VM 保护不覆盖用户名为 a/b/c/v/n/f/o 的变量（5 例 × 4 预设 × 3 seed）', firstBad);
 }
 
+// ---------------------------------------------------------------- P3：分发表密文化
+
+section('P3：分发表密文化（vmDispatchEnc）');
+{
+  // 样例刻意只用一个 VM 函数并调用两次：P3-3 的「解码清零每次调用执行一遍」
+  // 计数断言需要已知的调用次数。integrityCheck 关掉是为了让篡改变体直接测
+  // 分发表本身，而不是被完整性校验先一步拦下（后者已由「篡改检出」段覆盖）。
+  const src1 = 'function work(n){var a=0;for(var i=0;i<n;i++){if(i%2===0){a+=i*3;}else{a-=1;}}return a+"|"+(n>3?"big":"small");}\n'
+    + 'process.stdout.write(work(9)+" "+work(2)+"\\n");';
+  const want = runNode(src1, 'p3-want.js').trim();
+  const vmStatOf = (r) => {
+    const s = r.stats.find((x) => x.pass === 'vm');
+    return s && s.result ? s.result : null;
+  };
+  // 产物里的标识符可能是 \uXXXX 转义序列（名字池含非 ASCII），统一按转义层文本匹配
+  const NAME = '(?:\\\\u[0-9a-fA-F]{4}|[\\w$])(?:\\\\u[0-9a-fA-F]{4}|[\\w$])*';
+  const escName = (n) => n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  /** 15 秒兜底运行：篡改变体可能让解释器失去分发目标而空转，超时视作检出。 */
+  const runSafe = (code, name) => {
+    const file = path.join(TMP, name + '.js');
+    fs.writeFileSync(file, code);
+    try {
+      return runSync(process.execPath, [file], { encoding: 'utf8', timeout: 15000 }).trim();
+    } catch (e) { return 'ERR'; }
+  };
+
+  // 形态统计：关 → D 不出现；开 → D 成为主要形态，且存在「全 D」构建。
+  // 统计循环必须跑满 8 个 seed：allD 只记录不退出，否则 dCount 只累计到
+  // 首个全 D 构建为止，断言会系统性偏低
+  let offBad = 0;
+  let dCount = 0;
+  let allD = null;
+  for (let seed = 1; seed <= 8; seed++) {
+    const off = vmStatOf(obfuscate(src1, { preset: 'high', shell: false, vmDispatchEnc: false, integrityCheck: false, seed }));
+    if (!off || off.forms.D !== 0) offBad++;
+    const rOn = obfuscate(src1, { preset: 'high', shell: false, vmDispatchEnc: true, integrityCheck: false, seed });
+    const on = vmStatOf(rOn);
+    if (!on) continue;
+    dCount += on.forms.D;
+    if (!allD && on.compiled > 0 && on.forms.D === on.compiled) allD = { seed, code: rOn.code };
+  }
+  ok(offBad === 0, '关闭 vmDispatchEnc 时形态 D 不出现（8 seed）');
+  ok(dCount >= 6, '开启 vmDispatchEnc 时形态 D 成为主要形态（D 计数 ≥ 6/8）', 'D=' + dCount);
+  ok(!!allD, '存在全 D 构建（分发映射全部进密文表）', allD ? '' : '8 个 seed 都没出现全 D');
+
+  // 全 D 构建的行为化验收：定位密文表 → 篡改必被检出 → 解码清零按调用次数执行
+  if (allD) {
+    const code = allD.code;
+    // 形态 D 签名：解码收尾的两条相邻清零语句 C.length=0; BI.length=0;
+    // 第一条名字必须能反查到一张纯数值大数组（≥9 元素，即 3 字 × ≥3 条目），
+    // 排除恰好两连清零的其它结构
+    const findArr = (text, name) => {
+      const re = new RegExp('(var|,)\\s*' + escName(name) + '\\s*=\\s*\\[');
+      const m = text.match(re);
+      if (!m) return null;
+      const start = m.index + m[0].length - 1;
+      const end = text.indexOf(']', start); // 扁平整型数组无嵌套，首个 ] 即结尾
+      if (end < 0) return null;
+      return { start, end, text: text.slice(start + 1, end) };
+    };
+    const pairRe = new RegExp('(' + NAME + ')\\.length\\s*=\\s*0\\s*;\\s*(' + NAME + ')\\.length\\s*=\\s*0\\s*;', 'g');
+    let pair = null;
+    for (const m of code.matchAll(pairRe)) {
+      const arr = findArr(code, m[1]);
+      if (arr) {
+        const elems = arr.text.split(',').map((s) => s.trim());
+        if (elems.length >= 9 && elems.every((s) => Number.isFinite(Number(s)))) { pair = m; break; }
+      }
+    }
+    ok(!!pair, '全 D 产物可定位「条目密文表 + 桶区间表」双清零签名');
+    if (pair) {
+      const cName = pair[1];
+      // P3-2：翻转密文表中全部动作下标字（每条第目的第 3 个字），语义必然漂移
+      const cArr = findArr(code, cName);
+      const elems = cArr.text.split(',').map((s) => s.trim());
+      const flipped = elems.map((s, i) => (i % 3 === 2 ? String(Number(s) ^ 1) : s)).join(',');
+      const tampered = code.slice(0, cArr.start + 1) + flipped + code.slice(cArr.end);
+      const got = runSafe(tampered, 'p3-tampered');
+      ok(got !== want, '翻转密文表动作下标字即被检出（输出改变/抛错/超时）',
+        got === want ? '篡改后输出不变' : got.slice(0, 40));
+      // P3-3：在清零语句后注入计数探针，两次调用应恰好清零两次。
+      // 注入文本必须以分号结尾：产物里清零语句之后可能紧跟 var 声明，
+      // 少了分号会拼出 `+1var` 这种语法错误（真实的失败教训）
+      const probed = code.replace(pairRe, (m) =>
+        m + ';globalThis.__JSLB_P3HIT=(globalThis.__JSLB_P3HIT||0)+1;');
+      const out2 = runSafe(probed + '\nif(globalThis.__JSLB_P3HIT!==undefined)process.stdout.write("|HIT"+globalThis.__JSLB_P3HIT);\n', 'p3-probe');
+      // 样例自己的输出以 \n 结尾，探针计数另起一行；trim 只去首尾，中间的 \n 保留
+      ok(out2 === want + '\n|HIT2', '解码与清零在每次调用时执行（2 次调用 → 计数 2）', JSON.stringify(out2).slice(0, 60));
+    }
+  }
+
+  // P3-4 语义等价：medium（默认关）强制开与关，输出一致
+  let semBad = 0;
+  let semFirst = '';
+  for (let seed = 1; seed <= 3; seed++) {
+    for (const enc of [false, true]) {
+      const code = obfuscate(src1, { preset: 'medium', shell: false, vmDispatchEnc: enc, seed }).code;
+      let got;
+      try { got = runNode(code, 'p3-sem-' + enc + '-' + seed).trim(); }
+      catch (e) { got = 'THREW'; }
+      if (got !== want) { semBad++; if (!semFirst) semFirst = 'enc=' + enc + ' seed=' + seed + ' → ' + got.slice(0, 40); }
+    }
+  }
+  ok(semBad === 0, 'vmDispatchEnc 开与关的输出一致（medium × 3 seed）', semFirst);
+
+  // P3-5 可复现：固定 seed 逐字节一致（enc 开）
+  const ra = obfuscate(src1, { preset: 'high', shell: false, vmDispatchEnc: true, seed: 424242 }).code;
+  const rb = obfuscate(src1, { preset: 'high', shell: false, vmDispatchEnc: true, seed: 424242 }).code;
+  ok(ra === rb, 'vmDispatchEnc 开启下固定 seed 可复现');
+
+  // P3-8 不影响 WASM 解释器内核档：max 预设（wasmInterpreter）语义不变
+  let maxBad = 0;
+  for (let seed = 1; seed <= 2; seed++) {
+    const got = runNode(obfuscate(src1, { preset: 'max', seed }).code, 'p3-max-' + seed).trim();
+    if (got !== want) maxBad++;
+  }
+  ok(maxBad === 0, 'max 预设（WASM 解释器内核）语义不变（2 seed）');
+}
+
+// ---------------------------------------------------------------- P4：多态模型与分块自解密
+
+section('P4：多态寄存器模型与字节码分块自解密');
+{
+  // 跳转密集样例：if/else 链、&&、??、循环回边——分块解密的块边界与跳转复位
+  // 都在这里被踩到
+  const jumpSrc = 'function work(a,b){var r=0;'
+    + 'for(var i=0;i<a;i++){if(i%3===0){r+=i;}else if(i%3===1){r-=b&&1;}else{r^=i+3;}}'
+    + 'var s=b??7;'
+    + 'if(a>3&&b>0){r+=s;}else{r-=1;}'
+    + 'while(r>100){r-=100;}'
+    + 'if(r<0||s===0){r=r*-1+2;}'
+    + 'return r;}'
+    + 'process.stdout.write([work(17,3),work(4,0),work(25,9)].join(" ")+"\\n");';
+  const want = runNode(jumpSrc, 'p4-want.js').trim();
+  const vmStatOf = (r) => {
+    const s = r.stats.find((x) => x.pass === 'vm');
+    return s && s.result ? s.result : null;
+  };
+
+  // P4-1 多态模型真的出现多种：4 函数样例 × 6 seed（wasmInterpreter 必须关，
+  // 否则 __vmWasmShared 强制 M0）
+  const polySrc = 'function f1(n){var s=0;for(var i=0;i<n;i++)s+=i;return s;}'
+    + 'function f2(a,b){return a>b?a-b:a+b;}'
+    + 'function f3(o){return o.k?o.k.length:0;}'
+    + 'function f4(s){return s.split(",").length;}'
+    + 'process.stdout.write([f1(10),f2(3,9),f3({k:"abc"}),f4("a,b,c,d")].join(" ")+"\\n");';
+  const polyWant = runNode(polySrc, 'p4-poly-want.js').trim();
+  let mixedBuilds = 0;
+  const seenModels = new Set();
+  let polySemBad = 0;
+  for (let seed = 1; seed <= 6; seed++) {
+    const r = obfuscate(polySrc, { preset: 'high', shell: false, vmPolymorph: true, integrityCheck: false, seed });
+    const st = vmStatOf(r);
+    if (st && st.compiled >= 3) {
+      const present = Object.keys(st.models).filter((k) => st.models[k] > 0);
+      for (const k of present) seenModels.add(k);
+      if (present.length >= 2) mixedBuilds++;
+    }
+    let got;
+    try { got = runNode(r.code, 'p4-poly-' + seed).trim(); } catch (e) { got = 'THREW'; }
+    if (got !== polyWant) polySemBad++;
+  }
+  ok(polySemBad === 0, 'vmPolymorph 开启下 4 函数样例语义全部正确（6 seed）');
+  ok(mixedBuilds >= 2, '多态构建中多数产物混含 ≥2 种寄存器模型（6 seed 中 ≥2）',
+    'mixed=' + mixedBuilds);
+  ok(seenModels.size >= 2, '跨构建覆盖 ≥2 种模型（观察值：' + [...seenModels].join('/') + '）');
+
+  // P4-2 三种模型强制指定时语义等价
+  let modelBad = 0;
+  let modelFirst = '';
+  for (const model of ['M0', 'M1', 'M2']) {
+    for (let seed = 1; seed <= 2; seed++) {
+      const code = obfuscate(jumpSrc, { preset: 'high', shell: false, vmModel: model, integrityCheck: false, seed }).code;
+      let got;
+      try { got = runNode(code, 'p4-model-' + model + '-' + seed).trim(); } catch (e) { got = 'THREW'; }
+      if (got !== want) { modelBad++; if (!modelFirst) modelFirst = model + ' seed=' + seed + ' → ' + got.slice(0, 40); }
+    }
+  }
+  ok(modelBad === 0, '强制 M0/M1/M2 的输出一致（跳转密集样例 × 2 seed）', modelFirst);
+
+  // P4-3 多态开关开与关输出一致
+  let polyBad = 0;
+  for (let seed = 1; seed <= 2; seed++) {
+    for (const poly of [false, true]) {
+      const code = obfuscate(jumpSrc, { preset: 'high', shell: false, vmPolymorph: poly, seed }).code;
+      let got;
+      try { got = runNode(code, 'p4-sw-' + poly + '-' + seed).trim(); } catch (e) { got = 'THREW'; }
+      if (got !== want) polyBad++;
+    }
+  }
+  ok(polyBad === 0, 'vmPolymorph 开与关的输出一致（2 seed）');
+
+  // P4-5/P4-6 分块自解密：开与关、JS 档与旧 WASM 档，跳转密集样例全部正确
+  let blkBad = 0;
+  let blkFirst = '';
+  for (const blk of [false, true]) {
+    for (const tier of [['js', { wasm: false }], ['wasmtier', {}]]) {
+      for (let seed = 1; seed <= 2; seed++) {
+        const code = obfuscate(jumpSrc, {
+          preset: 'high', shell: false, vmBlockDecrypt: blk, integrityCheck: false,
+          ...tier[1], seed,
+        }).code;
+        let got;
+        try { got = runNode(code, 'p4-blk-' + blk + '-' + tier[0] + '-' + seed).trim(); } catch (e) { got = 'THREW'; }
+        if (got !== want) { blkBad++; if (!blkFirst) blkFirst = 'blk=' + blk + ' ' + tier[0] + ' seed=' + seed + ' → ' + got.slice(0, 40); }
+      }
+    }
+  }
+  ok(blkBad === 0, 'vmBlockDecrypt 开与关 × JS/WASM 档输出一致（2 seed）', blkFirst);
+
+  // P4-8 篡改块移位字面量即被检出：块号派生是取指式的一部分，改一位解密即错
+  {
+    const r = obfuscate(jumpSrc, { preset: 'high', shell: false, vmBlockDecrypt: true, integrityCheck: false, wasm: false, seed: 3 });
+    let hit = 0;
+    const patched = r.code.replace(/>>>\s*([456])(?![\d.])/g, (m, d) => {
+      hit++;
+      return '>>>' + (d === '6' ? '4' : Number(d) + 1);
+    });
+    if (hit === 0) {
+      ok(false, '块移位字面量出现在取指式中', '产物里未找到 >>>4/5/6（结构变化，需更新探针）');
+    } else {
+      const file = path.join(TMP, 'p4-blk-tampered.js');
+      fs.writeFileSync(file, patched);
+      let got;
+      try { got = runSync(process.execPath, [file], { encoding: 'utf8', timeout: 15000 }).trim(); }
+      catch (e) { got = 'ERR'; }
+      ok(got !== want, '篡改块移位字面量即被检出（' + hit + ' 处）',
+        got === want ? '篡改后输出不变' : got.slice(0, 40));
+    }
+  }
+
+  // P4-10 可复现：P3+P4 全开下固定 seed 逐字节一致
+  {
+    const opt = { preset: 'high', shell: false, vmPolymorph: true, vmBlockDecrypt: true, seed: 424242 };
+    ok(obfuscate(jumpSrc, opt).code === obfuscate(jumpSrc, opt).code,
+      'P3+P4 全开下固定 seed 可复现');
+  }
+}
+
 // ---------------------------------------------------------------- 收尾
 
 section('其他');

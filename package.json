@@ -1,6 +1,6 @@
 {
   "name": "jslabyrinth",
-  "version": "0.1Alpha",
+  "version": "0.2Alpha",
   "description": "JsLabyrinth — 运行在 Cloudflare Workers/Pages 上的 JS 混淆器（含网页 GUI）",
   "type": "module",
   "main": "./src/index.js",

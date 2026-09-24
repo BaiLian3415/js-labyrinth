@@ -94,9 +94,11 @@ function i32le(v) {
  * @param {Array<{P1:number,Q1:number,nb:number}>} dispParams 每函数的分发桶参数，
  *        存进 data 段参数表，由 bk(f,t) 导出在 wasm 内部读取计算，JS 侧没有
  *        P1/Q1 明文，桶映射无法静态还原
- * @param {Array<{K1:number,K2:number,seed:number}>} cnParams 每函数的取指解密参数，
- *        即位置散列 K1/K2 与链种子，由 cn 导出在 wasm 内部使用，JS 侧没有解密
- *        公式常数，链式解密因此是黑盒；链状态由调用方持有，递归各帧独立
+ * @param {Array<{K1:number,K2:number,seed:number,BL_SH:number,BK_A:number,BK_B:number}>} cnParams
+ *        每函数的取指解密参数，即位置散列 K1/K2、链种子与 P4 分块自解密参数
+ *        （BL_SH 块长移位、BK_A/BK_B 块密钥仿射对），由 cn 导出在 wasm 内部使用，
+ *        JS 侧没有解密公式常数，链式解密与块解密因此是黑盒；链状态由调用方持有，
+ *        递归各帧独立
  * @param {Array<{A:number,B:number}>} rotParams 每函数的入口掩码轮换参数，
  *        由 cr(f,m) 导出在 wasm 内部读取计算。JS 侧没有 ROT_A/ROT_B 明文，
  *        轮换函数只能靠反编译 wasm 求得
@@ -139,12 +141,12 @@ function buildWasm(segs, dispParams, cnParams, rotParams) {
     probeVal.push(codeWords[j] >>> 0);
   }
 
-  // 数据段字节。布局：[0]ANCHOR [1]len [2..]代码区 [..]分发参数表 [..]取指参数表(K1,K2)
+  // 数据段字节。布局：[0]ANCHOR [1]len [2..]代码区 [..]分发参数表 [..]取指参数表(K1,K2,BK_A,BK_B,BL_SH)
   // [..]轮换参数表(ROT_A,ROT_B)
-  const cnBase = dispBase + dispParams.length * 3;    // 取指参数表（每函数 K1,K2）
+  const cnBase = dispBase + dispParams.length * 3;    // 取指参数表（每函数 K1,K2,BK_A,BK_B,BL_SH 共5字）
   const cnWords = [];
-  for (const d of cnParams) cnWords.push(d.K1 | 0, d.K2 | 0);
-  const rotBase = cnBase + cnParams.length * 2;       // 轮换参数表（每函数 ROT_A,ROT_B）
+  for (const d of cnParams) cnWords.push(d.K1 | 0, d.K2 | 0, d.BK_A | 0, d.BK_B | 0, d.BL_SH | 0);
+  const rotBase = cnBase + cnParams.length * 5;       // 轮换参数表（每函数 ROT_A,ROT_B）
   const rotWords = [];
   for (const d of rotParams) rotWords.push(d.A | 0, d.B | 0);
   const sdBase = rotBase + cnParams.length * 2;       // 链种子表（每函数 CHAIN_SEED）
@@ -283,15 +285,19 @@ function buildWasm(segs, dispParams, cnParams, rotParams) {
       [OP.end]).flat(2);
   }
 
-  // cn(f, w, m, p, c) 返回 i32，做链式取指解密，K1/K2 常数存放在 wasm 内存里。
-  // 公式是 plain = w ^ ((p*K1 >>> 8) ^ K2) ^ m ^ c。
+  // cn(f, w, m, p, c) 返回 i32，做链式取指解密，K1/K2 与 P4 块密钥常数存放在
+  // wasm 内存里。公式是 plain = w ^ ((p*K1 >>> 8) ^ K2) ^ m ^ c ^ blk(p)，
+  // 其中 blk(p) = imul((p-1) >>> BL_SH, BK_A) ^ BK_B（P4 分块自解密：调用方传入的
+  // p 是自增后的位置，字下标 z = p-1）。块密钥项无条件参与：未开启分块时
+  // BL_SH/BK_A/BK_B 全 0，blk 恒为 0，公式退化为原链式形。
   // 链值 c 由调用方持有，它是上一字的明文，作为函数局部变量存在，递归各帧独立，
   // 与 JS 档 nCHAIN 语义一致；返回值就是下一字的链值。纯函数，无状态。
   // 参数依次是 0=f，1=w（密文），2=m（当前掩码），3=p（取指位置），4=c（当前链值）。
-  // cn 参数表地址为 (cnBase + f*2 + k)*4，k 取 0 是 K1，取 1 是 K2。
+  // cn 参数表地址为 (cnBase + f*5 + k)*4：k 取 0 是 K1，1 是 K2，2 是 BK_A，
+  // 3 是 BK_B，4 是 BL_SH。
   const cnLoad = (k) => [].concat(
     localGet(0),
-    i32Const(2), [OP.i32_mul],
+    i32Const(5), [OP.i32_mul],
     splitConst(cnBase + k), [OP.i32_add],
     i32Const(2), [OP.i32_shl],
     i32Load(),
@@ -300,21 +306,31 @@ function buildWasm(segs, dispParams, cnParams, rotParams) {
   const posSeq = () => [].concat(
     localGet(3), cnLoad(0), [OP.i32_mul], shr8Seq(), cnLoad(1), [OP.i32_xor],
   ).flat(2);
+  // 块密钥分量 imul((p-1) >>> BL_SH, BK_A) ^ BK_B。wasm 的 i32_mul 即环绕乘法，
+  // 与 Math.imul 等值；块号右移用无符号移位（块号非负，与 JS 的 >>> 等值）
+  const blkSeqP = () => [].concat(
+    localGet(3), i32Const(1), [OP.i32_sub],
+    cnLoad(4), [OP.i32_shr_u],
+    cnLoad(2), [OP.i32_mul],
+    cnLoad(3), [OP.i32_xor],
+  ).flat(2);
   const cnStyle = randInt(0, 3);
   let cnBody;
   if (cnStyle === 1) {
-    // (m^c) ^ w ^ pos，按 XOR 交换律换一种组合次序
+    // (m^c) ^ w ^ pos ^ blk，按 XOR 交换律换一种组合次序
     cnBody = [].concat(junkSeq(),
       localGet(2), localGet(4), [OP.i32_xor],
       localGet(1), [OP.i32_xor],
       posSeq(), [OP.i32_xor],
+      blkSeqP(), [OP.i32_xor],
       [OP.end]).flat(2);
   } else if (cnStyle === 2) {
-    // w ^ m ^ c ^ pos
+    // w ^ m ^ c ^ pos ^ blk
     cnBody = [].concat(junkSeq(),
       localGet(1), localGet(2), [OP.i32_xor],
       localGet(4), [OP.i32_xor],
       posSeq(), [OP.i32_xor],
+      blkSeqP(), [OP.i32_xor],
       [OP.end]).flat(2);
   } else {
     cnBody = [].concat(junkSeq(),
@@ -324,6 +340,7 @@ function buildWasm(segs, dispParams, cnParams, rotParams) {
       [OP.i32_xor],
       localGet(2), [OP.i32_xor],
       localGet(4), [OP.i32_xor],
+      blkSeqP(), [OP.i32_xor],
       [OP.end]).flat(2);
   }
 
@@ -392,9 +409,10 @@ function buildWasm(segs, dispParams, cnParams, rotParams) {
   // nx(f, mask) -> i32：取指并解密一个字，是全档的热路径核心。
   //   pc = st[1]；idx = st[0] + pc；raw = MEM[idx]；
   //   模块层 plain = raw ^ (((idx-(CODEBASE-1))*MOD_K1 >>> 8) ^ MOD_X)；
-  //   vm 层 v = plain ^ (((pc+1)*K1 >>> 8) ^ K2) ^ mask ^ chain；
+  //   vm 层 v = plain ^ (((pc+1)*K1 >>> 8) ^ K2) ^ mask ^ chain ^ blk(pc)，
+  //   其中 blk(z) = imul(z >>> BL_SH, BK_A) ^ BK_B（P4 分块自解密，未开启时恒 0）；
   //   回写 chain = v、pc = pc + 1；返回 v。
-  // 取指、两层位置散列、链推进与状态更新全部在 wasm 内完成。JS 侧没有 pc、
+  // 取指、两层位置散列、块密钥、链推进与状态更新全部在 wasm 内完成。JS 侧没有 pc、
   // 没有链、也没有 B 数组，静态面拿不到任何一条指令的明文或它的位置分量。
   const nxBody = [].concat(junkSeq(),
     // pc -> local2
@@ -413,6 +431,10 @@ function buildWasm(segs, dispParams, cnParams, rotParams) {
     [OP.i32_xor],
     localGet(1), [OP.i32_xor],
     stLoadF(2), [OP.i32_xor],
+    // P4 块密钥项：nx 的 pc（local2）即 0 基字下标 z，块号 = z >>> BL_SH，无需减一
+    localGet(2), cnLoad(4), [OP.i32_shr_u],
+    cnLoad(2), [OP.i32_mul], cnLoad(3), [OP.i32_xor],
+    [OP.i32_xor],
     localSet(5),
     // chain = v
     stAddrF(2), localGet(5), i32Store(),
@@ -560,11 +582,13 @@ function buildWasm(segs, dispParams, cnParams, rotParams) {
       for (let z = 0; z < segs[i].length; z++) {
         const got = nx(i, cnParams[i].m0 | 0) >>> 0;
         // seg 里存的是 VM 层密文 flat，wasm 内部又套了一层模块层散列；nx 返回的是两层
-        // 都解完的指令字，所以期望值必须自己还原（密文 ^ 位置散列 ^ 初始掩码 ^ 链值），
-        // 不能直接拿 seg 比。位置散列用与 vm.js posMask 相同的仿射形。
+        // 都解完的指令字，所以期望值必须自己还原（密文 ^ 位置散列 ^ 初始掩码 ^ 链值
+        // ^ 块密钥），不能直接拿 seg 比。位置散列用与 vm.js posMask 相同的仿射形，
+        // 块密钥与 vm.js bkOf 相同：imul(z >>> BL_SH, BK_A) ^ BK_B（未开启时全 0 项）。
         const cp = cnParams[i];
         const pos = ((Math.imul(z + 1, cp.K1 | 0) >>> 8) ^ (cp.K2 | 0)) >>> 0;
-        const want = ((segs[i][z] >>> 0) ^ pos ^ (cp.m0 | 0) ^ (cp.chain[z] >>> 0)) >>> 0;
+        const bk = (Math.imul(z >>> (cp.BL_SH | 0), cp.BK_A | 0) ^ (cp.BK_B | 0)) | 0;
+        const want = ((segs[i][z] >>> 0) ^ pos ^ (cp.m0 | 0) ^ (cp.chain[z] >>> 0) ^ (bk | 0)) >>> 0;
         if (got !== want) {
           nxOk = false;
           nxErr = 'f=' + i + ' z=' + z + '/' + segs[i].length +
@@ -572,6 +596,7 @@ function buildWasm(segs, dispParams, cnParams, rotParams) {
             ' xor=' + ((want ^ got) >>> 0) +
             ' seed=' + (cnParams[i].seed | 0) + ' m0=' + (cnParams[i].m0 | 0) +
             ' K1=' + (cnParams[i].K1 | 0) + ' K2=' + (cnParams[i].K2 | 0) +
+            ' BL_SH=' + (cp.BL_SH | 0) + ' BK_A=' + (cp.BK_A | 0) + ' BK_B=' + (cp.BK_B | 0) +
             ' MOD_K1=' + (MOD_K1 | 0) + ' MOD_X=' + (MOD_X | 0) +
             ' stBase=' + stBase + ' sdBase=' + sdBase + ' start=' + start +
             ' segWords=' + segs[i].length;
@@ -660,7 +685,13 @@ export default function wasm(ast, options, ctx) {
   const wasm = buildWasm(
     fns.map((f) => f.meta.flat),
     fns.map((f) => f.meta.disp || { P1: 1, Q1: 0, nb: 2, SH: 0 }),
-    fns.map((f) => ({ K1: f.meta.MASK_K1, K2: f.meta.MASK_K2, seed: f.meta.CHAIN_SEED, m0: f.meta.MASK_M0, chain: f.meta.chainAt })),
+    fns.map((f) => ({
+      K1: f.meta.MASK_K1, K2: f.meta.MASK_K2, seed: f.meta.CHAIN_SEED, m0: f.meta.MASK_M0, chain: f.meta.chainAt,
+      // P4 分块自解密参数。块长取 2 的幂（BL = 1 << BL_SH），块号 = (p-1) >>> BL_SH，
+      // 块密钥 = imul(块号, BK_A) ^ BK_B。未开启时全 0，CN/NX 里的块密钥项恒为 0。
+      // wasm 内存表存移位量 BL_SH 而非块长：块号用变量移位直取，避免 i32 除法。
+      BL_SH: f.meta.BL_SH | 0, BK_A: f.meta.BK_A | 0, BK_B: f.meta.BK_B | 0,
+    })),
     fns.map((f) => ({ A: f.meta.ROT_A, B: f.meta.ROT_B })),
   );
 

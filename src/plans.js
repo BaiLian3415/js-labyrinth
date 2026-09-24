@@ -12,6 +12,9 @@ export default {
     },
     "gates": {
       "vmDecoyOps": 0,
+      "vmDispatchEnc": false,
+      "vmPolymorph": false,
+      "vmBlockDecrypt": false,
       "wasm": false,
       "callProxy": false,
       "honeyStrings": false,
@@ -63,6 +66,9 @@ export default {
     },
     "gates": {
       "vmDecoyOps": 256,
+      "vmDispatchEnc": true,
+      "vmPolymorph": false,
+      "vmBlockDecrypt": false,
       "wasm": true,
       "callProxy": true,
       "honeyStrings": true,
