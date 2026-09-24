@@ -31,11 +31,13 @@ import { b64ToText, hmacSha256Hex } from './utils/hash.js';
 
 const { t } = i18n;
 
-// 签发公钥。卡密用 Ed25519 签名，浏览器只持公钥——**爬走全部源码也签不出新卡**，
-// 这是换成非对称之后拿到的性质。部署方想用自己的密钥对，用 JSLB_PUBLIC_KEY 覆盖。
-const BUNDLED_PUBLIC_KEY = secret.B64_PUBLIC_KEY;
+// 卡密密钥（对称，base64 32 字节）。信息段加密与校验码都用它；它随源码分发，
+// 浏览器才能本地验卡——代价是拿到源码的人也能自己造卡，真正的强制在服务端
+// （Worker 逐请求校验 + KV 赎回登记 + JSLB_GATE_CORE 门控，见 license-codec.js
+// 的头注释）。部署方想用自己的密钥，用 JSLB_CODE_KEY 覆盖。
+const BUNDLED_CODE_KEY = secret.B64_CODE_KEY;
 
-let publicKey = BUNDLED_PUBLIC_KEY;
+let codeKey = BUNDLED_CODE_KEY;
 let machineSalt = b64ToText(secret.B64_MACHINE_SALT);
 let keysOverridden = false;
 
@@ -43,6 +45,8 @@ let keysOverridden = false;
 const K_DEVICE = 'jslabyrinth.device.v1';
 const K_LICENSE = 'jslabyrinth.license.v2';
 const K_TRIAL_USAGE = 'jslabyrinth.trial-usage.v1';
+/** 卡密赎回登记键前缀（按卡密编号分键，全局，不按设备隔离）。 */
+const K_REDEEM_PREFIX = 'jslabyrinth.redeem.';
 
 /** 设备码内存缓存。 */
 let deviceCache = null;
@@ -58,23 +62,23 @@ let requestDeviceId = null;
 
 /**
  * 覆盖公钥与机器盐。部署方用自己的密钥对签卡时用得上。
- * @param {string} publicKeyB64 签发公钥的 base64（32 字节）
+ * @param {string} codeKeyB64 卡密密钥的 base64（32 字节）
  * @param {string} saltBase64 机器盐的 base64
  */
-export function setKeyMaterial(publicKeyB64, saltBase64) {
-  if (publicKeyB64) { publicKey = String(publicKeyB64); keysOverridden = true; }
+export function setKeyMaterial(codeKeyB64, saltBase64) {
+  if (codeKeyB64) { codeKey = String(codeKeyB64); keysOverridden = true; }
   if (saltBase64) { machineSalt = b64ToText(saltBase64); keysOverridden = true; }
 }
 
 /**
- * 从环境变量加载密钥覆盖（JSLB_PUBLIC_KEY / JSLB_MACHINE_SALT，base64）。
+ * 从环境变量加载密钥覆盖（JSLB_CODE_KEY / JSLB_MACHINE_SALT，base64）。
  * Worker 入口每次请求调用，未配置时保持内置常量。
  *
  * 这两个都不是秘密：公钥本来就随源码分发。放在环境变量里只是为了支持"不同部署
  * 用不同密钥对"，不是为了藏东西——**私钥绝不能出现在这里**。
  */
 export function loadKeysFromEnv() {
-  const k = platform.env('JSLB_PUBLIC_KEY');
+  const k = platform.env('JSLB_CODE_KEY');
   const s = platform.env('JSLB_MACHINE_SALT');
   if (k || s) setKeyMaterial(k, s);
 }
@@ -184,6 +188,49 @@ async function storeDel(key) {
   else await storeSet(key, '');
 }
 
+/**
+ * 查询一张卡密已被哪台机器赎回（激活）。
+ *
+ * 键是全局的（不按设备隔离）：防的就是"同一张不绑定卡在多台机器上各激活
+ * 一次"。服务端绑了 KV 时取全局值，是真正的跨机器强制；浏览器侧无 KV 时
+ * 退回本地存储，仅防同一浏览器误用，跨机器的强制由服务端网关承担。
+ *
+ * @param {string} cardId 卡密编号（十进制文本）
+ * @returns {Promise<string|null>} 赎回者机器码，未赎回时为 null
+ */
+async function getRedeemer(cardId) {
+  const kv = platform.getKv();
+  if (kv && typeof kv.get === 'function') {
+    try {
+      const v = await kv.get('redeem:' + cardId);
+      return v || null;
+    } catch (e) {
+      return null;
+    }
+  }
+  const v = platform.getStorage().get(K_REDEEM_PREFIX + cardId);
+  return v || null;
+}
+
+/**
+ * 登记一张卡密被某台机器赎回。键全局，跨请求、跨 isolate 持久。
+ * @param {string} cardId 卡密编号
+ * @param {string} machineId 赎回者机器码
+ * @returns {Promise<boolean>} 是否写入成功
+ */
+async function setRedeemer(cardId, machineId) {
+  const kv = platform.getKv();
+  if (kv && typeof kv.put === 'function') {
+    try {
+      await kv.put('redeem:' + cardId, machineId);
+      return true;
+    } catch (e) {
+      return false;
+    }
+  }
+  return platform.getStorage().set(K_REDEEM_PREFIX + cardId, machineId);
+}
+
 /** 随机设备码，32 位 hex。 */
 function newDeviceId() {
   const bytes = platform.randomBytes(16);
@@ -216,21 +263,26 @@ async function deviceId() {
 /**
  * 采集设备特征，拼成一段定序文本。
  *
- * 只取**跨会话稳定**的量：平台、CPU 核心数、屏幕尺寸与像素比、GPU 渲染器、
+ * 只取**跨会话稳定**且不受显示设置漂移影响的量：平台、CPU 核心数、GPU 渲染器、
  * 时区与语言。刻意不取 UA 全串（同一浏览器版本内会随小版本更新漂移）、不取
  * canvas 噪声（隐私浏览器会加噪，且同一台机器两次可能不同）、也不取任何随机值。
+ *
+ * **不再纳入屏幕尺寸（CSS 像素）与 devicePixelRatio**：它们会随系统显示缩放、
+ * 多屏切换、窗口跨屏拖动而变——这是"机器码随意变动"的主因。保留的几项只在
+ * 用户显式更改硬件或浏览器配置时才变，不随日常显示操作漂移。
  *
  * 任何一项取不到就用空串占位，位置依然保留——位置是协议的一部分，不能因为
  * 某项缺失就让后面的项前移，否则同一台机器在不同能力环境下会算出不同机器码。
  *
  * 结果不含随机量，所以刷新页面、清站点数据、换隐私模式都不会改变它。
+ * 特征算法一变（改动字段集合或其顺序），所有已签发的网页绑定卡都会失效，
+ * 改动前务必确认；不绑定卡（默认签发方式）不受影响。
  *
  * @returns {string} 特征串
  */
 function deviceFingerprint() {
   if (fingerprintCache) return fingerprintCache;
   const nav = platform.navigatorInfo();
-  const scr = platform.screenInfo();
   const cores = nav && Number.isFinite(nav.hardwareConcurrency) ? String(nav.hardwareConcurrency) : '';
   const tz = (() => {
     try {
@@ -240,13 +292,9 @@ function deviceFingerprint() {
     }
   })();
   const parts = [
-    'JSLB-WEB-2',
+    'JSLB-WEB-3',
     nav ? nav.platform : '',
     cores,
-    scr && Number.isFinite(scr.width) ? String(scr.width) : '',
-    scr && Number.isFinite(scr.height) ? String(scr.height) : '',
-    scr && Number.isFinite(scr.colorDepth) ? String(scr.colorDepth) : '',
-    String(platform.pixelRatioValue()),
     platform.gpuRendererValue() || '',
     tz,
     nav ? nav.language : '',
@@ -332,7 +380,7 @@ export async function restore(opts) {
   const selfAnchored = !!(opts && opts.selfAnchored);
   // 自锚定时不派生机器码——派生了也不用，还会白白读一遍 GPU 特征
   const mid = selfAnchored ? null : await machineId();
-  const res = licCore.verifyLicenseData(data, mid, publicKey);
+  const res = licCore.verifyLicenseData(data, mid, codeKey);
   if (!res.ok) return { ok: false, reason: res.reason };
   state = {
     plan: res.plan,
@@ -352,7 +400,7 @@ export async function restore(opts) {
  * @returns {Promise<{ok:boolean, reason?:string, plan?:string, expiresAt?:number}>} 结果
  */
 export async function activate(rawKey) {
-  const parsed = codec.parseCode(publicKey, String(rawKey == null ? '' : rawKey).trim());
+  const parsed = codec.parseCode(codeKey, String(rawKey == null ? '' : rawKey).trim());
   if (!parsed.ok) return { ok: false, reason: parsed.reason };
   const mid = await machineId();
   // 机器绑定必须在激活这一刻就判定，不能留给 restore：激活成功立即获得完整
@@ -367,12 +415,24 @@ export async function activate(rawKey) {
   if (expiresAt !== codec.PERPETUAL && platform.now() > expiresAt) {
     return { ok: false, reason: 'expired' };
   }
+  // 防重复使用：每张卡密只能在一台机器上激活。不绑定的卡任何机器都可成为
+  // "那台"，但一旦被某机器激活，其他机器再用同一卡密即被拒（reason=used）。
+  // 绑定卡天然只能在一台机器上激活（上面 matchesMachine 已拦），此处对绑定卡
+  // 恒为同机赎回、放行；对不绑定卡则是真正的"一卡一机"强制。机器码必须稳定
+  // （见 deviceFingerprint）：否则同机重激活会被误判成换机而锁死自己的卡。
+  const redeemer = await getRedeemer(parsed.id);
+  if (redeemer && redeemer !== mid) {
+    return { ok: false, reason: 'used' };
+  }
+  if (!redeemer) {
+    await setRedeemer(parsed.id, mid);
+  }
   const usage = { day: licCore.todayKey(), used: 0 };
   // 到期时间只由卡密里已签名的签发日与天数决定，激活时刻不参与——续期得重新
   // 签卡，本地改 issuedAt 没用。issuedAt 仍记下来，但只是"本机何时激活"的台账。
   const record = licCore.makeRecord({
     code: parsed.code, plan: parsed.plan, machine: mid, issuedAt, expiresAt, usage,
-  }, publicKey);
+  }, codeKey);
   const written = await storeSet(K_LICENSE, JSON.stringify(record));
   if (written === false) return { ok: false, reason: 'write' };
   state = {
@@ -421,8 +481,8 @@ export async function importRecord(record) {
     return { ok: false, reason: 'corrupt' };
   }
   // 自锚定：服务端派不出浏览器机器码，改用记录自称的 machine 作锚点。
-  // 绑定段（Ed25519 签名内）与令牌都会拿它重验，所以伪造的 machine 过不了。
-  const res = licCore.verifyLicenseData(record, null, publicKey);
+  // 校验码与令牌都会拿它重验，所以伪造的 machine 过不了。
+  const res = licCore.verifyLicenseData(record, null, codeKey);
   if (!res.ok) return { ok: false, reason: res.reason };
   const mid = res.machine;
   // 只在服务端本来没有有效记录时才落盘：客户端每刷新一次页面就会推一次记录，
@@ -430,13 +490,26 @@ export async function importRecord(record) {
   // 会被冲掉，等于白送额度）。服务端那份还有效就留着，客户端只是来补登记的。
   const mine = await exportRecord();
   if (mine) {
-    const keep = licCore.verifyLicenseData(mine, null, publicKey);
+    const keep = licCore.verifyLicenseData(mine, null, codeKey);
     if (keep.ok) {
       state = {
         plan: keep.plan, code: keep.code, machine: keep.machine,
         issuedAt: mine.issuedAt, expiresAt: keep.expiresAt, usage: keep.usage, trial: false,
       };
       return { ok: true, plan: keep.plan, adopted: false };
+    }
+  }
+  // 防重复使用（服务端补登记路径）：浏览器本地激活后把记录推上来时，若该卡密
+  // 已被别的机器赎回，拒绝采纳。记录自称的 machine 即赎回者候选，与全局赎回
+  // 登记比对。此路径是浏览器侧绕不开服务端时的真正强制点。
+  const parsedRec = codec.parseCode(codeKey, record.code);
+  if (parsedRec.ok) {
+    const redeemer = await getRedeemer(parsedRec.id);
+    if (redeemer && redeemer !== mid) {
+      return { ok: false, reason: 'used' };
+    }
+    if (!redeemer) {
+      await setRedeemer(parsedRec.id, mid);
     }
   }
   await storeSet(K_LICENSE, JSON.stringify(record));
@@ -573,7 +646,7 @@ export async function consumeRun() {
     issuedAt: state.issuedAt,
     expiresAt: state.expiresAt,
     usage: { day, used },
-  }, publicKey);
+  }, codeKey);
   const written = await storeSet(K_LICENSE, JSON.stringify(record));
   if (written === false) return { ok: false, reason: 'write' };
   state.usage = { day, used };

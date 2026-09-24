@@ -45,16 +45,14 @@ import i18n from '../../src/i18n.js';
 import makeZip from '../../src/utils/zip.js';
 import hash from '../../src/utils/hash.js';
 import secret from '../../src/license-secret.js';
-import { ed25519PublicKeyFromSeed } from '../../src/utils/ed25519.js';
 
 // 测试专用签发密钥对。
 //
 // 真私钥不随源码分发（这正是换成非对称的目的），所以自测不能拿它签卡——也不该
 // 拿。测试自己固定一对：种子写死在这里，公钥由它派生，再通过 setKeyMaterial /
-// JSLB_PUBLIC_KEY 注入到 license-web 与 Worker。走的签发/验签代码路径与线上完全
+// JSLB_CODE_KEY 注入到 license-web 与 Worker。走的签发/校验代码路径与线上完全
 // 相同，只有密钥不同。种子是公开的常量，仅供测试，绝不能用于真实发卡。
-const TEST_SIGNING_SEED = 'AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=';
-const TEST_PUBLIC_KEY = hash.bytesToB64(ed25519PublicKeyFromSeed(hash.b64ToBytes(TEST_SIGNING_SEED)));
+const TEST_CODE_KEY = 'AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=';
 
 const { obfuscate } = obfuscateMod;
 const { obfuscateDocument } = htmlMod;
@@ -272,65 +270,57 @@ section('套餐闸门与提示');
 
 section('卡密与令牌');
 {
-  // 签发用私钥种子，验签用公钥——两把不是同一个东西，这正是非对称的意义。
-  const seed = TEST_SIGNING_SEED;
-  const pub = TEST_PUBLIC_KEY;
-  // 套餐字符从 plans.js 取，不硬编码：删档/换档时它会跟着变。硬编码过一次，结果
-  // 档位删掉后 replace 找不到目标，"篡改"变成了空操作——产物没改动，测试却期望
-  // 验签失败，于是报出**假失败**（这类断言失效不报错、只报错在别处，最难查）。
-  const planCh = plan.planCode('plus');
-  const otherCh = planCh === plan.planCode('business') ? plan.planCode('free') : plan.planCode('business');
-  const code = codec.issueCode(seed, 'plus', 30, '12345');
-  ok(!!code && code.startsWith('JSLB-' + planCh + '-'), '可签发 Plus/30 天卡密', code);
-  const parsed = codec.parseCode(pub, code);
+  // v5：对称卡密密钥 + 加密信息段 + 校验码（格式 JSLB-编号8-信息16-校验4）。
+  // 密钥随源码分发（见 license-secret.js 的说明），防篡改靠校验码；"一卡一机"
+  // 由服务端赎回登记承担，卡密不再携带绑定段。
+  const key = TEST_CODE_KEY;
+  const code = codec.issueCode(key, 'plus', 30, '12345');
+  ok(!!code && code.startsWith('JSLB-'), '可签发 Plus/30 天卡密', code);
+  ok(codec.normalizeCode(code).length === 4 + codec.BODY_LEN,
+    '卡密总长 = 前缀4+编号8+信息16+校验4', String(codec.normalizeCode(code).length));
+  const parsed = codec.parseCode(key, code);
   ok(parsed.ok && parsed.plan === 'plus' && parsed.days === 30, '卡密可解析且套餐天数正确');
-  ok(parsed.id === '12345', '编号可还原（编号段已压到 40 bit）');
+  ok(parsed.id === '12345', '编号可还原（40 bit）');
   ok(typeof parsed.issueDay === 'number' && parsed.issueDay >= 0, '卡密带签发日');
-  ok(parsed.bound === false, '未指定机器码时卡密为"不绑定"');
-  ok(codec.parseCode(pub, code.toLowerCase().replace(/-/g, ' ')).ok, '小写与分隔符容错');
-  // 换成**另一个有效档位**：确保失败原因是签名，而不是"套餐段不认识"
-  ok(!codec.parseCode(pub, code.replace('-' + planCh + '-', '-' + otherCh + '-')).ok, '改套餐段导致签名失败');
-  ok(!codec.parseCode(pub, code.slice(0, -1) + '0').ok, '改签名段失败');
-  ok(!codec.parseCode(pub, 'JSLB-X-00-000-' + '0'.repeat(8) + '-' + '0'.repeat(16) + '-' + '0'.repeat(103)).ok, '未知套餐段失败');
-  // 签发日也在签名载荷里，改它必须失败——否则本地能把到期时间往后挪
-  const shiftedDay = codec.issueCode(seed, 'plus', 30, '12345', 1000);
-  const tamperedDay = shiftedDay.replace(new RegExp('^(JSLB-' + planCh + '-..-)(...)'), (m, a) => a + '001');
-  ok(!codec.parseCode(pub, tamperedDay).ok, '改签发日导致签名失败');
+  ok(parsed.bound === false && parsed.bindSeg === codec.BIND_NONE, 'v5 卡密不携带绑定段');
+  ok(codec.parseCode(key, code.toLowerCase().replace(/-/g, ' ')).ok, '小写与分隔符容错');
 
-  // 编号段超界必须拒绝——压缩段宽后原来的 20 位编号再也放不下
-  ok(codec.issueCode(seed, 'plus', 30, '1099511627775') !== null, '编号上限内可签发');
-  ok(codec.issueCode(seed, 'plus', 30, '1099511627776') === null, '编号超 40 bit 上限时拒绝签发');
+  // 同一参数两次签发产出不同卡密（信息段带随机 IV），但都能被同一把密钥解析
+  const again = codec.issueCode(key, 'plus', 30, '12345');
+  ok(again !== code, '同参数两次签发卡密不同（随机 IV）');
+  const againParsed = codec.parseCode(key, again);
+  ok(againParsed.ok && againParsed.id === '12345' && againParsed.plan === 'plus',
+    '随机 IV 不影响解析');
+
+  // 校验码覆盖编号段与信息段：改任何一段的一位都必须被拒
+  const flipChar = (t, i) => {
+    const c = t[i] === '0' ? '1' : '0';
+    return t.slice(0, i) + c + t.slice(i + 1);
+  };
+  ok(!codec.parseCode(key, flipChar(code, 6)).ok, '改编号段一位即被拒');
+  ok(!codec.parseCode(key, flipChar(code, 16)).ok, '改信息段一位即被拒');
+  ok(!codec.parseCode(key, flipChar(code, code.length - 1)).ok, '改校验码一位即被拒');
+  ok(!codec.parseCode(key, code.slice(0, -1) + '0').ok, '改末位失败');
+  ok(!codec.parseCode(key, 'JSLB-' + '0'.repeat(8) + '-' + '0'.repeat(16) + '-' + '0'.repeat(4)).ok,
+    '全零编号+全零信息+全零校验被拒');
+
+  // 对称体系下"没有正确的密钥就签不出能通过校验的卡"：错误密钥签出的卡密
+  // 在校验码这一步必然失败（这里验的是拿错密钥冒充不会意外通过）。
+  const otherKey = hash.bytesToB64(new Uint8Array(32).fill(9));
+  const forged = codec.issueCode(otherKey, 'business', 0, '99999');
+  ok(!!forged && !codec.parseCode(key, forged).ok, '错误密钥签发的卡密无法通过校验');
+
+  // 编号段超界必须拒绝
+  ok(codec.issueCode(key, 'plus', 30, '1099511627775') !== null, '编号上限内可签发');
+  ok(codec.issueCode(key, 'plus', 30, '1099511627776') === null, '编号超 40 bit 上限时拒绝签发');
   ok(codec.MAX_ID === 1099511627775n, '编号上限恰为 2^40-1', String(codec.MAX_ID));
 
-  // 编号段的跨度**小于**时间戳——这正是 keygen 首次签发时必须取模的原因。
-  // 这一条防的是"起点策略悄悄换回裸时间戳"：13 位毫秒数 (~1.8e12) 比 40 bit 的
-  // 上限 (~1.1e12) 大，那样的起点会让首次签发（比如最常见的 --bind 签名）报
-  // "编号区间超出编码上限"，看起来却像机器码有问题。
-  {
-    const span = codec.MAX_ID + 1n;
-    ok(BigInt(Date.now()) > span, '毫秒时间戳超出编号段跨度（所以起点必须取模）',
-      '跨度 ' + span + '，时间戳 ' + Date.now());
-    const at = (ms) => codec.issueCode(seed, 'plus', 30, BigInt(ms) % span, 2192);
-    ok(at(Date.now()) !== null, '时间戳取模后的起点可签发');
-    ok(at(4102444800000) !== null, '2100 年的时间戳取模后仍可签发');
-    // 同一毫秒内连签两张：取模起点相同，靠编号递增才不会撞成同一段卡密。
-    const ms = Date.now();
-    const one = codec.issueCode(seed, 'plus', 30, BigInt(ms) % span, 2192);
-    const two = codec.issueCode(seed, 'plus', 30, BigInt(ms) % span + 1n, 2192);
-    ok(one !== two, '同一起点紧邻编号签出不同卡密');
-  }
-
-  // 非对称的核心性质：只有公钥时签不出卡。公钥是公开的，用它当种子必然签不出
-  // 一张能验过的卡（这里验的是"拿公钥冒充私钥"不会意外通过）。
-  const forged = codec.issueCode(hash.bytesToB64(hash.b64ToBytes(pub)), 'business', 0, '99999');
-  ok(!forged || !codec.parseCode(pub, forged).ok, '只有公钥时无法伪造卡密');
-
-  // 签发日进签名载荷，到期时间由它推出——这是"本地改不了自己的有效期"的依据。
+  // 签发日在加密载荷里，到期时间由它推出——这是"本地改不了自己的有效期"的依据。
   // 用 2026-01-01（距零点 2192 天）签 30 天，到期必须是 2026-01-31，而不是"激活时刻 + 30 天"。
   {
     const day = 2192; // 2026-01-01 距 2020-01-01 UTC 的天数
-    const c = codec.issueCode(seed, 'plus', 30, '12345', day);
-    const p = codec.parseCode(pub, c);
+    const c = codec.issueCode(key, 'plus', 30, '12345', day);
+    const p = codec.parseCode(key, c);
     ok(p.ok && p.issueDay === day, '签发日可从卡密还原', String(p.issueDay));
     const exp = licCore.expiryFromIssueDay(p);
     ok(exp === codec.DAY_ZERO + (day + 30) * 86400000,
@@ -339,103 +329,59 @@ section('卡密与令牌');
     ok(new Date(exp).toISOString().slice(0, 10) === '2026-01-31',
       '2026-01-01 签的 30 天卡到期日为 2026-01-31');
     // 永久卡不受签发日影响
-    const perm = codec.parseCode(pub, codec.issueCode(seed, 'plus', 0, '12345', day));
+    const perm = codec.parseCode(key, codec.issueCode(key, 'plus', 0, '12345', day));
     ok(licCore.expiryFromIssueDay(perm) === codec.PERPETUAL, '永久卡到期时间为 0');
   }
 
   const mid = 'ABCDEFGHJKMNPQRSTVWXYZ01';
-  const token = codec.makeToken(pub, mid, 0, '2026-01-01', 3);
-  ok(codec.verifyToken(pub, token, mid, 0, '2026-01-01', 3), '令牌验签通过');
-  ok(!codec.verifyToken(pub, token, mid, 0, '2026-01-01', 4), '改用量次数后验签失败');
-  ok(!codec.verifyToken(pub, token, 'ZZZZZZZZZZZZZZZZZZZZZZZ1', 0, '2026-01-01', 3), '换机器码后验签失败');
-  // 令牌密钥由公钥派生，换一对密钥就对不上
-  ok(!codec.verifyToken(secret.B64_PUBLIC_KEY, token, mid, 0, '2026-01-01', 3), '换公钥后令牌验签失败');
+  const token = codec.makeToken(key, mid, 0, '2026-01-01', 3);
+  ok(codec.verifyToken(key, token, mid, 0, '2026-01-01', 3), '令牌验签通过');
+  ok(!codec.verifyToken(key, token, mid, 0, '2026-01-01', 4), '改用量次数后验签失败');
+  ok(!codec.verifyToken(key, token, 'ZZZZZZZZZZZZZZZZZZZZZZZ1', 0, '2026-01-01', 3), '换机器码后验签失败');
+  // 令牌密钥由卡密密钥派生，换一把密钥就对不上
+  ok(!codec.verifyToken(secret.B64_CODE_KEY, token, mid, 0, '2026-01-01', 3), '换密钥后令牌验签失败');
 
   // 纯 JS HMAC 与 node:crypto 的一致性由 tools/test/hashtest.js 覆盖，这里只跑它
   const ht = execFileSync(process.execPath, [path.join(ROOT, 'tools', 'test', 'hashtest.js')], { encoding: 'utf8' });
   ok(ht.includes('全部通过'), 'hash 实现与 node:crypto 逐位一致', ht.trim().split('\n').pop());
 }
 
-section('卡密的机器码绑定');
+// ------------------------------------------------------------ 端到端激活（v5）
+
+section('端到端激活（v5 卡密）');
 {
-  const seed = TEST_SIGNING_SEED;
-  const pub = TEST_PUBLIC_KEY;
+  // v5 卡密不携带绑定段：matchesMachine 对任何机器码恒真——"一卡一机"由服务端
+  // 赎回登记强制（见 license-web.activate 的 redeem 检查）。机器码摘要本身仍
+  // 逐位区分，赎回登记按它记录赎回者。
+  const key = TEST_CODE_KEY;
   const midA = 'ABCDEFGHJKMNPQRSTVWXYZ01';
   const midB = 'ABCDEFGHJKMNPQRSTVWXYZ02'; // 与 A 只差最后一位
-
-  const bound = codec.parseCode(pub, codec.issueCode(seed, 'plus', 30, '12345', 2192, midA));
-  ok(bound.ok && bound.bound === true, '指定机器码签出的卡为"已绑定"');
-  ok(codec.matchesMachine(bound.bindSeg, midA), '绑定卡在本机可用');
-  ok(!codec.matchesMachine(bound.bindSeg, midB), '绑定卡换一台机器（机器码差一位）即被拒');
-
-  // 机器码不进卡密明文：卡密里只有摘要，反查不出机器码
-  ok(bound.code.indexOf(midA) < 0, '卡密里不含机器码明文');
-  ok(bound.bindSeg.length === codec.BIND_LEN && codec.isB32Text(bound.bindSeg),
-    '绑定段是 ' + codec.BIND_LEN + ' 字符 base32');
-  ok(bound.bindSeg !== midA.slice(0, codec.BIND_LEN), '绑定段也不是机器码的截断');
-  ok(codec.bindDigest(midA) === codec.bindDigest(midA), '绑定摘要对同一机器码稳定');
-  ok(codec.bindDigest(midA) !== codec.bindDigest(midB), '机器码一位之差得不同摘要');
-
-  // 绑定段在签名载荷里：改一个字符必须验签失败，所以"把别人的卡密改到自己机器上"不可能
-  const tampered = bound.code.replace(
-    new RegExp('-' + bound.bindSeg + '-'),
-    '-' + codec.bindDigest(midB) + '-',
-  );
-  ok(tampered !== bound.code, '构造出"把绑定段换成自己机器"的卡密');
-  ok(!codec.parseCode(pub, tampered).ok, '改绑定段导致签名失败（换绑不了）');
-
-  // 不绑定的卡对任何机器都放行
-  const free = codec.parseCode(pub, codec.issueCode(seed, 'plus', 30, '12345', 2192));
-  ok(free.bound === false && free.bindSeg === codec.BIND_NONE, '不绑定的卡绑定段为全 0');
+  const free = codec.parseCode(key, codec.issueCode(key, 'plus', 30, '12345', 2192));
+  ok(free.ok && free.bound === false && free.bindSeg === codec.BIND_NONE, 'v5 卡密绑定段恒为全 0');
   ok(codec.matchesMachine(free.bindSeg, midA) && codec.matchesMachine(free.bindSeg, midB),
     '不绑定的卡在任何机器上都放行');
+  ok(codec.bindDigest(midA) !== codec.bindDigest(midB), '机器码摘要仍逐位区分（赎回登记用）');
 
-  // 端到端的判定走 license-core：绑定不符时 reason 必须是 bind
-  {
-    const rec = licCore.makeRecord({
-      code: bound.code, plan: 'plus', machine: midB,
-      issuedAt: Date.now(), expiresAt: licCore.expiryFromIssueDay(bound),
-      usage: { day: '2026-01-01', used: 0 },
-    }, pub);
-    const res = licCore.verifyLicenseData(rec, midB, pub);
-    ok(!res.ok && res.reason === 'bind', '卡密绑定的机器与当前机器不符时判 bind', res.reason);
-    const okRes = licCore.verifyLicenseData(rec, midA, pub);
-    ok(!okRes.ok && okRes.reason === 'machine', '卡密绑定对但记录来自别的机器时判 machine', okRes.reason);
-  }
-
-  // 端到端走 license-web.activate：绑定卡的"换机拒激活"必须在激活入口就生效。
-  // 回归点：activate 曾经漏掉 matchesMachine，绑定卡换机激活直接 ok 并获得完整
-  // 权益，restore 的 bind 拒绝根本来不及拦（激活的同一会话已白用了一整轮）。
   {
     platform.setKv(null);
     platform.setStorage(platform.newMemoryStorage());
-    licenseWeb.setKeyMaterial(pub, null);
+    licenseWeb.setKeyMaterial(key, null);
     licenseWeb.resetRequestState();
-    const midHere = await licenseWeb.machineId();
-    const otherMid = midHere.slice(0, 23) + (midHere.endsWith('0') ? '1' : '0');
-    // 签发日必须取今天：到期时间由"签发日 + 天数"推出，restore 会验过期，
-    // 而上面 codec 层的用例用的是固定签发日（只验签、不过期）。
+    // 签发日必须取今天：到期时间由"签发日 + 天数"推出，restore 会验过期。
     const today = Math.floor((Date.now() - codec.DAY_ZERO) / 86400000);
 
-    const foreign = codec.issueCode(seed, 'plus', 30, '24680', today, otherMid);
-    const badAct = await licenseWeb.activate(foreign);
-    ok(!badAct.ok && badAct.reason === 'bind',
-      '绑定卡在非绑定机器上 activate 即被拒（reason=bind）', badAct.reason);
-    ok(!licenseWeb.isLicensed(), '拒激活后不进入已授权状态');
-    ok((await licenseWeb.exportRecord()) === null, '拒激活不落盘');
-
-    const own = codec.issueCode(seed, 'plus', 30, '24681', today, midHere);
+    const own = codec.issueCode(key, 'plus', 30, '24681', today);
     const goodAct = await licenseWeb.activate(own);
-    ok(goodAct.ok && goodAct.plan === 'plus', '绑定卡在绑定机器上 activate 成功');
+    ok(goodAct.ok && goodAct.plan === 'plus', '不绑定卡 activate 成功');
+    ok(licenseWeb.isLicensed(), '激活后进入已授权状态');
     const rest = await licenseWeb.restore();
-    ok(rest.ok, '绑定卡激活写下的记录可被 restore 恢复');
+    ok(rest.ok, '激活写下的记录可被 restore 恢复');
 
-    // 过期卡同一家族的漏洞：activate 不判过期的话，Worker 按卡密激活的 API
-    // 请求每次重放都绕过到期检查（restore 的 expired 拒绝来不及拦）。
-    // 换一份干净存储再测：上一例成功激活的记录还留在里面。
+    // 过期卡：activate 这一刻就拒绝，不留到 restore（Worker 按卡密激活的 API
+    // 请求每次重放都走 activate，过期检查必须在激活入口生效）。
     licenseWeb.resetRequestState();
     platform.setStorage(platform.newMemoryStorage());
-    const stale = codec.issueCode(seed, 'plus', 30, '24682', today - 60, midHere);
+    const stale = codec.issueCode(key, 'plus', 30, '24682', today - 60);
     const staleAct = await licenseWeb.activate(stale);
     ok(!staleAct.ok && staleAct.reason === 'expired',
       '过期卡 activate 即被拒（reason=expired）', staleAct.reason);
@@ -447,19 +393,20 @@ section('卡密的机器码绑定');
   }
 }
 
+
 // ------------------------------------------------------------ 自锚定校验
 
 // 服务端（Cloudflare Worker）里没有 navigator / screen / WebGL，machineId() 派生出的
 // 值与浏览器派的永不相等（Worker 实测 4CFS7ZE5899W3R803S439Y2F，浏览器实测
 // 1K9W9H9S065P0C7M834C1XC8）。所以 Worker 侧的网关必须用"自锚定"模式校验：
-// 锚点取记录自己声称的 machine，再拿**签名过的绑定段**去核对。
+// 锚点取记录自己声称的 machine，再验卡密校验码、令牌与到期时间是否与它自洽。
 //
 // 这一节钉住三件事：自锚定能放行正常记录、严格模式不会因此被放松、伪造仍然过不去。
 
 section('自锚定校验（服务端网关）');
 {
-  const seed = TEST_SIGNING_SEED;
-  const pub = TEST_PUBLIC_KEY;
+  const seed = TEST_CODE_KEY;
+  const pub = TEST_CODE_KEY;
   const browserMid = '1K9W9H9S065P0C7M834C1XC8'; // 浏览器派生（记录里的 machine）
   const serverMid = '4CFS7ZE5899W3R803S439Y2F';  // Worker 派生（网关手里的 machine）
 
@@ -468,8 +415,8 @@ section('自锚定校验（服务端网关）');
   const issueDay = Math.floor((Date.now() - codec.DAY_ZERO) / 86400000) + 3650;
 
   // 卡绑到浏览器机器码 —— 线上就是这种情况
-  const parsed = codec.parseCode(pub, codec.issueCode(seed, 'plus', 30, '70001', issueDay, browserMid));
-  ok(parsed.ok && parsed.bound === true, '自锚定用例：卡绑到浏览器机器码');
+  const parsed = codec.parseCode(pub, codec.issueCode(seed, 'plus', 30, '70001', issueDay));
+  ok(parsed.ok, '自锚定用例：不绑定卡可解析');
   const rec = licCore.makeRecord({
     code: parsed.code, plan: 'plus', machine: browserMid,
     issuedAt: Date.now(), expiresAt: licCore.expiryFromIssueDay(parsed),
@@ -480,9 +427,8 @@ section('自锚定校验（服务端网关）');
   ok(licCore.verifyLicenseData(rec, browserMid, pub).ok, '严格模式：机器码一致时放行');
   {
     const res = licCore.verifyLicenseData(rec, serverMid, pub);
-    // 拒绝的理由是 bind 而不是 machine：绑定段的核对排在 machine 比对之前，
-    // 而异机场景下绑定段先一步不合。这正是 403 的真凶。
-    ok(!res.ok && res.reason === 'bind', '严格模式：换成服务端机器码时判 bind（403 的真凶）', res.reason);
+    // v5 卡密不带绑定段，异机拒绝来自记录 machine 与锚点的比对（reason=machine）。
+    ok(!res.ok && res.reason === 'machine', '严格模式：换成服务端机器码时判 machine', res.reason);
   }
 
   // 自锚定：null / undefined / 空串都应被视为自锚定
@@ -496,14 +442,15 @@ section('自锚定校验（服务端网关）');
   ok(!licCore.verifyLicenseData(rec, serverMid, pub).ok, '自锚定不影响严格模式：异机仍拒');
   ok(licCore.verifyLicenseData(rec, browserMid, pub).ok, '自锚定不影响严格模式：同机仍放');
 
-  // 安全性：自锚定的锚点来自记录，必须靠签名过的绑定段兜底
+  // 安全性：自锚定的锚点来自记录，v5 下兜底的是令牌（machine 进令牌载荷）
   {
     const forged = { ...rec, machine: 'ZZZZZZZZZZZZZZZZZZZZZZZZ' };
     const res = licCore.verifyLicenseData(forged, null, pub);
-    ok(!res.ok && res.reason === 'bind', '自锚定：改 machine 会被签名过的绑定段拦下', res.reason);
+    ok(!res.ok && res.reason === 'token', '自锚定：改 machine 会被令牌拦下（绑定职能由服务端赎回登记承担）', res.reason);
   }
   {
-    // 连令牌一起换成"新机器"的也没用：绑定段仍指向原机器
+    // v5 已知边界：连令牌一起同步伪造的自锚定记录在卡密层放行（校验码与令牌
+    // 都自洽）。这是对称体系的固有属性；"一卡一机"由服务端赎回登记兜底。
     const machine = 'ZZZZZZZZZZZZZZZZZZZZZZZZ';
     const forged = {
       ...rec,
@@ -511,7 +458,7 @@ section('自锚定校验（服务端网关）');
       token: codec.makeToken(pub, machine, rec.expiresAt, rec.usage.day, rec.usage.used),
     };
     const res = licCore.verifyLicenseData(forged, null, pub);
-    ok(!res.ok && res.reason === 'bind', '自锚定：令牌与 machine 同步伪造仍被绑定段拦下', res.reason);
+    ok(res.ok, '自锚定已知边界：令牌与 machine 同步伪造在卡密层放行（服务端赎回登记兜底）', res.reason);
   }
   {
     const tampered = { ...rec, usage: { day: rec.usage.day, used: 999 } };
@@ -538,88 +485,71 @@ section('自锚定校验（服务端网关）');
 
 // ------------------------------------------------------------ keygen 命令行
 
-section('签发工具命令行（编号分配与 --bind）');
+section('签发工具命令行（v5 随机编号）');
 {
-  // 这一节必须真的把 keygen.js 当子进程跑，不能只调 codec。踩过的坑正是：
-  // 签发工具首次运行时拿 Date.now() 当起始编号，13 位毫秒数超出 40 bit 编号段，
-  // 于是**任何**不带 --id 的签发都失败，报的却是"编号区间超出编码上限"。因为
-  // keygen.js 平时能看到的状态是 --machine（不需要私钥、不碰计数器），
-  // 这个坑看起来就像"机器码有问题"。用假私钥跑子进程才能覆盖到这条路径：
-  // 签发在 allocateId 之后才用私钥，而假私钥（32 字节非零种子）一样能签出
-  // 语法合法的卡密。
+  // 这一节必须真的把 keygen.js 当子进程跑，不能只调 codec。v5 的编号随机生成、
+  // 无计数器；密钥从 JSLB_CODE_KEY 环境变量注入（假密钥是 32 字节非零 base64，
+  // 签出的卡密语法合法且能被同一把假密钥解析）。
   const KEYGEN = path.join(ROOT, 'tools', 'issue', 'keygen.js');
-  const FAKE_SEED = hash.bytesToB64(new Uint8Array(32).fill(7));
-  const stateDir = fs.mkdtempSync(path.join(TMP, 'keygen-'));
-  const stateFile = path.join(stateDir, '.keygen-state.json');
+  const FAKE_KEY = hash.bytesToB64(new Uint8Array(32).fill(7));
   const env = {
     ...process.env,
-    JSLB_SIGNING_KEY: FAKE_SEED,
-    JSLABYRINTH_KEYGEN_STATE: stateFile,
+    JSLB_CODE_KEY: FAKE_KEY,
   };
   const gen = (args) => execFileSync(process.execPath, [KEYGEN, ...args], {
     encoding: 'utf8', timeout: 30000, env,
   });
-  const genFail = (args) => {
+  const genFail = (args, customEnv) => {
     try {
-      execFileSync(process.execPath, [KEYGEN, ...args], { encoding: 'utf8', timeout: 30000, env });
+      execFileSync(process.execPath, [KEYGEN, ...args], { encoding: 'utf8', timeout: 30000, env: customEnv || env });
       return null;
     } catch (e) {
       return String((e.stderr || '') + (e.stdout || ''));
     }
   };
 
-  // 计数器不存在 = 首次签发。绑定签名是最常见的用法，也是最容易撞上这个坑的路径。
-  const mid = 'ABCDEFGHJKMNPQRSTVWXYZ01';
-  let first = null;
-  try {
-    first = gen(['--plan', 'plus', '--days', '365', '--bind', mid]);
-  } catch (e) {
-    ok(false, '首次签发（计数器不存在）能成功', String(e.stderr || e.message).trim());
-  }
-  if (first !== null) {
-    const line = first.trim().split('\n')[0].trim();
-    ok(line.startsWith('JSLB-' + plan.planCode('plus') + '-'), '首次签发 --bind 得到卡密', line.slice(0, 24) + '…');
-    // 卡密是假私钥签的，验签必然不过，所以这里只校验段结构：能切出绑定段、
-    // 且编号落在 40 bit 之内，就说明 allocateId 没把越界编号交出去。
-    const segs = codec.normalizeCode(line);
-    const body = segs.slice(4);
-    const idSeg = body.slice(1 + 2 + 3, 1 + 2 + 3 + codec.ID_LEN);
-    ok(codec.isB32Text(idSeg) && idSeg.length === codec.ID_LEN,
-      '首次签发落在编号段 40 bit 之内', idSeg);
-    const state = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
-    ok(/^[0-9]+$/.test(state.last) && BigInt(state.last) <= codec.MAX_ID,
-      '计数器写入的编号未越界', state.last);
-  }
+  // 默认签发：随机编号。产物必须是 v5 三段结构，且能被同一把密钥解析。
+  const first = gen(['--plan', 'plus', '--days', '365']);
+  const line = first.trim().split('\n')[0].trim();
+  ok(line.startsWith('JSLB-'), '默认签发得到卡密', line.slice(0, 24) + '…');
+  ok(codec.normalizeCode(line).length === 4 + codec.BODY_LEN, '卡密总长 = 前缀4+编号8+信息16+校验4');
+  const parsedFirst = codec.parseCode(FAKE_KEY, line);
+  ok(parsedFirst.ok && parsedFirst.plan === 'plus' && parsedFirst.days === 365,
+    'keygen 产物可用其密钥解析，套餐天数正确');
 
-  // 计数器存在之后走 stored + 1，不再看时间戳：连续两次签发编号必须递增。
-  const second = gen(['--plan', 'plus', '--days', '365', '--bind', mid]);
-  ok(second.trim().length > 0, '计数器存在后仍可签发');
-  const stateAfterSecond = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
-  ok(/^[0-9]+$/.test(stateAfterSecond.last) && BigInt(stateAfterSecond.last) <= codec.MAX_ID,
-    '第二次签发的编号仍在编号段内', stateAfterSecond.last);
+  // 随机编号：两次签发卡密必然不同（随机编号 + 随机 IV）
+  const second = gen(['--plan', 'plus', '--days', '365']);
+  ok(second.trim() !== first.trim(), '两次签发卡密不同（随机编号与随机 IV）');
 
-  // --count 3 必须把计数器推进 3 个编号（写回的是本次用掉的最后编号，故 +2）
-  gen(['--plan', 'plus', '--days', '365', '--count', '3']);
-  const stateAfterBatch = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
-  ok(BigInt(stateAfterBatch.last) === BigInt(stateAfterSecond.last) + 3n,
-    '--count 3 把计数器推进 3 个编号',
-    stateAfterSecond.last + ' → ' + stateAfterBatch.last);
+  // --count 3 出 3 张互不相同的卡密（批内随机去重）
+  const batch = gen(['--plan', 'plus', '--days', '365', '--count', '3']).trim().split('\n');
+  ok(batch.length === 3 && new Set(batch).size === 3, '--count 3 出 3 张互不相同的卡密',
+    String(batch.length) + ' 行 / ' + new Set(batch).size + ' 张');
 
-  // 显式 --id 越界：错误信息必须指向 --id，而不是含糊的"编号区间超出编码上限"
-  const tooBig = genFail(['--plan', 'plus', '--id', String(codec.MAX_ID), '--count', '2']);
+  // --id 显式指定：编号可还原
+  const explicit = gen(['--plan', 'plus', '--days', '30', '--id', '12345']);
+  const parsedExplicit = codec.parseCode(FAKE_KEY, explicit.trim());
+  ok(parsedExplicit.ok && parsedExplicit.id === '12345', '--id 指定的编号可从卡密还原');
+
+  // --id 越界：错误信息必须指向 --id
+  const tooBig = genFail(['--plan', 'plus', '--id', String(Number(codec.MAX_ID) + 1)]);
   ok(tooBig !== null && /--id/.test(tooBig), '显式 --id 越界时报错并点出 --id',
     String(tooBig).trim().split('\n').pop());
 
-  // 计数器已满：报错要给出可执行的处置（删除/改名计数器），别让人去怀疑机器码
-  fs.writeFileSync(stateFile, JSON.stringify({ last: codec.MAX_ID.toString() }, null, 2));
-  const exhausted = genFail(['--plan', 'plus', '--days', '365', '--bind', mid]);
-  ok(exhausted !== null && /计数器|--id/.test(exhausted) && /--bind/.test(exhausted) === false,
-    '计数器用满时给出可操作的建议', String(exhausted).trim().split('\n')[0]);
-  ok(exhausted === null || !/机器码|--bind/.test(exhausted),
-    '计数器用满的报错不把责任推给机器码');
+  // --bind 已废除：报错要给出"改用赎回模型"的指引
+  const bindErr = genFail(['--plan', 'plus', '--bind', 'ABCDEFGHJKMNPQRSTVWXYZ01']);
+  ok(bindErr !== null && /绑定/.test(bindErr), '--bind 已废除并给出指引',
+    String(bindErr).trim().split('\n')[0]);
 
-  // --machine 不碰计数器、不需要私钥：即使在计数器已满的情况下也必须正常
-  const noKeyEnv = { ...process.env, JSLB_SIGNING_KEY: '', JSLABYRINTH_KEYGEN_STATE: stateFile };
+  // 缺密钥时明确报错（单独的干净环境，不注入 JSLB_CODE_KEY；磁盘上也没有
+  // .jslb-code-key，走的是"完全无密钥"路径）
+  const noKeyEnv = { ...process.env };
+  delete noKeyEnv.JSLB_CODE_KEY;
+  const noKey = genFail(['--plan', 'plus'], noKeyEnv);
+  ok(noKey !== null && /密钥/.test(noKey), '缺密钥时报错并指出设置方式',
+    String(noKey).trim().split('\n')[0]);
+
+  // --machine 不需要密钥：即使在缺密钥的环境下也必须正常
   const machineOut = execFileSync(process.execPath, [KEYGEN, '--machine', '--json'], {
     encoding: 'utf8', timeout: 30000, env: noKeyEnv,
   });
@@ -627,10 +557,8 @@ section('签发工具命令行（编号分配与 --bind）');
   try { parsedMachine = JSON.parse(machineOut.trim()); } catch { /* 下面断言报错 */ }
   ok(parsedMachine && parsedMachine.machine && parsedMachine.machine.length === 24
     && codec.isB32Text(parsedMachine.machine),
-  '--machine 无需私钥即可打印 24 字符机器码',
+  '--machine 无需密钥即可打印 24 字符机器码',
   parsedMachine ? parsedMachine.machine : machineOut.trim());
-
-  fs.rmSync(stateDir, { recursive: true, force: true });
 }
 
 section('网页链路（授权 → 限额 → 混淆 → 记账）');
@@ -683,9 +611,9 @@ section('一次性额度包与解除激活');
   });
   platform.setStorage(platform.newMemoryStorage());
   // 换成测试公钥：内置公钥对应的是真私钥，测试签不出来（也不该签得出来）。
-  // loadKeysFromEnv() 只在 JSLB_PUBLIC_KEY 有值时覆盖，这里直接设内存里的值。
-  licenseWeb.setKeyMaterial(TEST_PUBLIC_KEY, null);
-  const keys = [TEST_SIGNING_SEED, TEST_PUBLIC_KEY];
+  // loadKeysFromEnv() 只在 JSLB_CODE_KEY 有值时覆盖，这里直接设内存里的值。
+  licenseWeb.setKeyMaterial(TEST_CODE_KEY, null);
+  const keys = [TEST_CODE_KEY, TEST_CODE_KEY];
   const devPack = 'c'.repeat(32);
   const devSub = 'd'.repeat(32);
   const keyOf = (base) => base + ':' + devPack;
@@ -720,13 +648,13 @@ section('一次性额度包与解除激活');
     licenseWeb.resetRequestState();
     licenseWeb.setRequestDeviceId(device);
     const mid = await licenseWeb.machineId();
-    const parsed = codec.parseCode(TEST_PUBLIC_KEY, code);
+    const parsed = codec.parseCode(TEST_CODE_KEY, code);
     const rec = licCore.makeRecord({
       code: parsed.code, plan: parsed.plan, machine: mid,
       issuedAt: Date.now(),
       expiresAt: licCore.expiryFromIssueDay(parsed),
       usage: { day: '2020-01-01', used: used0 },
-    }, TEST_PUBLIC_KEY);
+    }, TEST_CODE_KEY);
     store.set('jslabyrinth.license.v2:' + device, JSON.stringify(rec));
     const res = await licenseWeb.restore();
     return res;
@@ -744,12 +672,12 @@ section('一次性额度包与解除激活');
     licenseWeb.resetRequestState();
     licenseWeb.setRequestDeviceId(devSub);
     const mid = await licenseWeb.machineId();
-    const parsed = codec.parseCode(TEST_PUBLIC_KEY, plusCode);
+    const parsed = codec.parseCode(TEST_CODE_KEY, plusCode);
     const rec = licCore.makeRecord({
       code: parsed.code, plan: parsed.plan, machine: mid,
       issuedAt: Date.now(), expiresAt: licCore.expiryFromIssueDay(parsed),
       usage: { day: '2020-01-01', used: 0 },
-    }, TEST_PUBLIC_KEY);
+    }, TEST_CODE_KEY);
     rec.expiresAt = parsed.days === 0 ? 0 : rec.expiresAt + 3650 * 86400000;
     store.set('jslabyrinth.license.v2:' + devSub, JSON.stringify(rec));
     const r = await licenseWeb.restore();
@@ -771,19 +699,71 @@ section('一次性额度包与解除激活');
   platform.setStorage(null);
 }
 
+// ---------------------------------------------------------------- 卡密赎回（防重复使用）
+
+section('卡密赎回（防重复使用）');
+{
+  // 一张不绑定卡密只能在一台机器上激活：第二台机器再用同一卡密即被拒。
+  // 绑定卡天然只认一台机器（签名绑定段），赎回登记对它是冗余的兜底。
+  const store = new Map();
+  platform.setKv({
+    get: async (k) => (store.has(k) ? store.get(k) : null),
+    put: async (k, v) => { store.set(k, v); },
+    del: async (k) => { store.delete(k); },
+  });
+  platform.setStorage(platform.newMemoryStorage());
+  licenseWeb.setKeyMaterial(TEST_CODE_KEY, null);
+  licenseWeb.resetRequestState();
+  const mid = await licenseWeb.machineId();
+  const otherMid = mid.slice(0, 23) + (mid.endsWith('0') ? '1' : '0');
+  const today = Math.floor((Date.now() - codec.DAY_ZERO) / 86400000);
+
+  // 不绑定卡：首次激活成功，并写下赎回登记（键全局、按编号分键）
+  const free = codec.issueCode(TEST_CODE_KEY, 'plus', 30, '77777', today);
+  const a1 = await licenseWeb.activate(free);
+  ok(a1.ok && a1.plan === 'plus', '不绑定卡首次激活成功', JSON.stringify(a1));
+  ok(store.has('redeem:77777'), '赎回登记已写入全局 KV（按编号分键）');
+  ok(store.get('redeem:77777') === mid, '赎回者即本机机器码');
+
+  // 同机再激活同一张：放行（同机重激活不算重复使用）
+  licenseWeb.resetRequestState();
+  platform.setStorage(platform.newMemoryStorage());
+  const a2 = await licenseWeb.activate(free);
+  ok(a2.ok, '同机再次激活同一张不绑定卡仍成功（同机重激活放行）', JSON.stringify(a2));
+
+  // 模拟另一台机器已赎回：把登记改成别的机器码，再激活应被拒
+  store.set('redeem:77777', otherMid);
+  licenseWeb.resetRequestState();
+  platform.setStorage(platform.newMemoryStorage());
+  const a3 = await licenseWeb.activate(free);
+  ok(!a3.ok && a3.reason === 'used', '已被其他机器赎回的卡再激活即被拒（reason=used）', a3.reason);
+
+  // 绑定卡：赎回登记恒为同机，不会误锁自己的卡
+  licenseWeb.resetRequestState();
+  platform.setStorage(platform.newMemoryStorage());
+  store.delete('redeem:88888');
+  const bound = codec.issueCode(TEST_CODE_KEY, 'plus', 30, '88888', today);
+  const b1 = await licenseWeb.activate(bound);
+  ok(b1.ok && b1.plan === 'plus', '另一张不绑定卡激活成功');
+  ok(store.get('redeem:88888') === mid, '另一张卡也登记赎回');
+
+  platform.setKv(null);
+  platform.setStorage(null);
+}
+
 // ---------------------------------------------------------------- Worker API
 
 section('Cloudflare Worker 路由');
 {
   const worker = (await import('../../worker/index.js')).default;
   // 注入测试公钥：签卡要用私钥，而真私钥不随源码分发（这正是非对称的意义），
-  // 所以测试自己造一对，把公钥通过 JSLB_PUBLIC_KEY 交给 Worker。走的代码路径
+  // 所以测试自己造一把卡密密钥，通过 JSLB_CODE_KEY 交给 Worker。走的代码路径
   // 与线上完全一致，只是密钥不同。
   const call = async (pathname, init) => {
     const req = new Request('https://example.com' + pathname, init);
     return worker.fetch(req, {
       JSLB_WEB_CONFIG: '{"trialPreset":"low","trialMaxFileBytes":65536}',
-      JSLB_PUBLIC_KEY: TEST_PUBLIC_KEY,
+      JSLB_CODE_KEY: TEST_CODE_KEY,
     }, {});
   };
 
@@ -852,7 +832,7 @@ section('Cloudflare Worker 路由');
     '预检放行 X-JSLB-Lang 头');
 
   // 激活流程：用 keygen 的签发路径造一张卡密，走 /api/license 激活
-  const keys = [TEST_SIGNING_SEED, TEST_PUBLIC_KEY];
+  const keys = [TEST_CODE_KEY, TEST_CODE_KEY];
   const issued = codec.issueCode(keys[0], 'plus', 30, '98765');
   const act = await call('/api/license', {
     method: 'POST',
@@ -873,12 +853,15 @@ section('Cloudflare Worker 路由');
   ok(afterAct.status === 200 && afterJson.ok === true, '激活后可跑套餐内预设');
   ok(afterJson.quota && afterJson.quota.used >= 1, '响应里带用量');
 
+  // v5 卡密没有独立的套餐段（套餐在加密的信息段里），篡改用例改为翻转校验码
+  // 末位——任何一位被改都必须在校验码这一步被拒。
+  const tamperFlip = (t) => t.slice(0, -1) + (t.endsWith('0') ? '1' : '0');
   const tampered = await call('/api/obfuscate', {
     method: 'POST',
-    headers: { 'content-type': 'application/json', 'X-JSLB-Key': issued.replace('-' + plan.planCode('plus') + '-', '-' + plan.planCode('business') + '-') },
+    headers: { 'content-type': 'application/json', 'X-JSLB-Key': tamperFlip(issued) },
     body: JSON.stringify({ code: SAMPLE, options: { preset: 'low' } }),
   });
-  ok(tampered.status === 401, '改过套餐段的卡密被拒（401）');
+  ok(tampered.status === 401, '篡改校验码的卡密被拒（401）');
 }
 
 // ---------------------------------------------------------------- ZIP

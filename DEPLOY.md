@@ -122,18 +122,24 @@ JSLB_SKIP_LIVE=1 npm test
 
 | 名称 | 机密？ | 放哪 | 说明 |
 | --- | --- | --- | --- |
-| `JSLB_PUBLIC_KEY` | 否 | `[vars]` 或 Secret 都行 | 覆盖内置签发公钥。**非机密**，默认不用配 |
+| `JSLB_CODE_KEY` | 否 | `[vars]` 或 Secret 都行 | 覆盖内置签发公钥。**非机密**，默认不用配 |
 | `JSLB_MACHINE_SALT` | 否 | 同上 | 机器码派生盐。**非机密** |
 | `JSLB_WEB_CONFIG` | 否 | `[vars]` | 网页版策略 JSON，界面会公开读回 |
 | `JSLB_CORS_ORIGIN` | 否 | `[vars]` | `/api/*` 跨域来源，默认 `*`，同源部署不用配 |
 | `JSLB_DEVICE_ID` | 否 | `[vars]` | 固定设备码（仅用于 KV 分键与试用计数），测试用；**不再影响机器码** |
 | ~~`JSLB_CORE_KEY`~~ | — | — | **已废弃**（对称签名时代的根密钥），见 4.4 |
 
+> **⚠️ v5 更新（2026-09-24）：卡密改为对称格式，本节及下文的 Ed25519/私钥描述是 v4 历史背景。**
+> 卡密为 `JSLB-编号8-信息16-校验4`，签发与校验共用同一把对称卡密密钥（`B64_CODE_KEY`，随
+> 源码分发；可用 `JSLB_CODE_KEY` 环境变量覆盖）。服务端现在**有**一把"所有访客也拿得到"的
+> 密钥——这是对称体系的固有属性，真正的强制在服务端：/api/obfuscate 逐请求校验、KV 赎回
+> 登记（一卡一机）与 JSLB_GATE_CORE 门控。安全模型以 `src/license-codec.js` 的头注释为准。
+
 **Worker 上没有任何机密。** 卡密是 Ed25519 签名的，Worker 只持公钥——它能验签、
 签不出新卡。公钥写死在 `src/license-secret.js` 里随静态资源公开，这**不是**问题。
 
-**签发私钥（`JSLB_SIGNING_KEY`）绝不能出现在 Worker、Secret 或 `dist/` 里。**
-它只在签发方（你自己的机器）：环境变量或项目根的 `.jslb-signing-key`（gitignore）。
+**签发私钥（`JSLB_CODE_KEY`）绝不能出现在 Worker、Secret 或 `dist/` 里。**
+它只在签发方（你自己的机器）：环境变量或项目根的 `.jslb-code-key`（gitignore）。
 
 ### 4.2 注入
 
@@ -141,8 +147,8 @@ JSLB_SKIP_LIVE=1 npm test
 
 ```bash
 node tools/issue/keyrotate.js --write        # 生成密钥对
-# 公钥进 src/license-secret.js（可入库）；私钥进 .jslb-signing-key（gitignore）
-node node_modules/wrangler/bin/wrangler.js secret put JSLB_PUBLIC_KEY   # 可选：覆盖公钥
+# 公钥进 src/license-secret.js（可入库）；私钥进 .jslb-code-key（gitignore）
+node node_modules/wrangler/bin/wrangler.js secret put JSLB_CODE_KEY   # 可选：覆盖公钥
 node node_modules/wrangler/bin/wrangler.js secret list                  # 只列名，不列值
 ```
 
@@ -150,7 +156,7 @@ node node_modules/wrangler/bin/wrangler.js secret list                  # 只列
 
 ```bash
 cat > .dev.vars <<'EOF'
-JSLB_PUBLIC_KEY=<你的公钥>
+JSLB_CODE_KEY=<你的公钥>
 JSLB_MACHINE_SALT=<B64_MACHINE_SALT>
 EOF
 chmod 600 .dev.vars
@@ -159,17 +165,17 @@ chmod 600 .dev.vars
 ### 4.3 三条硬规矩
 
 1. **私钥永不进仓库、不进 `dist/`、不进 `wrangler.toml`、不进 Secret。**
-   泄露 `JSLB_SIGNING_KEY` 等于泄露发卡权：拿它可以签出任意套餐、任意有效期的卡密，
+   泄露 `JSLB_CODE_KEY` 等于泄露发卡权：拿它可以签出任意套餐、任意有效期的卡密，
    而所有验签方都持有对应公钥，一定通过。
-2. **发卡要带同一把私钥**（默认读 `.jslb-signing-key`，所以通常也不用带）：
+2. **发卡要带同一把私钥**（默认读 `.jslb-code-key`，所以通常也不用带）：
    ```bash
-   JSLB_SIGNING_KEY=<base64 种子> node tools/issue/keygen.js --plan plus --days 365
+   JSLB_CODE_KEY=<base64 种子> node tools/issue/keygen.js --plan plus --days 365
    ```
    缺私钥时会明确报错并给出设置方法，不会静默签出一张验不过的卡。
-3. `.jslb-signing-key`、`.keygen-state.json`、`.dev.vars`、`.env`、
+3. `.jslb-code-key`、`.keygen-state.json`、`.dev.vars`、`.env`、
    `.workbuddy-ai/` 都已在 `.gitignore` 里。**提交前扫一遍**：
    ```bash
-   grep -rIn "JSLB_SIGNING_KEY\|B64_PRIVATE" --exclude-dir=node_modules --exclude-dir=dist .
+   grep -rIn "JSLB_CODE_KEY\|B64_PRIVATE" --exclude-dir=node_modules --exclude-dir=dist .
    # 只应命中文档与 .env.example 的占位符
    ```
 

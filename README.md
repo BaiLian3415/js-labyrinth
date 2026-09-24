@@ -319,6 +319,13 @@ Plus 闸门把它显式关着，改上限却忘了动那一条，加载期直接
 **升上限必须逐条比对目标预设的取值，开关项（true/false）比数值项更容易漏**。
 自测里有一条不变式：**低档的每一条闸门都不得超过高档**。
 
+> **⚠️ v5 更新（2026-09-24）：卡密改为对称格式，本节及下文的 Ed25519/绑定段描述是 v4 历史背景。**
+> 卡密为 `JSLB-编号8-信息16-校验4`：对称卡密密钥（`B64_CODE_KEY`）随源码分发（浏览器要本地
+> 验卡），签发方与验证方共用一把；不再有公钥/私钥之分，卡密也不携带机器绑定段——"一卡一机"
+> 由服务端 KV 赎回登记实现（首次激活登记赎回者机器码，其他机器再用同一卡密即被拒）。
+> 拿到源码的人能自己造卡，真正的强制在服务端（逐请求校验 + 赎回登记 + 门控）。安全模型以
+> `src/license-codec.js` 与 `src/license-secret.js` 的头注释为准。
+
 **两层机器绑定，卡密那层才是边界。** 卡密里带一段机器码的派生摘要（绑定段，16 字符
 base32），它在 Ed25519 签名载荷内，所以"这张卡属于哪台机器"在**签发时就定死了**：拿到
 别人的卡密到自己机器上激活一定失败，且**卡密上看不出机器码本身**（只有不可逆的 HMAC
@@ -368,18 +375,18 @@ JSLB_WEB_CONFIG = '{"requireLicense":true,"trialPreset":"low","trialMaxFileBytes
 并用自己的密钥对即可（混淆仍留在浏览器内，只是授权由服务端判定）：
 
 ```bash
-node tools/issue/keyrotate.js --write        # 生成密钥对：公钥进源码，私钥进 .jslb-signing-key
-npx wrangler secret put JSLB_PUBLIC_KEY      # 值 = 上一步打印的公钥（可选；内置公钥也能用）
+node tools/issue/keyrotate.js --write        # 生成密钥对：公钥进源码，私钥进 .jslb-code-key
+npx wrangler secret put JSLB_CODE_KEY      # 值 = 上一步打印的公钥（可选；内置公钥也能用）
 ```
 
 用**自己的**密钥对时，发卡与验签才同源：
 
 ```bash
-JSLB_SIGNING_KEY=<base64 私钥种子> node tools/issue/keygen.js --plan plus --days 365
+JSLB_CODE_KEY=<base64 私钥种子> node tools/issue/keygen.js --plan plus --days 365
 ```
 
-`tools/issue/keygen.js` 因此优先读环境变量 `JSLB_SIGNING_KEY`，读不到才退回项目根的
-`.jslb-signing-key`（该文件在 `.gitignore` 里）。两处都没有时**明确报错**，不会签出
+`tools/issue/keygen.js` 因此优先读环境变量 `JSLB_CODE_KEY`，读不到才退回项目根的
+`.jslb-code-key`（该文件在 `.gitignore` 里）。两处都没有时**明确报错**，不会签出
 一张验不过的卡。
 
 ### 三个签发工具的分工
@@ -389,7 +396,7 @@ JSLB_SIGNING_KEY=<base64 私钥种子> node tools/issue/keygen.js --plan plus --
 | 工具 | 干什么 | 会不会动文件 |
 | --- | --- | --- |
 | `tools/issue/signingkey.js` | 生成**签名密钥对**，当场做签验往返自检 | 默认只打印；`--out <dir>` 才落盘 |
-| `tools/issue/keyrotate.js` | **轮换**签名密钥对 | **会覆盖** `src/license-secret.js` 与 `.jslb-signing-key`，旧卡全部作废 |
+| `tools/issue/keyrotate.js` | **轮换**签名密钥对 | **会覆盖** `src/license-secret.js` 与 `.jslb-code-key`，旧卡全部作废 |
 | `tools/issue/keygen.js` | 用私钥**签发卡密**（`JSLB-...`） | 只写编号计数器与 `--ledger` 指定的台账 |
 
 ```bash
@@ -397,7 +404,7 @@ JSLB_SIGNING_KEY=<base64 私钥种子> node tools/issue/keygen.js --plan plus --
 npm run signingkey
 npm run signingkey -- --out ./keys          # 落盘到 ./keys（已存在则拒绝覆盖，除非 --force）
 npm run signingkey -- --seed <base64>       # 由种子确定性重建，用于恢复
-npm run signingkey -- --check <公钥>        # 只校验公钥格式并打印指纹
+npm run signingkey -- --check <密钥>        # 只校验密钥格式并打印指纹
 
 # 2) 发卡
 npm run keygen -- --plan plus --days 365 --count 5          # 5 张，逐行裸卡密（便于脚本）
@@ -475,10 +482,10 @@ base32，格式校验分不出来。喂错了只会摘两次摘要，签出一�
 | --- | --- | --- |
 | `JSLABYRINTH_LANG` | 全部 | 语言 `zh`/`en`（浏览器可改用 `window.JSLB_ENV`）。**Worker 侧只是兜底默认**：服务端文案的语言按请求判定（`X-JSLB-Lang` > `Accept-Language` > 本变量），见「Worker API」一节 |
 | `JSLABYRINTH_KEYGEN_STATE` | 发卡工具 | 编号计数器路径 |
-| `JSLABYRINTH_SIGNING_KEY_FILE` | 发卡工具 | 签发私钥文件路径（默认 `.jslb-signing-key`） |
-| `JSLB_SIGNING_KEY` | 发卡工具 | **签发私钥**（base64，32 字节种子）。**机密**，泄露 = 发卡权泄露 |
+| `JSLABYRINTH_CODE_KEY_FILE` | 发卡工具 | 签发私钥文件路径（默认 `.jslb-code-key`） |
+| `JSLB_CODE_KEY` | 发卡工具 | **签发私钥**（base64，32 字节种子）。**机密**，泄露 = 发卡权泄露 |
 | `JSLB_WEB_CONFIG` | 网页/Worker | 网页版策略 JSON |
-| `JSLB_PUBLIC_KEY` | 网页/Worker | 覆盖内置签发公钥（base64，非机密） |
+| `JSLB_CODE_KEY` | 网页/Worker | 覆盖内置签发公钥（base64，非机密） |
 | `JSLB_MACHINE_SALT` | 网页/Worker | 覆盖机器码派生盐（base64，非机密） |
 | `JSLB_CORS_ORIGIN` | Worker | `/api/*` 的跨域来源，默认 `*` |
 | `JSLB_DEVICE_ID` | 网页/Worker | 固定设备码（仅 KV 分键与试用计数），便于测试 |

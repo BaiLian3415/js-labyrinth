@@ -63,15 +63,13 @@ JSLB_GATE_CORE = "true"
 # 跨域来源。同源部署（界面与 API 同一个域名）时用不到；纯 API 供他人调用时再收紧。
 # JSLB_CORS_ORIGIN = "https://your.site"
 
-# 卡密是 Ed25519 签名的，Worker 只需要**公钥**（内置在 src/license-secret.js）。
-# 公钥可以公开，所以默认什么都不用配——爬走静态资源也签不出卡密。
+# 卡密是 v5 对称格式（编号 + 加密信息段 + 校验码），验证密钥内置在
+# src/license-secret.js（B64_CODE_KEY）。对称密钥随静态资源公开——拿到源码的人
+# 能自己造卡，真正的强制靠服务端校验 + KV 赎回登记 + JSLB_GATE_CORE。
 #
-# 只有"用自己的密钥对签卡"时才需要覆盖公钥（可选，且它不是秘密）：
-#   npx wrangler secret put JSLB_PUBLIC_KEY      # 值为 tools/issue/keyrotate.js 打印的公钥
+# 只有"用自己的密钥发卡"时才需要覆盖（可选）：
+#   npx wrangler secret put JSLB_CODE_KEY        # 值为 tools/issue/keyrotate.js 生成的新密钥
 #   npx wrangler secret put JSLB_MACHINE_SALT    # 值为 src/license-secret.js 的 B64_MACHINE_SALT
-#
-# ⚠️ 签发私钥（JSLB_SIGNING_KEY / .jslb-signing-key）**绝不能**配到这里，也不能
-#    进 Secret、不能进 dist/。它只留在签发方，泄露等于发卡权泄露。
 
 # KV：许可证记录与试用计数跨请求持久化。
 #

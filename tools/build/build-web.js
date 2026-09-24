@@ -367,11 +367,12 @@ function main(argv) {
     console.log('  Pages:  npx wrangler pages deploy ' + outName);
     console.log('  Worker: npx wrangler deploy');
     console.log('');
-    console.log('  注意：dist/ 里含 src/license-secret.js，但里面**只有公钥**，随静态资源');
-    console.log('  公开不影响安全——卡密是 Ed25519 签名的，没有私钥就签不出新卡。');
-    console.log('  签发私钥只在签发方：环境变量 JSLB_SIGNING_KEY 或 .jslb-signing-key（gitignore）。');
-    console.log('  发卡（缺私钥会明确报错）：');
-    console.log('    JSLB_SIGNING_KEY=<base64 种子> node tools/issue/keygen.js --plan plus --days 365');
+    console.log('  注意：dist/ 里含 src/license-secret.js 的卡密密钥（对称，随静态资源公开）。');
+    console.log('  对称体系里拿到源码就能造卡——真正的强制在服务端：逐请求校验、KV 赎回登记');
+    console.log('  （一卡一机）与 JSLB_GATE_CORE 门控，见 license-codec.js 的头注释。');
+    console.log('  签发密钥：环境变量 JSLB_CODE_KEY 或 .jslb-code-key（gitignore）。');
+    console.log('  发卡（缺密钥会明确报错）：');
+    console.log('    JSLB_CODE_KEY=<base64 密钥> node tools/issue/keygen.js --plan plus --days 365');
   })();
 }
 

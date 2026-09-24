@@ -8,8 +8,8 @@
  *   node tools/issue/selfdigest.js --check  校验表与源码是否一致，CI 使用
  *
  * 摘要规则和 src/license.js 保持一致，digest_i 取 normalize(text_i) 的 sha256，
- * 结果是 64 位 hex，stored_i 再用 HMAC-SHA256(PUBLIC_KEY, 'JSLB/SELF/' + i) 做异或掩码。
- * 掩码密钥是公钥（公开的），所以这张表只挡随手改动，不挡有心人——见 license-secret.js。
+ * 结果是 64 位 hex，stored_i 再用 HMAC-SHA256(CODE_KEY, 'JSLB/SELF/' + i) 做异或掩码。
+ * 掩码密钥是卡密密钥（随源码公开），所以这张表只挡随手改动，不挡有心人——见 license-secret.js。
  * normalize 会把文本里所有 64 位 hex 串抹成 0，为的是避免摘要表引用自身，
  * 不然每写一次表摘要就变一次，永远收敛不了。
  *
@@ -65,11 +65,11 @@ function main(argv) {
     process.exit(1);
   }
 
-  // 只从 B64_PUBLIC_KEY 取公钥来算掩码，不读 SELF_DIGESTS 的当前值
+  // 只从 B64_CODE_KEY 取卡密密钥来算掩码，不读 SELF_DIGESTS 的当前值
   const secretSrc = fs.readFileSync(SECRET_PATH, 'utf8');
-  const m = secretSrc.match(/const B64_PUBLIC_KEY = '([^']+)';/);
+  const m = secretSrc.match(/const B64_CODE_KEY = '([^']+)';/);
   if (!m) {
-    console.error('无法从 src/license-secret.js 解析 B64_PUBLIC_KEY');
+    console.error('无法从 src/license-secret.js 解析 B64_CODE_KEY');
     process.exit(1);
   }
   const publicKey = m[1];

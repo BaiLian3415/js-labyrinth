@@ -10,9 +10,9 @@
  * 单独改 expiresAt、plan 或 usage 都过不了令牌验签。到期时间更进一步——它由
  * **卡密里已签名的签发日**推出，连重新签令牌都改不动。
  *
- * 机器绑定同样以卡密为准：卡密里带一段机器码的派生摘要（绑定段，见
- * license-codec.bindDigest），且它在签名载荷内，所以"这台机器能不能用这张卡"
- * 是签发时就定死的，本地改不了。不绑定的卡绑定段全 0，任何机器都能用。
+ * 机器绑定（v5）：卡密本身不再携带绑定段——"一卡一机"由服务端赎回登记承担，
+ * 卡密层的 matchesMachine 判定对 v5 卡恒真（bindSeg 恒为全 0）。本地能校验的
+ * 只有校验码与由卡密还原的套餐、天数、签发日、到期时间。
  */
 import codec from './license-codec.js';
 import platform from './platform.js';
@@ -50,9 +50,8 @@ export function readUsage(u) {
  * 校验许可证内容是否与当前机器、当前时间、公钥自洽。
  *
  * 机器绑定分两层，缺一不可：
- *  ① 卡密里的**绑定段**必须是这台机器的机器码派生摘要（见 codec.matchesMachine）。
- *     绑定段在 Ed25519 签名载荷里，改不了；所以拿别人的卡密到这机器上激活一定
- *     失败，且**无需等待令牌校验**就能判出来。
+ *  ① 卡密校验码必须通过（codec.parseCode）。v5 卡密不带绑定段，这一步对 v5 卡
+ *     的机器维度恒真；"一卡一机"由服务端赎回登记强制（见 license-web.activate）。
  *  ② 记录里的 machine 字段必须等于当前机器码，令牌也必须与它自洽——这层防的是
  *     "本地记录被搬到另一台机器"。令牌密钥是公开的，所以这层只防搬运，不防
  *     有源码的人重签自己的记录；真正的边界是①。
@@ -69,10 +68,9 @@ export function readUsage(u) {
  * 且补登记（importRecord）也永远失败。这不是配置问题，是结构上不可能成立。
  *
  * 自锚定模式下仍然强制校验（安全性并未退化成"什么都收"）：
- *   - 卡密 Ed25519 签名有效（真边界，私钥在签发方）
- *   - `matchesMachine(bindSeg, data.machine)`：卡的**签名绑定段**必须与记录
- *     自称的机器码吻合。绑定段在签名载荷内，改不了；所以记录必须属于"这张卡
- *     签发时指定的那台机器"，换一台机器伪造的码过不了。
+ *   - 卡密校验码有效（对称密钥；对称体系的安全边界在服务端，见 license-codec.js）
+ *   - `matchesMachine(bindSeg, data.machine)`：对 v5 卡恒真；对携带绑定段的
+ *     历史记录仍按摘要比对。
  *   - 令牌与 `data.machine` 自洽：手改 machine / expiresAt / usage 都会失败。
  *   - 未过期。
  *
@@ -82,10 +80,10 @@ export function readUsage(u) {
  *
  * @param {object} data 许可证内容
  * @param {string|null} mid 当前机器码；省略即进入自锚定模式
- * @param {string} publicKeyB64 签发公钥 base64
+ * @param {string} keyB64 签发公钥 base64
  * @returns {{ok:boolean, reason?:string, expiresAt?:number, plan?:string, code?:string, usage?:object, machine?:string}}
  */
-export function verifyLicenseData(data, mid, publicKeyB64) {
+export function verifyLicenseData(data, mid, keyB64) {
   if (!data || typeof data !== 'object' || Array.isArray(data)) return { ok: false, reason: 'corrupt' };
   if (data.v !== LIC_FORMAT) return { ok: false, reason: 'version' };
   if (typeof data.code !== 'string' || typeof data.token !== 'string') return { ok: false, reason: 'corrupt' };
@@ -95,11 +93,11 @@ export function verifyLicenseData(data, mid, publicKeyB64) {
   const selfAnchored = mid === null || mid === undefined || mid === '';
   const anchor = selfAnchored ? data.machine : mid;
 
-  const parsed = codec.parseCode(publicKeyB64, data.code);
+  const parsed = codec.parseCode(keyB64, data.code);
   if (!parsed.ok) return { ok: false, reason: 'code' };
 
-  // 卡密绑定的机器与锚点是否一致。不绑定的卡（绑定段全 0）这一步恒真。
-  // 自锚定下这一步依然有意义：绑定段是签名过的，记录必须属于该卡指定的机器。
+  // 卡密绑定段与锚点是否一致。v5 卡（绑定段全 0）这一步恒真；"一卡一机"
+  // 由服务端赎回登记强制，不在这条判定里。
   if (!codec.matchesMachine(parsed.bindSeg, anchor)) return { ok: false, reason: 'bind' };
 
   // 套餐以卡密为准，存储里的 plan 只用来发现不一致
@@ -116,7 +114,7 @@ export function verifyLicenseData(data, mid, publicKeyB64) {
 
   const usage = readUsage(data.usage);
   if (!usage.ok) return { ok: false, reason: 'corrupt' };
-  if (!codec.verifyToken(publicKeyB64, data.token, anchor, data.expiresAt, usage.day, usage.used)) {
+  if (!codec.verifyToken(keyB64, data.token, anchor, data.expiresAt, usage.day, usage.used)) {
     return { ok: false, reason: 'token' };
   }
   if (data.expiresAt !== codec.PERPETUAL && platform.now() > data.expiresAt) {
@@ -143,10 +141,10 @@ export function verifyLicenseData(data, mid, publicKeyB64) {
  * 真正的防伪造在卡密那层（Ed25519，私钥在签发方）。
  *
  * @param {{code:string, plan:string, machine:string, issuedAt:number, expiresAt:number, usage:{day:string,used:number}}} lic 授权内容
- * @param {string} publicKeyB64 签发公钥 base64
+ * @param {string} keyB64 签发公钥 base64
  * @returns {object} 可直接序列化的记录
  */
-export function makeRecord(lic, publicKeyB64) {
+export function makeRecord(lic, keyB64) {
   return {
     v: LIC_FORMAT,
     code: lic.code,
@@ -155,7 +153,7 @@ export function makeRecord(lic, publicKeyB64) {
     issuedAt: lic.issuedAt,
     expiresAt: lic.expiresAt,
     usage: { day: lic.usage.day, used: lic.usage.used },
-    token: codec.makeToken(publicKeyB64, lic.machine, lic.expiresAt, lic.usage.day, lic.usage.used),
+    token: codec.makeToken(keyB64, lic.machine, lic.expiresAt, lic.usage.day, lic.usage.used),
   };
 }
 
