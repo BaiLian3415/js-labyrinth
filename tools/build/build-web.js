@@ -369,7 +369,7 @@ function main(argv) {
     console.log('');
     console.log('  注意：dist/ 里含 src/license-secret.js 的卡密密钥（对称，随静态资源公开）。');
     console.log('  对称体系里拿到源码就能造卡——真正的强制在服务端：逐请求校验、KV 赎回登记');
-    console.log('  （一卡一机）与 JSLB_GATE_CORE 门控，见 license-codec.js 的头注释。');
+    console.log('  （一卡一次）与 JSLB_GATE_CORE 门控，见 license-codec.js 的头注释。');
     console.log('  签发密钥：环境变量 JSLB_CODE_KEY 或 .jslb-code-key（gitignore）。');
     console.log('  发卡（缺密钥会明确报错）：');
     console.log('    JSLB_CODE_KEY=<base64 密钥> node tools/issue/keygen.js --plan plus --days 365');

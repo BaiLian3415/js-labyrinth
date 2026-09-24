@@ -221,13 +221,19 @@ async function handleObfuscate(request, env) {
   // 卡密也可以放在请求体里，方便不熟请求头的调用方
   const key = request.headers.get('X-JSLB-Key') || body.key;
   if (key) {
-    const act = await licenseWeb.activate(key);
-    if (!act.ok) {
-      return json({
-        ok: false,
-        status: 401,
-        message: t('webActivateFailed', { reason: t('licReason_' + act.reason) }),
-      }, 401);
+    // 卡密是严格一次性的：先恢复本设备已有授权——同一张卡在本设备激活过后，
+    // KV 里留有有效记录，直接复用；重复 activate 会被赎回登记判成 'used'。
+    // 只有记录缺失或已过期时才真正走激活（此时传的应是另一张未赎回的卡）。
+    const had = await licenseWeb.restore({ selfAnchored: true });
+    if (!had.ok) {
+      const act = await licenseWeb.activate(key);
+      if (!act.ok) {
+        return json({
+          ok: false,
+          status: 401,
+          message: t('webActivateFailed', { reason: t('licReason_' + act.reason) }),
+        }, 401);
+      }
     }
   } else {
     const ens = await licenseWeb.ensure({ selfAnchored: true });
@@ -309,13 +315,18 @@ async function handleLicense(request) {
 
   const key = request.headers.get('X-JSLB-Key') || body.key;
   if (key) {
-    const act = await licenseWeb.activate(key);
-    if (!act.ok) {
-      return json({
-        ok: false,
-        status: 401,
-        message: t('webActivateFailed', { reason: t('licReason_' + act.reason) }),
-      }, 401);
+    // 与 /api/obfuscate 同口径：卡密严格一次性，本设备已有有效记录时直接复用，
+    // 只在未激活（记录缺失或已过期）时才用这张卡走激活。
+    const had = await licenseWeb.restore({ selfAnchored: true });
+    if (!had.ok) {
+      const act = await licenseWeb.activate(key);
+      if (!act.ok) {
+        return json({
+          ok: false,
+          status: 401,
+          message: t('webActivateFailed', { reason: t('licReason_' + act.reason) }),
+        }, 401);
+      }
     }
   }
   await licenseWeb.ensure({ selfAnchored: true });

@@ -701,10 +701,11 @@ section('一次性额度包与解除激活');
 
 // ---------------------------------------------------------------- 卡密赎回（防重复使用）
 
-section('卡密赎回（防重复使用）');
+section('卡密赎回（严格一次性，防重复使用）');
 {
-  // 一张不绑定卡密只能在一台机器上激活：第二台机器再用同一卡密即被拒。
-  // 绑定卡天然只认一台机器（签名绑定段），赎回登记对它是冗余的兜底。
+  // 每张卡密只能激活一次（严格一次性）：赎回登记一旦存在，无论是不是本机再输
+  // 入同一卡密都拒（reason=used）。旧版放行同机重激活并重置用量——Pack 卡用完
+  // 额度后同机再输一次就白得新额度，等于无限续杯，这里把口子钉死。
   const store = new Map();
   platform.setKv({
     get: async (k) => (store.has(k) ? store.get(k) : null),
@@ -723,29 +724,33 @@ section('卡密赎回（防重复使用）');
   const a1 = await licenseWeb.activate(free);
   ok(a1.ok && a1.plan === 'plus', '不绑定卡首次激活成功', JSON.stringify(a1));
   ok(store.has('redeem:77777'), '赎回登记已写入全局 KV（按编号分键）');
-  ok(store.get('redeem:77777') === mid, '赎回者即本机机器码');
+  const rec1 = JSON.parse(store.get('redeem:77777'));
+  ok(rec1 && rec1.k === free && rec1.m === mid && rec1.t > 0,
+    '登记含卡密原文、赎回机器码与时间戳');
 
-  // 同机再激活同一张：放行（同机重激活不算重复使用）
+  // 同机再激活同一张：严格一次性，拒绝（同机重复验证应走 restore，不来到这里）
   licenseWeb.resetRequestState();
   platform.setStorage(platform.newMemoryStorage());
   const a2 = await licenseWeb.activate(free);
-  ok(a2.ok, '同机再次激活同一张不绑定卡仍成功（同机重激活放行）', JSON.stringify(a2));
+  ok(!a2.ok && a2.reason === 'used',
+    '同机再次输入同一张卡密也被拒（严格一次性，reason=used）', JSON.stringify(a2));
 
-  // 模拟另一台机器已赎回：把登记改成别的机器码，再激活应被拒
+  // 旧版登记是纯机器码文本：归一成同一形状后照常拦截，一次性语义对老记录不降级
   store.set('redeem:77777', otherMid);
   licenseWeb.resetRequestState();
   platform.setStorage(platform.newMemoryStorage());
   const a3 = await licenseWeb.activate(free);
-  ok(!a3.ok && a3.reason === 'used', '已被其他机器赎回的卡再激活即被拒（reason=used）', a3.reason);
+  ok(!a3.ok && a3.reason === 'used', '旧格式赎回登记同样拒激活（reason=used）', a3.reason);
 
-  // 绑定卡：赎回登记恒为同机，不会误锁自己的卡
+  // 另一张卡不受影响：赎回登记按编号分键
   licenseWeb.resetRequestState();
   platform.setStorage(platform.newMemoryStorage());
   store.delete('redeem:88888');
   const bound = codec.issueCode(TEST_CODE_KEY, 'plus', 30, '88888', today);
   const b1 = await licenseWeb.activate(bound);
   ok(b1.ok && b1.plan === 'plus', '另一张不绑定卡激活成功');
-  ok(store.get('redeem:88888') === mid, '另一张卡也登记赎回');
+  const rec2 = JSON.parse(store.get('redeem:88888'));
+  ok(rec2 && rec2.k === bound && rec2.m === mid, '另一张卡也按卡密+机器码登记赎回');
 
   platform.setKv(null);
   platform.setStorage(null);
@@ -862,6 +867,51 @@ section('Cloudflare Worker 路由');
     body: JSON.stringify({ code: SAMPLE, options: { preset: 'low' } }),
   });
   ok(tampered.status === 401, '篡改校验码的卡密被拒（401）');
+
+  // 严格一次性 + KV 赎回登记：激活写入 {卡密, 机器码, 时间戳}；同机重复请求靠
+  // restore 复用不被误伤，异机再用同一卡密即 401。
+  {
+    const kvStore = new Map();
+    const kv = {
+      get: async (k) => (kvStore.has(k) ? kvStore.get(k) : null),
+      put: async (k, v) => { kvStore.set(k, v); },
+      del: async (k) => { kvStore.delete(k); },
+    };
+    const callKv = async (pathname, init) => {
+      const req = new Request('https://example.com' + pathname, init);
+      return worker.fetch(req, {
+        JSLB_WEB_CONFIG: '{"trialPreset":"low","trialMaxFileBytes":65536}',
+        JSLB_CODE_KEY: TEST_CODE_KEY,
+        JSLB_KV: kv,
+      }, {});
+    };
+    const code = codec.issueCode(TEST_CODE_KEY, 'plus', 30, '24680');
+    const dev1 = 'e'.repeat(32);
+    const dev2 = 'f'.repeat(32);
+    const act1 = await callKv('/api/license', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'X-JSLB-Device': dev1 },
+      body: JSON.stringify({ key: code }),
+    });
+    ok(act1.status === 200 && (await act1.json()).ok === true, '绑 KV 后激活成功');
+    const redeemRec = JSON.parse(kvStore.get('jslb:redeem:24680') || 'null');
+    ok(redeemRec && redeemRec.k === code && typeof redeemRec.m === 'string' && redeemRec.m.length === 24 && redeemRec.t > 0,
+      'KV 赎回登记含卡密原文、24 位机器码与时间戳');
+
+    const again = await callKv('/api/obfuscate', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'X-JSLB-Key': code, 'X-JSLB-Device': dev1 },
+      body: JSON.stringify({ code: SAMPLE, options: { preset: 'low' } }),
+    });
+    ok(again.status === 200, '同机重复带卡密请求走 restore 复用（200，不被 used 误伤）');
+
+    const other = await callKv('/api/license', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'X-JSLB-Device': dev2 },
+      body: JSON.stringify({ key: code }),
+    });
+    ok(other.status === 401, '同一张卡密异机激活被拒（401）');
+  }
 }
 
 // ---------------------------------------------------------------- ZIP

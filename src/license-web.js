@@ -189,46 +189,74 @@ async function storeDel(key) {
 }
 
 /**
- * 查询一张卡密已被哪台机器赎回（激活）。
+ * 查询一张卡密的赎回登记。
  *
- * 键是全局的（不按设备隔离）：防的就是"同一张不绑定卡在多台机器上各激活
- * 一次"。服务端绑了 KV 时取全局值，是真正的跨机器强制；浏览器侧无 KV 时
- * 退回本地存储，仅防同一浏览器误用，跨机器的强制由服务端网关承担。
+ * 键是全局的（不按设备隔离）：防的就是"同一张卡在多台机器上各激活一次"。
+ * 服务端绑了 KV 时取全局值，是真正的跨机器强制；浏览器侧无 KV 时退回本地
+ * 存储，仅防同一浏览器误用，跨机器的强制由服务端网关承担。
+ *
+ * 登记值是 JSON 文本 {k: 卡密原文, m: 机器码, t: 赎回时间戳}；旧版本只存
+ * 机器码纯文本，这里归一成同一形状，老记录照常拦截（一次性语义不降级）。
  *
  * @param {string} cardId 卡密编号（十进制文本）
- * @returns {Promise<string|null>} 赎回者机器码，未赎回时为 null
+ * @returns {Promise<object|null>} 登记记录 {k, m, t}，未赎回时为 null
  */
 async function getRedeemer(cardId) {
+  let v = null;
   const kv = platform.getKv();
   if (kv && typeof kv.get === 'function') {
     try {
-      const v = await kv.get('redeem:' + cardId);
-      return v || null;
+      v = await kv.get('redeem:' + cardId);
     } catch (e) {
-      return null;
+      v = null;
     }
+  } else {
+    v = platform.getStorage().get(K_REDEEM_PREFIX + cardId) || null;
   }
-  const v = platform.getStorage().get(K_REDEEM_PREFIX + cardId);
-  return v || null;
+  if (!v) return null;
+  if (typeof v === 'string' && v.charAt(0) === '{') {
+    try {
+      const d = JSON.parse(v);
+      if (d && typeof d === 'object') {
+        return {
+          k: typeof d.k === 'string' ? d.k : '',
+          m: typeof d.m === 'string' ? d.m : '',
+          t: Number.isFinite(d.t) ? d.t : 0,
+        };
+      }
+    } catch (e) { /* 损坏值落到底下的纯文本归一，宁可错杀也不放行 */ }
+  }
+  return { k: '', m: String(v), t: 0 };
 }
 
 /**
  * 登记一张卡密被某台机器赎回。键全局，跨请求、跨 isolate 持久。
+ *
+ * 存卡密原文 + 机器码 + 时间戳：卡密原文供发卡方核对"哪张卡"，机器码供核对
+ * "哪台机器"，时间戳供审计；发卡方解绑（删 jslb:redeem:<卡号> 键）时三样都要
+ * 对上，防止误删别人正在用的卡。
+ *
  * @param {string} cardId 卡密编号
+ * @param {string} code 卡密原文（归一化后的完整卡密）
  * @param {string} machineId 赎回者机器码
- * @returns {Promise<boolean>} 是否写入成功
+ * @returns {Promise<boolean>} 是否写入成功（KV 故障时为 false）
  */
-async function setRedeemer(cardId, machineId) {
+async function setRedeemer(cardId, code, machineId) {
+  const payload = JSON.stringify({
+    k: String(code == null ? '' : code),
+    m: String(machineId == null ? '' : machineId),
+    t: platform.now(),
+  });
   const kv = platform.getKv();
   if (kv && typeof kv.put === 'function') {
     try {
-      await kv.put('redeem:' + cardId, machineId);
+      await kv.put('redeem:' + cardId, payload);
       return true;
     } catch (e) {
       return false;
     }
   }
-  return platform.getStorage().set(K_REDEEM_PREFIX + cardId, machineId);
+  return platform.getStorage().set(K_REDEEM_PREFIX + cardId, payload);
 }
 
 /** 随机设备码，32 位 hex。 */
@@ -415,17 +443,21 @@ export async function activate(rawKey) {
   if (expiresAt !== codec.PERPETUAL && platform.now() > expiresAt) {
     return { ok: false, reason: 'expired' };
   }
-  // 防重复使用：每张卡密只能在一台机器上激活。不绑定的卡任何机器都可成为
-  // "那台"，但一旦被某机器激活，其他机器再用同一卡密即被拒（reason=used）。
-  // 绑定卡天然只能在一台机器上激活（上面 matchesMachine 已拦），此处对绑定卡
-  // 恒为同机赎回、放行；对不绑定卡则是真正的"一卡一机"强制。机器码必须稳定
-  // （见 deviceFingerprint）：否则同机重激活会被误判成换机而锁死自己的卡。
+  // 防重复使用：每张卡密只能激活一次（严格一次性）。赎回登记一旦存在——
+  // 无论登记的是不是本机——再次输入卡密一律拒绝（reason=used）。同机重复验证
+  // 不该走到这里：本机已有许可证记录时 restore() 先行恢复，不会重新激活。
+  //
+  // 旧版允许同机重复激活，并把用量重置为 0——Pack 卡同机用完 100 次后再输一次
+  // 卡密就白得新的 100 次，等于无限额度；严格一次性把这条口子封死。用户误清
+  // 站点数据需要重激活的，由发卡方删除 KV 里的 jslb:redeem:<卡号> 键解绑（登记
+  // 里带卡密原文与机器码，核对无误再删）。
   const redeemer = await getRedeemer(parsed.id);
-  if (redeemer && redeemer !== mid) {
+  if (redeemer) {
     return { ok: false, reason: 'used' };
   }
-  if (!redeemer) {
-    await setRedeemer(parsed.id, mid);
+  if (await setRedeemer(parsed.id, parsed.code, mid) === false) {
+    // 登记写不进去就不放行：否则这张卡等于从未赎回，换台机器还能再激活一次
+    return { ok: false, reason: 'write' };
   }
   const usage = { day: licCore.todayKey(), used: 0 };
   // 到期时间只由卡密里已签名的签发日与天数决定，激活时刻不参与——续期得重新
@@ -500,16 +532,15 @@ export async function importRecord(record) {
     }
   }
   // 防重复使用（服务端补登记路径）：浏览器本地激活后把记录推上来时，若该卡密
-  // 已被别的机器赎回，拒绝采纳。记录自称的 machine 即赎回者候选，与全局赎回
-  // 登记比对。此路径是浏览器侧绕不开服务端时的真正强制点。
+  // 已有赎回登记（无论是否本机——严格一次性，与 activate 同口径），拒绝采纳。
   const parsedRec = codec.parseCode(codeKey, record.code);
   if (parsedRec.ok) {
     const redeemer = await getRedeemer(parsedRec.id);
-    if (redeemer && redeemer !== mid) {
+    if (redeemer) {
       return { ok: false, reason: 'used' };
     }
-    if (!redeemer) {
-      await setRedeemer(parsedRec.id, mid);
+    if (await setRedeemer(parsedRec.id, parsedRec.code, mid) === false) {
+      return { ok: false, reason: 'write' };
     }
   }
   await storeSet(K_LICENSE, JSON.stringify(record));

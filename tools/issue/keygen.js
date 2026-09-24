@@ -34,9 +34,10 @@
  * 校验码 4 个字符（20 bit）＝ 截断的 HMAC(密钥, 'JSLB5/CRC|编号段|信息段')。
  * 编号段与信息段的任何一位被改都会校验失败。
  *
- * **v5 起卡密不再绑定机器**（v4 的 --bind 与绑定段已废除）："一卡一机"由服务端
- * 的赎回登记实现——每张卡第一次激活时登记赎回者机器码，其他机器再用同一卡密
- * 会被拒绝（reason=used）。见 src/license-web.js 的 activate()。
+ * **v5 起卡密不再绑定机器**（v4 的 --bind 与绑定段已废除）："一卡一次"由服务端
+ * 的赎回登记实现——每张卡第一次激活时把卡密原文 + 赎回者机器码 + 时间戳登记进
+ * KV，之后再输入同一卡密（无论是否本机）都会被拒绝（reason=used）。解绑需发卡
+ * 方删除 KV 里的 jslb:redeem:<卡号> 键。见 src/license-web.js 的 activate()。
  *
  * 签发与校验用同一把对称密钥（src/license-secret.js 的 B64_CODE_KEY）。它随
  * 源码分发——拿到源码的人能自己签发，真正的强制在服务端（KV 赎回登记 +
@@ -391,8 +392,9 @@ function main(argv) {
       case '-i': case '--id': id = bigIdArg(a, next()); break;
       case '-b': case '--bind':
         console.error('v5 起卡密不再绑定机器，--bind 已废除。');
-        console.error('"一卡一机"由服务端在首次激活时登记赎回者机器码实现：');
-        console.error('直接签发不绑定卡即可，第二台机器再用同一卡密会被拒绝（reason=used）。');
+        console.error('"一卡一次"由服务端在首次激活时登记（卡密 + 机器码 + 时间戳）实现：');
+        console.error('直接签发不绑定卡即可，同一卡密再次使用会被拒绝（reason=used），');
+        console.error('换机或误清数据需删除 KV 里的 jslb:redeem:<卡号> 键解绑。');
         process.exit(1);
         break;
       case '-p': case '--prefix': prefix = String(next() || ''); break;

@@ -105,7 +105,7 @@ const STRINGS = {
     licReason_quota: '今日混淆次数已用尽',
     licReason_nolicense: '尚未取得有效授权',
     licReason_trap: '运行环境校验未通过',
-    licReason_used: '该卡密已在其他设备上激活（每张卡密仅限一台设备使用）',
+    licReason_used: '该卡密已使用（每张卡密仅限激活一次，换机或误清数据后需联系发卡方解绑）',
     // 套餐权益
     planNotSelectable: '套餐由卡密决定，不能用命令行切换（当前套餐: {plan}，机器码: {machine}）。' +
       '升级请联系发行方换发对应套餐的卡密: node tools/issue/keygen.js --plan <名称>',
@@ -376,7 +376,7 @@ const STRINGS = {
     licReason_quota: 'the daily run quota is used up',
     licReason_nolicense: 'no valid license has been obtained yet',
     licReason_trap: 'the runtime integrity check failed',
-    licReason_used: 'this key has already been activated on another device (each key may only be used on one device)',
+    licReason_used: 'this key has already been used (each key activates exactly once; contact the issuer to unbind after a machine change or data loss)',
     // plan entitlements
     planNotSelectable: 'The plan is carried by the license key and cannot be switched from the command line ' +
       '(current plan: {plan}, machine: {machine}). Ask the vendor for a key of the plan you need: ' +
