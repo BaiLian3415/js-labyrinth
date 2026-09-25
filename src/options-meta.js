@@ -19,6 +19,7 @@ export const VALUE_OPTIONS = {
   preset: { kind: 'enum', values: PRESET_NAMES, caseInsensitive: true, group: 'basic', zh: '混淆强度预设', en: 'Strength preset' },
   identifierPrefix: { kind: 'string', group: 'basic', zh: '标识符前缀', en: 'Identifier prefix' },
   extraGlobals: { kind: 'string', group: 'basic', zh: '宿主全局白名单', en: 'Extra host globals', hintZh: '逗号分隔，如 WebSocketPair', hintEn: 'comma separated, e.g. WebSocketPair' },
+  domainLock: { kind: 'string', group: 'defense', zh: '域名锁定', en: 'Domain lock', hintZh: '逗号分隔的域名白名单；example.com 精确匹配，.example.com 含任意层子域，example.com:8443 额外锁端口；留空关闭。非授权域整池字符串乱码，锁定与解密密钥耦合', hintEn: 'comma separated; example.com exact, .example.com with subdomains, example.com:8443 locks port; empty disables. Key-coupled: unauthorized domains garble the whole string pool' },
   bannerText: { kind: 'string', group: 'basic', zh: '自定义文件头注释', en: 'Custom header banner', hintZh: '付费档可自定义；留空写默认署名与反 LLM 声明', hintEn: 'paid tiers; empty writes the default notice' },
   dirSkip: { kind: 'string', group: 'basic', guiHide: true, zh: '目录模式追加跳过', en: 'Extra skipped dirs' },
   indent: { kind: 'count', group: 'output', def: 2, zh: '缩进宽度', en: 'Indent width' },

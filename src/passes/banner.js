@@ -174,7 +174,12 @@ function guardSource(saltVar, bannerComment, ctx, opts) {
     const cref = '(typeof globalThis!=="undefined"?globalThis:typeof self!=="undefined"?self:typeof window!=="undefined"?window:typeof global!=="undefined"?global:{})'
       + '["' + opts.couple.name + '"]';
     const clean = fnv32(bannerComment);
-    P(cref + '=((0x' + (opts.couple.ok >>> 0).toString(16) + '+(' + saltVar + '-0x' + (clean >>> 0).toString(16) + '))|0);');
+    // 域名锁定（P5 第二项）：couple.q 非零时横幅写「健康常量 - Q」，由域名校验
+    // 引导（早带，任何池访问之前）在授权域补回 +Q，读取端偏移归零；非授权域
+    // 补进的是宿主散列折叠值 J≠Q，整池乱码；删除/NOP 引导调用则永远缺 Q。
+    // q 缺省 0，此时本式与改造前逐字节一致。
+    const okBase = ((opts.couple.ok - (opts.couple.q || 0)) >>> 0);
+    P(cref + '=((0x' + okBase.toString(16) + '+(' + saltVar + '-0x' + (clean >>> 0).toString(16) + '))|0);');
   }
   if (opts.wrap === false && saltVar) {
     // 无外壳：自检失败时投毒（字符串池毒键可用时）或异步抛出

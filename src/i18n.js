@@ -43,6 +43,7 @@ const STRINGS = {
     configNotObject: '配置文件顶层必须是 JSON 对象',
     configUnknownKey: '配置文件 "{file}" 含未知选项 "{k}"',
     badPreset: '未知的混淆强度预设 "{p}"；可用: {names}',
+    badDomainLock: 'domainLock 条目非法："{p}"；合法形态：example.com（精确）、.example.com（含任意层子域）、example.com:8443（锁端口）',
     // 目录批量
     dirStart: '目录批量混淆: {in} -> {out}',
     dirFail: '目录混淆失败: {msg}',
@@ -330,6 +331,7 @@ const STRINGS = {
     configNotObject: 'config file top level must be a JSON object',
     configUnknownKey: 'config file "{file}" contains unknown option "{k}"',
     badPreset: 'unknown obfuscation strength preset "{p}"; available: {names}',
+    badDomainLock: 'invalid domainLock entry: "{p}"; valid forms: example.com (exact), .example.com (with subdomains), example.com:8443 (port locked)',
 
     // directory batch
     dirStart: 'Directory batch obfuscation: {in} -> {out}',

@@ -60,6 +60,11 @@ export default {
   // （Runtime.enable 特征）、navigator.webdriver、驱动注入属性扫描；命中与
   // 反调试共链投毒。用 Puppeteer/Playwright 做端到端测试时请关掉本项。
   "antiCDP": true,
+  // 域名锁定（P5 第二项）：逗号分隔的域名白名单。example.com 精确匹配、
+  // .example.com 含任意层子域、example.com:8443 额外锁端口；留空关闭。
+  // 匹配结果密钥耦合进字符串池解密密钥：非授权域整池乱码、删引导调用授权域
+  // 自己乱码、改校验函数体被完整性校验检出。Paid 档可用（plus+）。
+  "domainLock": "",
   "sentinelRate": 0.5,
   "debugPoison": true,
   "consoleStub": false,

@@ -22,6 +22,7 @@ import logicalExpr from './passes/logicalExpr.js';
 import conditionObf from './passes/conditionObf.js';
 import deadCode from './passes/deadCode.js';
 import opaquePredicates from './passes/opaquePredicates.js';
+import domainLock from './passes/domainLock.js';
 import antiLLM from './passes/antiLLM.js';
 import antiCDP from './passes/antiCDP.js';
 import debugProtection from './passes/debugProtection.js';
@@ -147,6 +148,13 @@ function obfuscate(code, userOptions) {
     options.extraGlobals = [];
   }
 
+  // domainLock 归一化：字符串（逗号分隔）→ 数组；条目的语法校验在 pass 里做
+  if (typeof options.domainLock === 'string') {
+    options.domainLock = options.domainLock.split(',').map((s) => s.trim()).filter(Boolean);
+  } else if (!Array.isArray(options.domainLock)) {
+    options.domainLock = [];
+  }
+
   const tParse = platform.nowMs();
   const ast = parse(code, {
     sourceType: 'unambiguous',
@@ -248,6 +256,11 @@ function obfuscate(code, userOptions) {
   // 不透明谓词注入，用恒真谓词包裹真实语句
   if (options.opaquePredicates) applyPass(opaquePredicates, 'opaquePredicates');
 
+  // 域名锁定（P5 第二项）。排在 stringArray 之后：降级形态要读它登记的毒药键；
+  // 排在 integrityCheck 之前：注入的根级函数声明要进完整性哈希面。pass 内部
+  // 走早带注入（rtlib.insertHeadEarly），授权贡献在任何字符串池访问之前落位
+  if (options.domainLock && options.domainLock.length) applyPass(domainLock, 'domainLock');
+
   // Anti-LLM 加固：误导性注记 + 伪业务分支。排在 stringArray 之前，
   // 注入的字符串字面量随后会被收进池里加密，不额外留下明文
   if (options.antiLLM) applyPass(antiLLM, 'antiLLM');
@@ -313,6 +326,9 @@ function obfuscate(code, userOptions) {
         debugProtection: false, envFingerprint: false,
         antiCDP: false,
         integrityCheck: false, selfCheck: false,
+        // 域名锁定只锁载荷：外壳引导层自身不注入（payload 里的校验已经
+        // 覆盖整个产物，重复注入只会让引导代码在非授权域先崩在半路）
+        domainLock: [],
         controlFlowFlattening: true, logicalExpressions: true,
         conditionObfuscation: true, opaquePredicates: true,
         deadCodeInjection: true, objectKeyEncoding: true,

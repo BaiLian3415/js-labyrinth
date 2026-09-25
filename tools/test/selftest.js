@@ -1952,6 +1952,167 @@ process.stdout.write(a + '|' + b + '\\n');
     'antiCDP 固定 seed 可复现');
 }
 
+// ---------------------------------------------------------------- 域名锁定
+
+section('域名锁定（domainLock，密钥耦合）');
+{
+  // 探针样例：字符串全部经字符串池（high 预设 threshold=1），失配即整池腐蚀。
+  // 沙箱在 node:vm 里注入 location（hostname/host），'-' 表示无 location。
+  const dlSample = `function greet(n) {
+  return 'OK-' + n + '-END';
+}
+const a = greet('aa');
+const b = greet('bb');
+process.stdout.write(a + '|' + b + '\\n');
+`;
+  const dlWant = 'OK-aa-END|OK-bb-END\n';
+  const dlHelper = path.join(path.dirname(fileURLToPath(import.meta.url)), 'domain-sandbox.js');
+  const dlRun = (code, hostname, tag, hostWithPort) => {
+    const file = path.join(TMP, 'dl-' + tag + '.js');
+    fs.writeFileSync(file, code);
+    const args = [dlHelper, file, hostname];
+    if (hostWithPort) args.push(hostWithPort);
+    return runSync(process.execPath, args, { encoding: 'utf8', timeout: 60000 });
+  };
+  // 篡改面锚点策略：注入的校验函数会被 mangle 改名且被后续包装层搬动（用函数
+  // 名或 function 头回溯定位都不可靠），改用模板在产物里的两个唯一明文锚点——
+  // 探针属性 location.hostname 与 +Q 异或表达式（均已验证开/关构建恰好 1/0 次）
+
+  // 形态：开启时注入且为 coupled 模式；关闭时 pass 不出现、location 探针不出现
+  const rDlOn = obfuscate(dlSample, { preset: 'high', shell: false, domainLock: 'example.com', seed: 11 });
+  const rDlOff = obfuscate(dlSample, { preset: 'high', shell: false, seed: 11 });
+  const stDl = rDlOn.stats.find((s) => s.pass === 'domainLock');
+  ok(stDl && stDl.result && stDl.result.injected === true && stDl.result.mode === 'coupled'
+    && stDl.result.entries === 1 && stDl.result.exact === 1,
+    'domainLock 开启时注入且为 coupled 模式', JSON.stringify(stDl && stDl.result));
+  ok(!rDlOff.stats.some((s) => s.pass === 'domainLock'), 'domainLock 关闭时 pass 不出现');
+  ok(!rDlOff.code.includes('hostname') && rDlOn.code.includes('hostname'),
+    'location 探针只在开启时出现（域名白名单零明文）');
+
+  // 多条目解析计数：1 精确 + 1 后缀
+  const stDl2 = obfuscate(dlSample, { preset: 'high', shell: false, domainLock: 'example.com, .foo.dev', seed: 11 })
+    .stats.find((s) => s.pass === 'domainLock');
+  ok(stDl2 && stDl2.result.entries === 2 && stDl2.result.exact === 1 && stDl2.result.suffix === 1,
+    '多条目（精确+后缀）计数正确', JSON.stringify(stDl2 && stDl2.result));
+
+  // 授权主机放行（2 seed × 4 形态）：精确 / 后缀含顶点 / 后缀深层子域 / 端口精确
+  let dlAuthBad = '';
+  for (let seed = 1; seed <= 2 && !dlAuthBad; seed++) {
+    const o = { preset: 'high', shell: false, seed };
+    const cases = [
+      [obfuscate(dlSample, { ...o, domainLock: 'example.com' }).code, 'example.com', null],
+      [obfuscate(dlSample, { ...o, domainLock: '.example.com' }).code, 'example.com', null],
+      [obfuscate(dlSample, { ...o, domainLock: '.example.com' }).code, 'a.b.example.com', null],
+      [obfuscate(dlSample, { ...o, domainLock: 'example.com:8443' }).code, 'example.com', 'example.com:8443'],
+    ];
+    for (let i = 0; i < cases.length; i++) {
+      const got = dlRun(cases[i][0], cases[i][1], 'auth-' + seed + '-' + i, cases[i][2] || undefined);
+      if (got !== dlWant) { dlAuthBad = '形态 ' + i + ' seed=' + seed + ' → ' + got.slice(0, 40); break; }
+    }
+  }
+  ok(dlAuthBad === '', '授权主机放行（精确/后缀含顶点/深层子域/端口精确）', dlAuthBad);
+
+  // 非授权主机 fail-closed（2 seed × 4 形态）：错域 / 后缀点边界 / 错端口 /
+  // 无 location。coupled 模式静默腐蚀整池，不应有可定位的抛错
+  let dlDenyBad = '';
+  for (let seed = 1; seed <= 2 && !dlDenyBad; seed++) {
+    const o = { preset: 'high', shell: false, seed };
+    const cases = [
+      [obfuscate(dlSample, { ...o, domainLock: 'example.com' }).code, 'evil.com', null],
+      [obfuscate(dlSample, { ...o, domainLock: '.example.com' }).code, 'badexample.com', null],
+      [obfuscate(dlSample, { ...o, domainLock: 'example.com:8443' }).code, 'example.com', 'example.com:80'],
+      [obfuscate(dlSample, { ...o, domainLock: 'example.com' }).code, '-', null],
+    ];
+    for (let i = 0; i < cases.length; i++) {
+      const got = dlRun(cases[i][0], cases[i][1], 'deny-' + seed + '-' + i, cases[i][2] || undefined);
+      // 失配后整池乱码：解码器在乱码索引上可能越界抛错（沙箱 |THREW 前缀），
+      // 也可能静默输出乱码——都是 fail-closed 的合法表现，只要不等于正确输出
+      if (got === dlWant) { dlDenyBad = '形态 ' + i + ' seed=' + seed + ' 未拦截'; break; }
+    }
+  }
+  ok(dlDenyBad === '', '非授权主机整池腐蚀（错域/点边界/错端口/无 location）', dlDenyBad);
+
+  // 真机 Node 直跑（无 location）同样 fail-closed
+  {
+    const f = path.join(TMP, 'dl-node-real.js');
+    fs.writeFileSync(f, rDlOn.code);
+    let got;
+    try { got = runSync(process.execPath, [f], { encoding: 'utf8', timeout: 30000 }); }
+    catch (e) { got = 'THREW'; }
+    ok(got.trim() !== dlWant.trim(), 'Node 真机直跑 fail-closed（域名锁定不承诺浏览器外运行）',
+      String(got).slice(0, 40));
+  }
+
+  // 降级一：关完整性校验（couple 缺席）→ poison 模式（毒药键路径）
+  const rDlPois = obfuscate(dlSample, { preset: 'high', shell: false, integrityCheck: false, domainLock: 'example.com', seed: 7 });
+  const stPois = rDlPois.stats.find((s) => s.pass === 'domainLock');
+  ok(stPois && stPois.result.mode === 'poison', '关完整性校验时降级为 poison 模式', JSON.stringify(stPois && stPois.result));
+  ok(dlRun(rDlPois.code, 'example.com', 'pois-auth') === dlWant
+    && dlRun(rDlPois.code, 'evil.com', 'pois-deny') !== dlWant,
+    'poison 模式：授权放行、失配写毒药键腐蚀输出');
+
+  // 降级二：连池都没有 → throw 模式（裸抛，不被引导 catch 自吞）
+  const rDlThrow = obfuscate(dlSample, { preset: 'high', shell: false, integrityCheck: false, stringArray: false, domainLock: 'example.com', seed: 7 });
+  const stThrow = rDlThrow.stats.find((s) => s.pass === 'domainLock');
+  ok(stThrow && stThrow.result.mode === 'throw', '无字符串池时降级为 throw 模式', JSON.stringify(stThrow && stThrow.result));
+  ok(dlRun(rDlThrow.code, 'evil.com', 'throw-deny').includes('|THREW:'),
+    'throw 模式失配装载期抛错（引导调用裸奔不被吞）');
+  ok(dlRun(rDlThrow.code, 'example.com', 'throw-auth') === dlWant, 'throw 模式授权主机正常');
+
+  // 篡改面一：改校验函数体内的探针属性名（location.hostname 是模板在产物里
+  // 的唯一明文）。文本一变即进完整性哈希面失配，同时运行期取不到 hostname
+  // 视为失配——双路 fail-closed
+  {
+    const hit = (rDlOn.code.match(/location\.hostname/g) || []).length;
+    let got = 'NOANCHOR';
+    if (hit === 1) {
+      const tampered = rDlOn.code.replace('location.hostname', 'location.hostnamf');
+      try { got = dlRun(tampered, 'example.com', 'tamper-fn'); } catch (e) { got = 'THREW'; }
+    }
+    ok(hit === 1 && got !== dlWant,
+      '篡改校验函数体即被完整性哈希面检出（授权域自腐蚀）',
+      'hit=' + hit + ' → ' + String(got).slice(0, 40));
+  }
+
+  // 篡改面二：废掉 +Q 贡献（第二个异或半片 +1）——等价于引导调用被 NOP/删除：
+  // 授权域偏移不再归零，自己乱码（Q≠0 设计）。产物里该形态恰好一处
+  {
+    const qRe = /\+\(0x[0-9a-f]+\^0x([0-9a-f]+)\)/;
+    const mq = rDlOn.code.match(qRe);
+    let got = 'NOQ';
+    if (mq) {
+      const patched = rDlOn.code.replace(qRe, (m0, h) =>
+        m0.slice(0, m0.length - h.length - 1) + (parseInt(h, 16) + 1).toString(16) + ')');
+      try { got = dlRun(patched, 'example.com', 'tamper-q'); } catch (e) { got = 'THREW'; }
+    }
+    ok(!!mq && got !== dlWant,
+      '篡改 +Q 贡献即自毁（Q≠0，授权域偏移不再归零）',
+      (mq ? mq[0] : '未命中') + ' → ' + String(got).slice(0, 40));
+  }
+
+  // 外壳档：整件编码后语义不变（授权放行 / 失配腐蚀）
+  const rDlShell = obfuscate(dlSample, { preset: 'high', shell: true, domainLock: 'example.com', seed: 5 });
+  ok(dlRun(rDlShell.code, 'example.com', 'shell-auth') === dlWant
+    && dlRun(rDlShell.code, 'evil.com', 'shell-deny') !== dlWant,
+    '外壳档下语义不变（授权放行/失配腐蚀）');
+
+  // 门控：free 只允许空串（关闭），plus 放行；默认关闭
+  ok(plan.violations({ domainLock: 'example.com' }, 'free').length === 1, 'free 档非空 domainLock 被闸门锁死');
+  ok(plan.violations({ domainLock: '' }, 'free').length === 0, 'free 档关闭（空串）放行');
+  ok(plan.violations({ domainLock: 'example.com' }, 'plus').length === 0, 'plus 档 domainLock 放行');
+  ok(obfuscateMod.DEFAULTS.domainLock === '', 'domainLock 默认关闭（空串）');
+
+  // 非法条目：构建立即失败（不得静默降级——横幅已按 OK-Q 写死）
+  throws(() => obfuscate(dlSample, { preset: 'high', shell: false, domainLock: 'http://a.com/x' }), '带路径的条目报错');
+  throws(() => obfuscate(dlSample, { preset: 'high', shell: false, domainLock: '.a.com:443' }), '后缀+端口报错');
+  throws(() => obfuscate(dlSample, { preset: 'high', shell: false, domainLock: 'a..b.com' }), '空标签报错');
+
+  // 可复现：固定 seed 逐字节一致
+  ok(obfuscate(dlSample, { preset: 'high', shell: false, domainLock: '.example.com', seed: 97 }).code ===
+    obfuscate(dlSample, { preset: 'high', shell: false, domainLock: '.example.com', seed: 97 }).code,
+    'domainLock 固定 seed 可复现');
+}
+
 // ---------------------------------------------------------------- 收尾
 
 section('其他');

@@ -197,6 +197,7 @@ curl -s -X POST https://<host>/api/obfuscate \
 | 代码变换 | `vm` / `wasm` / `controlFlow` / `objectKeys` / `templateToConcat` / `numberObf` / `logicalExpr` / `conditionObf` / `deadCode` / `opaquePredicates` / `functionWrapper` / `callProxy` / `mangle` | `numberObf` 把整数字面量改写成取值恒等的算术/位运算表达式（`--number-obfuscation-threshold` 控制命中率） |
 | 反调试 | `debugProtection` + `envFingerprint` | 三类检测：环境侧信号（尺寸/时差/栈形态）、内建函数"原生文本"、内建函数"对象身份"（Function、defineProperty、getOwnPropertyDescriptor、call、eval 在头部快照后运行期比对），外加描述符 canary；命中走隐蔽断点 → 有界拖慢 → 确认投毒三级响应 |
 | Anti-CDP | `antiCDP` | Chrome DevTools Protocol / 自动化框架（Puppeteer、Playwright、ChromeDriver、Selenium）检测：console 序列化探针（Runtime.enable 下 log 触发 1 次访问器、debug 触发 2 次，累计 ≥2 即硬证据）、`navigator.webdriver`、驱动注入属性精确比对与 `$cdc_*` 子串扫描；V2/V3 由定时器周期复查，命中与反调试共链投毒。原生 console 引用在反调试失效化之前捕获，consoleStub 不影响探针。用自动化做端到端测试的构建请关闭本项 |
+| 域名锁定 | `domainLock` | 产物只允许在指定域名（及可选端口）上运行。白名单逐构建随机盐散列成数值表内嵌（产物里没有任何域名明文），匹配结果与字符串池解密密钥耦合：授权主机给健康载体补 +Q 归零偏移、字符串正常；非授权主机整池静默乱码，没有可 NOP 的检测分支。详见下文「域名锁定」 |
 | 自防御 | `stringArray` 自检 + `integrityCheck` | 装配期全池校验和 fail-closed，访问期再按抽样门重算旋转后的校验和（动态 xor 组查"密文与明文等长"不变式）；`integrityCheck` 对根级函数声明做 64 位双通道哈希，失配只置毒药标志 |
 | 运行时保护 | `integrityCheck` / `vm` / `wasm` / `shell` / `rtlib` | 装载时的原生性探针（内建成员被换钩子即投毒）、入口交叉校验带一次性闩锁、外壳算术依赖式防篡改、原生调用收敛进 RT 内核 |
 
@@ -208,6 +209,32 @@ curl -s -X POST https://<host>/api/obfuscate \
 限制：访问器声明若被 vm / wasm 搬进嵌套函数体（高档预设常见），这一处就放弃覆盖——
 那种体往往还被 wasm 的特征匹配依赖，硬插进去会失配。宁可少覆盖一处，也不拿假失配
 投毒去换覆盖率。
+
+### 域名锁定（`domainLock`）
+
+逗号分隔的域名白名单（Free 档不可用，Plus 及以上可开）：`example.com` 精确匹配、
+`.example.com` 含该主机与任意层子域（点边界切分，`badexample.com` 不会误中）、
+`example.com:8443` 额外锁端口（对 `location.host` 比对；后缀条目不支持端口）。
+
+与 obfuscator.io 的 `domainLock`（明文域名数组 + 运行期 if 比对 + throw）的本质
+区别在于匹配结果是**密钥耦合**的，与完整性校验共用同一条链路：
+
+- 构建期把白名单逐条散列成 32 位数值（逐构建随机盐），掩码编码后内嵌；同时选出
+  授权贡献 Q（随机常量，拆成两个异或半片），横幅自检按「健康常量 − Q」写载体；
+- 运行期校验函数是纯数值匹配（没有任何字符串字面量，域名表不以明文出现）：授权
+  主机给载体 +Q，字符串池读取端偏移归零、一切正常；非授权主机给载体加「宿主散列
+  经 R 轮折叠」的 J，偏移非零，**整池字符串静默变乱码**——没有报错、没有抛点、
+  没有可 NOP 的 if 分支，fail-closed；
+- 校验函数是根级函数声明，自动进入 `integrityCheck` 的哈希面：篡改函数体即失配
+  投毒；删除引导调用则 +Q 缺失，授权域自己乱码（Q≠0 设计）；硬编码 J 使其等于 Q
+  需要对折叠链做 2^32 × R 轮的离线搜索；换域名重签等价于重新混淆。
+
+降级链（按强度递减）：`coupled`（默认，密钥耦合）→ `poison`（关了完整性校验时，
+失配写毒药键，有可清除的标志）→ `throw`（连字符串池都没有时，装载期显式抛错，
+仅兜底）。
+
+限制：Node / 无 `location` 环境视 hostname 为空、永不匹配——域名锁定的构建本来
+就不承诺可在浏览器外运行；做无浏览器沙箱的自动化测试时不要开本项。
 
 ## 增强保护系统（内核档 / 自定义 RT / 横幅 / 碎片化 / Anti-LLM）
 

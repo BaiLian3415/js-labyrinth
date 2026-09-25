@@ -67,7 +67,8 @@ export default {
     "rtDepth": 1,
     "stringScatter": false,
     "antiLLM": false,
-    "bannerText": ''
+    "bannerText": '',
+    "domainLock": ''
   },
   "medium": {
     "compact": true,
@@ -137,7 +138,8 @@ export default {
     "rtDepth": 2,
     "stringScatter": false,
     "antiLLM": false,
-    "bannerText": ''
+    "bannerText": '',
+    "domainLock": ''
   },
   "high": {
     "compact": true,
@@ -207,7 +209,8 @@ export default {
     "rtDepth": 2,
     "stringScatter": false,
     "antiLLM": false,
-    "bannerText": ''
+    "bannerText": '',
+    "domainLock": ''
   },
   "max": {
     "compact": true,
@@ -277,6 +280,7 @@ export default {
     "rtDepth": 4,
     "stringScatter": true,
     "antiLLM": true,
-    "bannerText": ''
+    "bannerText": '',
+    "domainLock": ''
   }
 };
