@@ -1,6 +1,7 @@
 import t from '../ast/types.js';
 import rand from '../utils/rand.js';
-const { uniqueName } = rand;
+const { uniqueName, shuffle, RESERVED } = rand;
+
 /**
  * 标识符重命名。
  *
@@ -16,7 +17,39 @@ const { uniqueName } = rand;
  *
  * arguments、import 的模块绑定以及被 export 的本地名字一律跳过，对外接口保持
  * 不变。
+ *
+ * 命名策略由 `nameStyle` 选：默认 `random`（上面的随机混族长名，防指纹优先），
+ * `short` 走下面的 minifier 式短名池（体积优先，见那里的说明）。
  */
+
+/**
+ * minifier 式短名池（`nameStyle: 'short'`）。
+ *
+ * 随机名平均 8~11 字符（`_0x7e925a43e`、CJK 字形、`c0…` 前缀各不相同），改名
+ * 反而把产物撑大——实测 src/obfuscate.js 关掉 mangle 比开着小 4.9 KB，而 terser
+ * 同输入的产物只有"纯压缩"配置的 42%。这里改成 minifier 的取法：
+ *
+ *   - 长度递增：a…Z$_ → aa… → aaa…（54 个单字符起步，小文件全用单字符）；
+ *   - 每档字母顺序**逐构建打乱**：不是固定的 a/b/c 序列——同 seed 可复现、换 seed
+ *     换一套字母，不给"产物必然从 a 开始"的可识别指纹；
+ *   - **按引用次数从多到少发放**：最常出现的绑定拿最短的名，这是压缩率的关键
+ *     （terser 同款策略）；
+ *   - 全局唯一、不复用作用域：本 pass 直接改节点名、不维护作用域图，要复用就得
+ *     做冲突分析，得不偿失；
+ *   - `used` 与关键字一律跳过：`used` 里既有源码绑定名，也有**未声明的全局引用**
+ *     （jQuery 的 `$`、`_` 之类），不跳过就会用同名局部变量把全局遮蔽掉。
+ */
+const SHORT_ALPHA = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ$_';
+
+function* shortNames() {
+  const tier = () => shuffle(SHORT_ALPHA.split(''));
+  const a1 = tier();
+  const a2 = [tier(), tier()];
+  const a3 = [tier(), tier(), tier()];
+  yield* a1;
+  for (const x of a2[0]) for (const y of a2[1]) yield x + y;
+  for (const x of a3[0]) for (const y of a3[1]) for (const z of a3[2]) yield x + y + z;
+}
 
 function collectExportedFromProgram(path, exported) {
   const node = path.node;
@@ -241,10 +274,29 @@ export default function mangle(ast, options, ctx) {
 
   traverse(ast, visitors);
 
+  // 命名策略：random（默认，随机混族长名）或 short（minifier 式短名池）
+  const pool = options.nameStyle === 'short' ? shortNames() : null;
+  const nextShort = () => {
+    for (;;) {
+      const it = pool.next();
+      if (it.done) return null;
+      if (used.has(it.value) || RESERVED.has(it.value)) continue;
+      used.add(it.value);
+      return it.value;
+    }
+  };
+  if (pool) {
+    // 引用次数多的先发短名。同权重保持原顺序，产物仍然只由 seed 决定。
+    const weight = (b) => ((b.referencePaths && b.referencePaths.length) || 0)
+      + ((b.constantViolations && b.constantViolations.length) || 0);
+    targets.sort((a, b) => weight(b.binding) - weight(a.binding));
+  }
+
   let renamed = 0;
   for (const { name, binding } of targets) {
     if (reservedRe.length && reservedRe.some((re) => re.test(name))) continue;
-    const newName = uniqueName(used, prefix);
+    // 短名池用尽（>15 万个绑定，实际不可达）时退回随机名，不静默复用名字
+    const newName = pool ? (nextShort() || uniqueName(used, prefix)) : uniqueName(used, prefix);
     try {
       // 声明点。同一条绑定的重复声明（var 重复、Annex B 提升上来的块级函数
       // 声明）都要改，漏掉任何一处都会留下旧名，运行期读到的就不是同一个绑定

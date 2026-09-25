@@ -107,4 +107,4 @@ function uniqueName(used, prefix) {
   return name;
 }
 
-export default { setSeed, rand, randInt, randHex, randAlpha, shuffle, uniqueName, HEXD };
+export default { setSeed, rand, randInt, randHex, randAlpha, shuffle, uniqueName, HEXD, RESERVED };

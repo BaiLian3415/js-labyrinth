@@ -18,6 +18,7 @@ export const VALUE_OPTIONS = {
   lang: { kind: 'enum', values: [...LANGS], group: 'basic', guiHide: true, zh: '提示语言', en: 'Message language' },
   preset: { kind: 'enum', values: PRESET_NAMES, caseInsensitive: true, group: 'basic', zh: '混淆强度预设', en: 'Strength preset' },
   identifierPrefix: { kind: 'string', group: 'basic', zh: '标识符前缀', en: 'Identifier prefix' },
+  nameStyle: { kind: 'enum', values: ['random', 'short'], group: 'structure', zh: '命名策略', en: 'Naming style', hintZh: 'short：minifier 式短名（长度递增、字母逐构建打乱、按引用次数分配），体积优先；random：随机混族长名，防指纹优先（默认）', hintEn: 'short: minifier-style short names (shortest first, shuffled per build, assigned by reference count) for size; random: mixed-family long names to defeat fingerprinting (default)' },
   extraGlobals: { kind: 'string', group: 'basic', zh: '宿主全局白名单', en: 'Extra host globals', hintZh: '逗号分隔，如 WebSocketPair', hintEn: 'comma separated, e.g. WebSocketPair' },
   reservedNames: { kind: 'string', group: 'basic', zh: '保留名（正则）', en: 'Reserved names', hintZh: '逗号分隔的正则；匹配的变量/函数名不改名，如 ^__webpack, ^process$', hintEn: 'comma separated regex; matching identifiers are not renamed, e.g. ^__webpack, ^process$' },
   reservedStrings: { kind: 'string', group: 'basic', zh: '保留字符串（正则）', en: 'Reserved strings', hintZh: '逗号分隔的正则；匹配的字符串字面量不收集/不拆分/不编码', hintEn: 'comma separated regex; matching string literals are left untouched' },

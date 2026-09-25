@@ -69,6 +69,9 @@ const yieldExpression = (argument, delegate) => node('YieldExpression', { argume
 const awaitExpression = (argument) => node('AwaitExpression', { argument });
 const parenthesizedExpression = (expression) => node('ParenthesizedExpression', { expression });
 const metaProperty = (meta, property) => node('MetaProperty', { meta, property });
+// 动态 import()：callee 位置上的 Import 节点（沿用 Babel 旧命名）。它不是标识符，
+// 所以既不会被重命名、也不会被当成对某个名为 import 的全局函数的调用。
+const importNode = () => node('Import', {});
 
 const expressionStatement = (expression) => node('ExpressionStatement', { expression });
 const variableDeclaration = (kind, declarations) => node('VariableDeclaration', { kind, declarations });
@@ -164,7 +167,7 @@ Object.assign(t, {
   logicalExpression, assignmentExpression, conditionalExpression, callExpression, optionalCallExpression,
   newExpression, memberExpression, optionalMemberExpression, sequenceExpression, spreadElement, restElement,
   assignmentPattern, objectPattern, arrayPattern, yieldExpression, awaitExpression, parenthesizedExpression,
-  metaProperty, expressionStatement, variableDeclaration, variableDeclarator, blockStatement, emptyStatement,
+  metaProperty, import: importNode, expressionStatement, variableDeclaration, variableDeclarator, blockStatement, emptyStatement,
   ifStatement, forStatement, forInStatement, forOfStatement, whileStatement, doWhileStatement, switchStatement,
   switchCase, breakStatement, continueStatement, returnStatement, throwStatement, tryStatement, catchClause,
   debuggerStatement, labeledStatement, withStatement, functionDeclaration, classBody, classMethod, classProperty,

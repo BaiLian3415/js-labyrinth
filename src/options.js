@@ -7,6 +7,10 @@ export default {
   "simplify": false,
   "identifierPrefix": "_0x",
   "mangle": true,
+  // 命名策略（Paid 档，plus+；free 档闸门锁死 random）。random 是原来的随机混族
+  // 长名（防指纹优先）；short 走 minifier 式短名池：长度递增、字母逐构建打乱、
+  // 按引用次数分配，实测把"纯压缩"产物体积从 2.40× terser 降到 1.18~1.58×。
+  "nameStyle": "random",
   // 属性名重命名（renameProperties，safe 模式）：改成员访问 obj.foo / 对象键
   // {foo:1} / 方法名 / 类方法·类属性名的属性名。只改「程序内定义 ∩ 访问」的
   // 属性，叠加高风险名白名单。与外部代码共享属性可能被破坏（safe 模式固有局限）。

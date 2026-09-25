@@ -23,6 +23,9 @@ export default {
       "antiCDP": false,
       "domainLock": [""],
       "simplify": false,
+      "nameStyle": [
+        "random"
+      ],
       "renameProperties": false,
       "debugPoison": false,
       "selfDefending": false,

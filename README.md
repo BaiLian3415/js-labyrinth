@@ -257,8 +257,11 @@ curl -s -X POST https://<host>/api/obfuscate \
 混淆前对用户代码做一轮语义保守的 AST 压缩（对标 obfuscator.io 的 `simplify`）：
 常量折叠（数值/字符串/位运算/严格比较/一元/逻辑/条件表达式，两侧都是字面量才折）、
 死代码消除（`if(false)`/`while(false)` 整块删除、`if(true)` 取保留下来的那一支、
-`if(false)A else B` 取 `B`）、空语句清除、相邻 `var` 声明合并。只有缩小或不改产物
-体积，确定性、无随机，固定 seed 可复现。
+`if(false)A else B` 取 `B`）、空语句清除、相邻 `var` 声明合并、**无用声明消除
+（DCE）**——没有任何读取引用、初始化器也无副作用的变量/函数/类声明整条删掉，且
+删除不会丢掉副作用（有副作用的初始化、有写入的绑定、模块导出面、脚本顶层的全局
+属性一律保留；`with` 出现时整体跳过）。只有缩小或不改产物体积，确定性、无随机，
+固定 seed 可复现。
 
 保守边界（宁可少折不可折错）：除零、取模 0、幂溢出这类 NaN/Infinity 不折；避开
 `-0`（与 0 在 `Object.is` 下不等）；`==`/`!=` 只在两侧同类型字面量时折；`&&`/`||`/
@@ -266,8 +269,37 @@ curl -s -X POST https://<host>/api/obfuscate \
 `for(;false;)` 不删（init 的副作用必须保留）。
 
 排序在整条流水线最前（parse 之后、任何注入之前），只作用于用户代码，与其它混淆
-pass 无冲突。Paid 档（plus+）可显式开启，free 档闸门锁死 `false`；与既有 `compact`
-（去空白）、`mangle`（短名）、`escapeNonAscii` 叠加，构成完整压缩能力。
+pass 无冲突。Paid 档（plus+）可显式开启，free 档闸门锁死 `false`。
+
+### 压缩能力：真的能当 minifier 用（`simplify` + `nameStyle`）
+
+默认 `mangle` 走的是**随机混族长名**（`_0x7e925a43e`、CJK 字形、`c0…` 前缀），命名
+本身就是一层防指纹设计——代价是它会把产物撑大，实测比不改名还大 4.9 KB/16 KB。
+把命名策略切到 `nameStyle: 'short'` 就换成 minifier 的取法：长度递增（a…Z\$\_ → aa…）、
+每档字母顺序逐构建打乱（同 seed 可复现、换 seed 换一套字母）、**按引用次数从多到少
+发放**（最常出现的绑定拿最短的名）、已占用的名字与关键字一律跳过。
+
+两者叠加 `compact`（去空白）就是"当 minifier 用"的完整配置。同输入实测（相对 terser
+`compress+mangle` 的倍数，越小越好；`npm run bench:minify` 可复现，两个参考实现都是
+`npm install --no-save` 临时装的）：
+
+| 输入 | 原始 | terser | 我们（random 名） | 我们（short+DCE） | obfuscator.io（compact+simplify） |
+| --- | --- | --- | --- | --- | --- |
+| `src/obfuscate.js` | 15.8 KB | 7.8 KB | 2.40× | **1.58×** | 1.64× |
+| `src/passes/vm.js` | 93.0 KB | 44.5 KB | 1.95× | **1.19×** | 1.89× |
+| `src/ast/parser.js` | 58.0 KB | 34.1 KB | 1.56× | **1.18×** | 1.49× |
+| bundle 式模块（含死代码） | 9.9 KB | 0.3 KB | 68.3× | **3.5 KB** | 13.6 KB |
+
+读法与边界：真实源码上我们落在 terser 的 1.18~1.58×，同口径压过 obfuscator.io
+（他们不做无用声明消除，也没有短名）；bundle 那行的倍数被 terser 的内联能力拉大
+（它把整段折成 0.3 KB），可比的是绝对体积 3.5 KB 对 13.6 KB。短名不复用作用域
+（本 pass 直接改节点、不维护作用域图），所以密集小作用域的代码会比 terser 略胖；
+terser 的表达式级优化（内联、序列化、丢空 `if`）本工具不做，这是"1.1~1.6× 而不是
+1.0×"的主因。
+
+排序与开关：`nameStyle` 默认 `random`（不动既有产物基线），free 档闸门锁死 random，
+Plus 及以上可切 `short`；`simplify` 同样 plus+ 可开。混淆档不建议切短名——随机长名
+是给"防指纹"用的，切短等于把混族命名这层设计丢掉。
 
 ## 增强保护系统（内核档 / 自定义 RT / 横幅 / 碎片化 / Anti-LLM）
 
@@ -395,8 +427,9 @@ ESM 载荷与显式 `shell:false` —— 没有外壳可互锁，改为毒化字
 续费、只需要跑一批的场景。用尽后不会恢复，需要再买一张。
 
 另有参与闸门的新选项：Free 只能留空横幅（ 仅允许 ``）、外壳形态锁在 `classic`、
-关掉碎片化与 Anti-LLM；Plus 可以自定义横幅、把外壳形态切成 `jsfuck`、开碎片化与
-Anti-LLM，但 WASM 解释器内核档（）与更深的运行时链（ > 4）留给 Team/Business。
+命名策略锁在 `random`、关掉碎片化与 Anti-LLM；Plus 可以自定义横幅、把外壳形态切成
+`jsfuck`、把命名策略切成 `short`、开碎片化与 Anti-LLM，但 WASM 解释器内核档（）与
+更深的运行时链（ > 4）留给 Team/Business。
 
 Plus 的预设上限是 `high`，闸门正好卡在 `high` 预设的取值上（能用整套 high，但不能把
 单项往上调），只关掉 `consoleStub` 一个开关；Free 则关掉十二个。Team 与 Business 同为

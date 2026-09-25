@@ -34,6 +34,7 @@
     "selftest": "node tools/test/selftest.js",
     "webfp": "node tools/test/webfp.js",
     "bench": "node tools/test/bench.js",
+    "bench:minify": "node tools/test/minify-bench.js",
     "semantics": "node tools/test/semantics.js",
     "test": "node tools/test/selftest.js",
     "build:web": "node tools/build/build-web.js",

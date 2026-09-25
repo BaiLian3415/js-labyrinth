@@ -12,6 +12,8 @@
  *   目录模式   递归混淆、镜像目录结构、非 JS 文件按开关复制或跳过
  *   闸门       试用/低档卡密的预设上限与逐项闸门按预期拦截
  *   外壳形态   jsfuck 形态编解码往返、产物可执行、多层叠加与横幅互锁、超限构建失败
+ *   压缩能力   simplify 的无用声明消除边界、nameStyle=short 的体积与语义、动态 import 解析
+ *               （与 terser 的体积对比见 npm run bench:minify）
  *   许可证     codec 签发-校验往返、篡改卡密/用量/套餐一律失败
  *   机器码     服务端按卡密编号签发并永久绑定（同卡恒等、异卡不同、激活前后一致）
  *   网页链路   runJob 在浏览器侧等价路径上可跑通（授权、限额、记账）
@@ -2202,6 +2204,121 @@ process.stdout.write(String(a) + '|' + String(b) + '|' + c + '\\n');`, 'Infinity
   ok(obfuscate(simCases[0][0], { preset: 'high', shell: false, simplify: true, seed: 97 }).code ===
     obfuscate(simCases[0][0], { preset: 'high', shell: false, simplify: true, seed: 97 }).code,
     'simplify 固定 seed 可复现');
+}
+
+// ---------------------------------------------------------------- 无用声明消除（DCE）
+
+section('AST 简化：无用声明消除（DCE）');
+{
+  // 单元口径：直接 parse → simplify → generate，看得到名字，边界才说得清
+  const parser = (await import('../../src/ast/parser.js')).default;
+  const generate = (await import('../../src/ast/generator.js')).default;
+  const trav = (await import('../../src/ast/traverse.js')).default;
+  const simp = (await import('../../src/passes/simplify.js')).default;
+  const runSimpl = (src) => {
+    const ast = parser.parse(src, { sourceType: 'unambiguous', allowReturnOutsideFunction: false, plugins: ['topLevelAwait'] });
+    const stat = simp(ast, { simplify: true }, { traverse: trav });
+    return { out: generate(ast, { compact: true, escapeNonAscii: false }).code, stat };
+  };
+
+  const mod = runSimpl('export const K = 1;\nfunction priv() { return 2; }\nconst unused = { a: 1 };\n'
+    + 'const used = 3;\nexport function api() { return used; }');
+  ok(!/\bpriv\b/.test(mod.out) && !/\bunused\b/.test(mod.out), 'DCE：模块顶层未用函数/变量删除', mod.out);
+  ok(/\bapi\b/.test(mod.out) && /\bused\b/.test(mod.out) && /\bK\b/.test(mod.out),
+    'DCE：导出面与在用声明保留', mod.out);
+
+  const script = runSimpl('var topUnused = 1;\nfunction outer() { var innerUnused = 2; function innerFn() { return 3; } return 4; }\n'
+    + 'console.log(outer());');
+  ok(/\btopUnused\b/.test(script.out), 'DCE：脚本顶层全局属性保留', script.out);
+  ok(!/\binnerUnused\b/.test(script.out) && !/\binnerFn\b/.test(script.out), 'DCE：函数内未用声明删除', script.out);
+
+  const guarded = runSimpl('function f() { var keep = g(); return keep; }\nfunction g() { return 5; }\n'
+    + 'function w() { var n = 1; n = 7; return n; }\nfunction h() { var folded = 1 + 2 * 3; return 9; }\n'
+    + 'console.log(f() + w() + h());');
+  ok(/\bkeep\b/.test(guarded.out), 'DCE：有副作用的初始化保留', guarded.out);
+  ok(/\bn\b/.test(guarded.out), 'DCE：有写入的绑定保留', guarded.out);
+  ok(!/\bfolded\b/.test(guarded.out), 'DCE：纯字面量初始化且无人读取的变量删除', guarded.out);
+
+  const withSrc = runSimpl('function f(o) { with (o) { var x = 1; } return 1; }\nconsole.log(f({}));');
+  ok(/\bx\b/.test(withSrc.out), 'DCE：出现 with 时整体跳过（绑定分析不可靠）', withSrc.out);
+
+  // 端到端：产物仍可执行，且副作用不多不少
+  {
+    const src = 'var unusedTop = 1;\n'
+      + 'function outer() { var unusedInner = 2; function innerUnused() { return 3; } return 4; }\n'
+      + 'function keepsSideEffect() { var keep = bump(); return keep; }\n'
+      + 'function bump() { globalThis.__dce = (globalThis.__dce || 0) + 1; return 5; }\n'
+      + 'process.stdout.write("dce=" + outer() + keepsSideEffect() + globalThis.__dce + "\\n");';
+    const want = runNode(src, 'dce-raw.js').trim();
+    const code = obfuscate(src, { preset: 'low', shell: false, simplify: true, seed: 3 }).code;
+    let got = 'THREW';
+    try { got = runNode(code, 'dce-obf.js').trim(); } catch (e) { got = 'THREW'; }
+    ok(got === want && want === 'dce=451', 'DCE 端到端语义不变（副作用不多不少）', got + ' ≠ ' + want);
+  }
+}
+
+// ---------------------------------------------------------------- 命名策略与解析覆盖面
+
+section('命名策略（nameStyle）与动态 import');
+{
+  // 动态 import() 与 import.meta：解析、生成、运行三处都要通（此前缺 t.import builder）
+  {
+    const src = 'const HERE = import.meta.url;\n'
+      + 'export async function load(p) { const m = await import(p); return m.default; }\n'
+      + 'export function where() { return HERE.slice(0, 5); }\n'
+      + 'const mod = await import("data:text/javascript,export default 41");\n'
+      + 'process.stdout.write("dyn=" + (mod.default + 1) + " meta=" + where() + "\\n");';
+    const want = runNode(src, 'import-raw.mjs').trim();
+    ok(want.startsWith('dyn=42 meta=file:'), '动态 import / import.meta 原始可运行（基准）', want);
+    const code = obfuscate(src, { preset: 'low', seed: 5 }).code;
+    ok(code.includes('import(') && code.includes('import.meta'),
+      '动态 import / import.meta 在产物里保留', code.slice(0, 80));
+    let got = 'THREW';
+    try { got = runNode(code, 'import-obf.mjs').trim(); } catch (e) { got = 'THREW'; }
+    ok(got === want, '混淆后动态 import / import.meta 行为一致', got);
+  }
+
+  // 短名：同输入明显更小、产物可执行、同 seed 可复现
+  const namey = 'function computeTotals(records) { var runningTotal = 0; var index = 0;\n'
+    + '  while (index < records.length) { var currentRecord = records[index];\n'
+    + '    runningTotal += currentRecord.weight * (currentRecord.count + 1); index++; }\n'
+    + '  return runningTotal; }\n'
+    + 'function describeResult(value) { var label = value > 100 ? "big" : "small"; return label + ":" + value; }\n'
+    + 'process.stdout.write(describeResult(computeTotals([{ weight: 2, count: 3 }, { weight: 5, count: 4 }])) + "\\n");';
+  {
+    const want = runNode(namey, 'namestyle-raw.js').trim();
+    const random = obfuscate(namey, { preset: 'low', shell: false, nameStyle: 'random', seed: 9 });
+    const short = obfuscate(namey, { preset: 'low', shell: false, nameStyle: 'short', seed: 9 });
+    ok(short.code.length < random.code.length * 0.8, '短名产物明显小于随机名',
+      random.code.length + ' → ' + short.code.length);
+    ok(!/computeTotals|describeResult|runningTotal/.test(short.code), '短名把用户标识符全部换掉', '');
+    let got = 'THREW';
+    try { got = runNode(short.code, 'namestyle-short.js').trim(); } catch (e) { got = 'THREW'; }
+    ok(got === want && want === 'small:33', '短名产物语义不变', got + ' ≠ ' + want);
+    ok(obfuscate(namey, { preset: 'low', shell: false, nameStyle: 'short', seed: 9 }).code === short.code,
+      '短名同 seed 逐字节可复现');
+  }
+
+  // 未声明的全局引用不能被短名遮蔽（$ / _ 这类）
+  {
+    const src = 'globalThis.$ = 7; globalThis._ = 8;\n'
+      + 'var alpha = $; var beta = _; var gamma = 1; var delta = 2;\n'
+      + 'process.stdout.write("globals=" + (alpha + beta + gamma + delta) + "\\n");';
+    const want = runNode(src, 'namestyle-globals-raw.js').trim();
+    // $ / _ 是未声明的宿主全局（不是内建），所以显式进 extraGlobals 白名单
+    const code = obfuscate(src, {
+      preset: 'low', shell: false, nameStyle: 'short', seed: 11, extraGlobals: ['$', '_'],
+    }).code;
+    let got = 'THREW';
+    try { got = runNode(code, 'namestyle-globals.js').trim(); } catch (e) { got = 'THREW'; }
+    ok(got === want && want === 'globals=18', '短名不遮蔽未声明的全局引用', got + ' ≠ ' + want);
+  }
+
+  // 闸门与默认值
+  ok(plan.violations({ nameStyle: 'short' }, 'free').length === 1, 'free 档 nameStyle=short 被闸门锁死');
+  ok(plan.violations({ nameStyle: 'random' }, 'free').length === 0, 'free 档 nameStyle=random 放行');
+  ok(plan.violations({ nameStyle: 'short' }, 'plus').length === 0, 'plus 档 nameStyle=short 放行');
+  ok(obfuscateMod.DEFAULTS.nameStyle === 'random', 'nameStyle 默认 random');
 }
 
 // ---------------------------------------------------------------- 属性名重命名与保留名单
