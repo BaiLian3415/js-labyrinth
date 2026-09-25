@@ -84,6 +84,11 @@ export default {
   "selfCheck": true,
   "shell": true,
   "shellDepth": 1,
+  // 外壳形态（Paid 档，plus+；free 档闸门锁死 classic）。classic 是原来的
+  // 明文引导器形态；jsfuck 把「密钥流生成 + 校验尾差量」那段核心编成纯 JSFuck
+  // 表达式（只由 [ ] ( ) ! + { } 八个字符构成），引导器其余部分不变。代价是
+  // 每层固定多约 45.4 KB（实测 79 字符/字节 × 487 字节核心 + 8.1K 固定开销）。
+  "shellForm": "classic",
   "extraGlobals": [],
   // reservedNames / reservedStrings：正则保留名单。匹配的绑定名不改名、匹配的
   // 字符串字面量不收集/不拆分/不编码。逗号分隔的正则文本（减混淆的兼容性功能，

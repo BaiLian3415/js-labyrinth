@@ -359,7 +359,10 @@ function obfuscate(code, userOptions) {
       });
       const sr = shellWrap(finalCode, options, (src) => obfuscate(src, bootOpts), cjs);
       finalCode = sr.code;
-      stats.push({ pass: 'shell', result: { layers: sr.layers, cjs } });
+      stats.push({
+        pass: 'shell',
+        result: { layers: sr.layers, cjs, form: options.shellForm === 'jsfuck' ? 'jsfuck' : 'classic', jsfuckChars: sr.jsfuckChars },
+      });
     }
   }
   const shellMs = platform.nowMs() - tShell;
@@ -385,6 +388,9 @@ function obfuscate(code, userOptions) {
       cjs: payloadCjs,
       // 只有套了外壳的载荷才用盐互锁；ESM 或显式 shell:false 时只做守卫
       wrap: !isModuleSrc && options.shell !== false,
+      // 横幅层是最外层，也是最显眼的一层：壳形式必须一路传到它这里，
+      // 否则 jsfuck 产物只有内层是 JSFuck、外包一层 classic 引导
+      shellForm: options.shellForm,
       poisonKey: progNode.__poisonKey,
       ctx,
     });

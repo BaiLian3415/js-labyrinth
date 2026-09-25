@@ -143,6 +143,8 @@ const STRINGS = {
     vmWasmTooManyParams: 'vm: 形参超过 64 个，无法进入 WASM 解释器内核档',
     badBannerText: '自定义文件头注释非法：不得包含 "*/"，长度不得为 0 或以空白开头（收到 {p}）',
     bannerTooLong: '自定义文件头注释过长（上限 {max} 字符，收到 {n}）',
+    jsfuckTooBig: 'JSFuck 壳形式的核心表达式超限：实际 {n} KB，上限 {max} KB'
+      + '（核心源码 {bytes} 字符，约 {rate} 字符/字节）——请缩小 JSFUCK_CORE 或调高 JSFUCK_MAX_CHARS',
     vmUnknownOpcode: 'vm: 未知操作码 {kind}',
     badStringArrayEvolve: 'stringArrayEvolve 非法: {v}（可用 "each" / "sparse" 或 0~7 整数）',
     // parser 与 generator
@@ -435,6 +437,8 @@ const STRINGS = {
     vmWasmTooManyParams: 'vm: more than 64 parameters, cannot use the WASM interpreter core tier',
     badBannerText: 'invalid custom banner: must not contain "*/", must not be empty or start with whitespace (got {p})',
     bannerTooLong: 'custom banner too long (limit {max} chars, got {n})',
+    jsfuckTooBig: 'JSFuck shell core expression too large: got {n} KB, limit {max} KB'
+      + ' (core source {bytes} chars, ≈{rate} chars/byte) — shrink JSFUCK_CORE or raise JSFUCK_MAX_CHARS',
     vmUnknownOpcode: 'vm: unknown opcode {kind}',
     badStringArrayEvolve: 'invalid stringArrayEvolve: {v} (use "each" / "sparse" or an integer 0..7)',
     // parser 与 generator

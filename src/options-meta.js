@@ -50,6 +50,7 @@ export const VALUE_OPTIONS = {
   wasmThreshold: { kind: 'count', group: 'vm', zh: 'WASM 搬入最小字节码字数', en: 'WASM minimum bytecode words' },
   rtDepth: { kind: 'int', min: 1, max: 8, group: 'vm', zh: '自定义运行时层数', en: 'Custom RT layers' },
   shellDepth: { kind: 'int', min: 1, group: 'defense', zh: '外壳层数', en: 'Shell layers' },
+  shellForm: { kind: 'enum', values: ['classic', 'jsfuck'], group: 'defense', zh: '外壳形态', en: 'Shell form', hintZh: 'jsfuck：把密钥流生成与校验那段核心编成纯 JSFuck 表达式（只由 [ ] ( ) ! + { } 构成），每层固定多约 45.4 KB', hintEn: 'jsfuck: keystream/verification core compiled to pure JSFuck ([ ] ( ) ! + { } only), ≈ +45.4 KB per layer' },
 };
 
 export const VALUE_ALIASES = { intensity: 'preset' };

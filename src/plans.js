@@ -50,7 +50,10 @@ export default {
       "stringScatter": false,
       "antiLLM": false,
       "rtDepth": 1,
-      "shellDepth": 1
+      "shellDepth": 1,
+      "shellForm": [
+        "classic"
+      ]
     }
   },
   // 2026-09-22 起：订阅档为 Free(low) < Plus(high) < Team(max) = Business(max)。

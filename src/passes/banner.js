@@ -214,10 +214,19 @@ export function wrapBanner(code, opts) {
   if (opts.wrap === false) {
     return { code: bannerComment + '\n' + guard + '\n' + code, saltVar, salt, custom, wrapped: false };
   }
-  const layer = shell.makeShellLayer(code, undefined, { cjs: !!opts.cjs, saltVar, salt });
+  const mode = { cjs: !!opts.cjs, saltVar, salt };
+  let pre = '';
+  if (opts.shellForm === 'jsfuck') {
+    // 与 shellWrap 同一套：核心预置不进流水线（横幅层本来就不进），名字先注册
+    // 进 usedNames，后面的 randomizeNames 才不会撞上它。
+    mode.jsfuck = true;
+    mode.jsfuckName = shell.jsfuckCoreName(ctx.usedNames, ctx.identifierPrefix || '_0x');
+    pre = shell.jsfuckPrelude(mode.jsfuckName);
+  }
+  const layer = shell.makeShellLayer(code, undefined, mode);
   const randomized = randomizeNames(layer, ctx.usedNames, ctx.identifierPrefix || '_0x');
   return {
-    code: bannerComment + '\n' + guard + '\n' + randomized,
+    code: bannerComment + '\n' + guard + '\n' + pre + randomized,
     saltVar, salt, custom, wrapped: true,
   };
 }
