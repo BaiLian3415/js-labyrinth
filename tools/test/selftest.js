@@ -184,8 +184,20 @@ main();
  * `stdio: 'ignore'`（三项全忽略，无管道）在同样环境下是好的，无需改动。
  */
 const SYNC_STDIO = ['ignore', 'pipe', 'pipe'];
+// spawn 阶段的瞬时资源失败（Windows 高强度进程孵化下偶发）：errno 挂在 code
+// 上且没有子进程 status。与产物非零退出（有 status）区分开，前者退避后重试
+// 一次，后者照常抛出交给用例判定。
+const TRANSIENT_SPAWN_ERRNO = new Set(['ENOMEM', 'EBUSY', 'ETXTBSY', 'EAGAIN', 'EMFILE']);
 function runSync(exe, args, opts) {
-  return execFileSync(exe, args, { stdio: SYNC_STDIO, ...(opts || {}) });
+  try {
+    return execFileSync(exe, args, { stdio: SYNC_STDIO, ...(opts || {}) });
+  } catch (e) {
+    if (e && !e.status && TRANSIENT_SPAWN_ERRNO.has(e.code)) {
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 300);
+      return execFileSync(exe, args, { stdio: SYNC_STDIO, ...(opts || {}) });
+    }
+    throw e;
+  }
 }
 
 /** 用 node 跑一段产物，返回 stdout。 */
@@ -1692,6 +1704,100 @@ section('P4：多态寄存器模型与字节码分块自解密');
     ok(obfuscate(jumpSrc, opt).code === obfuscate(jumpSrc, opt).code,
       'P3+P4 全开下固定 seed 可复现');
   }
+}
+
+// ---------------------------------------------------------------- Anti-CDP
+
+section('Anti-CDP（CDP 自动化检测）');
+{
+  // 探针样例：字符串全部经字符串池（high 预设 threshold=1），投毒后输出腐蚀
+  const cdpSample = `function greet(n) {
+  return 'OK-' + n + '-END';
+}
+const a = greet('aa');
+const b = greet('bb');
+process.stdout.write(a + '|' + b + '\\n');
+`;
+  const cdpWant = 'OK-aa-END|OK-bb-END\n';
+  const cdpHelper = path.join(path.dirname(fileURLToPath(import.meta.url)), 'cdp-sandbox.js');
+  const cdpRun = (code, mode, tag) => {
+    const file = path.join(TMP, 'cdp-' + mode + '-' + tag + '.js');
+    fs.writeFileSync(file, code);
+    return runSync(process.execPath, [cdpHelper, file, mode], { encoding: 'utf8', timeout: 60000 });
+  };
+
+  // 形态：开启时 pass 注入且三向量齐全，关闭时不出现
+  const rCdpOn = obfuscate(cdpSample, { preset: 'high', shell: false, antiCDP: true, seed: 11 });
+  const rCdpOff = obfuscate(cdpSample, { preset: 'high', shell: false, antiCDP: false, seed: 11 });
+  const stCdp = rCdpOn.stats.find((s) => s.pass === 'antiCDP');
+  ok(stCdp && stCdp.result && stCdp.result.injected === true && stCdp.result.vectors >= 3,
+    'antiCDP 开启时 pass 注入且三向量齐全', JSON.stringify(stCdp && stCdp.result));
+  ok(!rCdpOff.stats.some((s) => s.pass === 'antiCDP'), 'antiCDP 关闭时 pass 不出现');
+
+  // Node 直跑零副作用：window 不存在，探针全部跳过，开/关输出一致
+  let cdpNodeBad = '';
+  for (const [flag, r] of [['on', rCdpOn], ['off', rCdpOff]]) {
+    let got;
+    try { got = runNode(r.code, 'cdp-node-' + flag); } catch (e) { got = 'THREW'; }
+    if (got !== cdpWant) cdpNodeBad = flag + ' → ' + got.slice(0, 40);
+  }
+  ok(cdpNodeBad === '', 'Node 环境直跑零副作用（开/关输出一致）', cdpNodeBad);
+
+  // 干净浏览器沙箱零误报：window/document/navigator 齐备但无自动化痕迹
+  let cdpCleanBad = '';
+  for (let seed = 1; seed <= 2; seed++) {
+    const code = obfuscate(cdpSample, { preset: 'high', shell: false, antiCDP: true, seed }).code;
+    const got = cdpRun(code, 'clean', String(seed));
+    if (got !== cdpWant) cdpCleanBad = 'seed=' + seed + ' → ' + got.slice(0, 40);
+  }
+  ok(cdpCleanBad === '', '干净浏览器沙箱零误报（输出逐位一致）', cdpCleanBad);
+
+  // navigator.webdriver=true（Puppeteer/Playwright 默认签名）→ 投毒
+  let cdpWdPoisoned = 0;
+  let cdpWdFirst = '';
+  for (let seed = 1; seed <= 2; seed++) {
+    const code = obfuscate(cdpSample, { preset: 'high', shell: false, antiCDP: true, seed }).code;
+    const got = cdpRun(code, 'webdriver', String(seed));
+    if (got !== cdpWant) cdpWdPoisoned++;
+    else if (!cdpWdFirst) cdpWdFirst = 'seed=' + seed;
+  }
+  ok(cdpWdPoisoned === 2, 'navigator.webdriver=true 即投毒（字符串池被腐蚀）', cdpWdFirst);
+
+  // Runtime.enable 序列化模拟（log 1 次 + debug 2 次）→ 投毒
+  let cdpSerPoisoned = 0;
+  let cdpSerFirst = '';
+  for (let seed = 1; seed <= 2; seed++) {
+    const code = obfuscate(cdpSample, { preset: 'high', shell: false, antiCDP: true, seed }).code;
+    const got = cdpRun(code, 'cdp', String(seed));
+    if (got !== cdpWant) cdpSerPoisoned++;
+    else if (!cdpSerFirst) cdpSerFirst = 'seed=' + seed;
+  }
+  ok(cdpSerPoisoned === 2, 'console 序列化（Runtime.enable 特征）即投毒', cdpSerFirst);
+
+  // 弱证据（仅 log 单次触发）不投毒：只走隐蔽断点，输出不变
+  let cdpWeakBad = '';
+  for (let seed = 1; seed <= 2; seed++) {
+    const code = obfuscate(cdpSample, { preset: 'high', shell: false, antiCDP: true, seed }).code;
+    const got = cdpRun(code, 'weak', String(seed));
+    if (got !== cdpWant) cdpWeakBad = 'seed=' + seed + ' → ' + got.slice(0, 40);
+  }
+  ok(cdpWeakBad === '', '弱证据（单次触发）不投毒不误伤', cdpWeakBad);
+
+  // 开关有效性：关闭后 webdriver 环境也不投毒
+  ok(cdpRun(rCdpOff.code, 'webdriver', 'off') === cdpWant,
+    'antiCDP 关闭时 webdriver 环境输出不变');
+
+  // 门控：free 锁死、plus 放行；默认开启（assertConsistent 在模块加载时
+  // 已校验闸门与预设取值一致，这里断言对外行为）
+  ok(plan.violations({ antiCDP: true }, 'free').length === 1, 'free 档 antiCDP 被闸门锁死');
+  ok(plan.violations({ antiCDP: false }, 'free').length === 0, 'free 档关闭放行');
+  ok(plan.violations({ antiCDP: true }, 'plus').length === 0, 'plus 档 antiCDP 放行');
+  ok(obfuscateMod.DEFAULTS.antiCDP === true, 'antiCDP 默认开启');
+
+  // 可复现：固定 seed 逐字节一致
+  ok(obfuscate(cdpSample, { preset: 'high', shell: false, antiCDP: true, seed: 4242 }).code ===
+    obfuscate(cdpSample, { preset: 'high', shell: false, antiCDP: true, seed: 4242 }).code,
+    'antiCDP 固定 seed 可复现');
 }
 
 // ---------------------------------------------------------------- 收尾

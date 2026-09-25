@@ -56,6 +56,10 @@ export default {
   "decoyFunctions": true,
   "debugProtection": true,
   "debugProtectionInterval": 1,
+  // Anti-CDP：Chrome DevTools Protocol / 自动化框架检测。console 序列化探针
+  // （Runtime.enable 特征）、navigator.webdriver、驱动注入属性扫描；命中与
+  // 反调试共链投毒。用 Puppeteer/Playwright 做端到端测试时请关掉本项。
+  "antiCDP": true,
   "sentinelRate": 0.5,
   "debugPoison": true,
   "consoleStub": false,

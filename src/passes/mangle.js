@@ -260,5 +260,14 @@ export default function mangle(ast, options, ctx) {
       // 个别异常情况跳过该名字
     }
   }
+  // 最终名字全集写回 ctx.usedNames：本 pass 之后还有 integrityCheck 等 pass
+  // 靠 uniqueName 取新名，若改名结果只记在局部副本里，后置 pass 就可能抽中与
+  // 本 pass 改出的名字相同的标识符。同名 var 赋值会覆盖同名函数声明的绑定值
+  //（同一作用域里是同一个绑定）——integrityCheck 的哨兵 peek 变量一旦撞上根级
+  // 函数声明名，头部注册数组就解析到 peek 闭包而非被哈希的函数，哈希假失配
+  // 直接把干净产物投毒（2026-09-25 seed4/medium 实测踩中）。旧名一并登记：
+  // 改名失败的绑定仍以旧名存在于产物，同样不能让后置 pass 撞上。
+  for (const { name } of targets) ctx.usedNames.add(name);
+  for (const n of used) ctx.usedNames.add(n);
   return { renamed };
 };

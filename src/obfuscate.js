@@ -23,6 +23,7 @@ import conditionObf from './passes/conditionObf.js';
 import deadCode from './passes/deadCode.js';
 import opaquePredicates from './passes/opaquePredicates.js';
 import antiLLM from './passes/antiLLM.js';
+import antiCDP from './passes/antiCDP.js';
 import debugProtection from './passes/debugProtection.js';
 import functionWrapper from './passes/functionWrapper.js';
 import callProxy from './passes/callProxy.js';
@@ -39,9 +40,9 @@ import builtinUpper from './ast/builtin-upper.js';
  *
  * pass 顺序固定，调顺序前确认依赖：
  *   rtlib → vm → numberObf → controlFlow → objectKeys → templateToConcat → stringArray
- *   → logicalExpr → conditionObf → deadCode → opaquePredicates → debugProtection
- *   → envFingerprint → functionWrapper → callProxy → wasm → mangle → integrityCheck
- *   → selfCheck → generate → shell
+ *   → logicalExpr → conditionObf → deadCode → opaquePredicates → antiCDP
+ *   → debugProtection → envFingerprint → functionWrapper → callProxy → wasm
+ *   → mangle → integrityCheck → selfCheck → generate → shell
  */
 
 const PRESET_NAMES = Object.keys(PRESETS);
@@ -251,6 +252,10 @@ function obfuscate(code, userOptions) {
   // 注入的字符串字面量随后会被收进池里加密，不额外留下明文
   if (options.antiLLM) applyPass(antiLLM, 'antiLLM');
 
+  // Anti-CDP：CDP / 自动化框架检测。必须先于 debugProtection 注入：头部执行
+  // 顺序等于 pass 调用顺序，原生 console 引用要在反调试的 consoleStub 之前捕获
+  if (options.antiCDP) applyPass(antiCDP, 'antiCDP');
+
   // 反调试保护
   if (options.debugProtection) applyPass(debugProtection, 'debugProtection');
 
@@ -306,6 +311,7 @@ function obfuscate(code, userOptions) {
         vmProtection: false, wasm: false,
         stringArray: false,
         debugProtection: false, envFingerprint: false,
+        antiCDP: false,
         integrityCheck: false, selfCheck: false,
         controlFlowFlattening: true, logicalExpressions: true,
         conditionObfuscation: true, opaquePredicates: true,

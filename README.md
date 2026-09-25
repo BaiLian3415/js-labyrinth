@@ -183,6 +183,7 @@ curl -s -X POST https://<host>/api/obfuscate \
 | 多态混淆 | 全局 PRNG（`utils/rand.js`）+ `controlFlow` 滚动重键 + `stringArray` 运行期演化 | 固定 seed 逐字节复现，换 seed 后标识符集合与结构都变；扁平化状态机的状态值每次分派滚动异或重键（`--no-control-flow-rolling-key` 可关），字符串池槽位按会话熵演化，同一份产物每次运行的密文快照不同 |
 | 代码变换 | `vm` / `wasm` / `controlFlow` / `objectKeys` / `templateToConcat` / `numberObf` / `logicalExpr` / `conditionObf` / `deadCode` / `opaquePredicates` / `functionWrapper` / `callProxy` / `mangle` | `numberObf` 把整数字面量改写成取值恒等的算术/位运算表达式（`--number-obfuscation-threshold` 控制命中率） |
 | 反调试 | `debugProtection` + `envFingerprint` | 三类检测：环境侧信号（尺寸/时差/栈形态）、内建函数"原生文本"、内建函数"对象身份"（Function、defineProperty、getOwnPropertyDescriptor、call、eval 在头部快照后运行期比对），外加描述符 canary；命中走隐蔽断点 → 有界拖慢 → 确认投毒三级响应 |
+| Anti-CDP | `antiCDP` | Chrome DevTools Protocol / 自动化框架（Puppeteer、Playwright、ChromeDriver、Selenium）检测：console 序列化探针（Runtime.enable 下 log 触发 1 次访问器、debug 触发 2 次，累计 ≥2 即硬证据）、`navigator.webdriver`、驱动注入属性精确比对与 `$cdc_*` 子串扫描；V2/V3 由定时器周期复查，命中与反调试共链投毒。原生 console 引用在反调试失效化之前捕获，consoleStub 不影响探针。用自动化做端到端测试的构建请关闭本项 |
 | 自防御 | `stringArray` 自检 + `integrityCheck` | 装配期全池校验和 fail-closed，访问期再按抽样门重算旋转后的校验和（动态 xor 组查"密文与明文等长"不变式）；`integrityCheck` 对根级函数声明做 64 位双通道哈希，失配只置毒药标志 |
 | 运行时保护 | `integrityCheck` / `vm` / `wasm` / `shell` / `rtlib` | 装载时的原生性探针（内建成员被换钩子即投毒）、入口交叉校验带一次性闩锁、外壳算术依赖式防篡改、原生调用收敛进 RT 内核 |
 
