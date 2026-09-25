@@ -28,15 +28,31 @@ npx wrangler dev         # 本地 workerd：静态资源 + /api/*，与线上同
 npx wrangler deploy      # 发布到线上，浏览器打开线上域名
 ```
 
-`build:web` 会用**项目自己的混淆器**把 `src/**` 跑一遍再写进 `dist/`（体积约 1.3 倍、
-运行期约 1.6 倍，种子固定所以产物可复现），抬高已激活用户的逆向成本。产物仍是合法 ESM——
-混淆器保留 import/export 绑定与文件路径，所以逐文件混淆不破坏跨文件引用。
+`build:web` 分两层处理 `src/**`（种子固定，所以产物可复现）：
 
-**配置不是 low 预设**：直接套 low 会让混淆后的核心慢 70 倍（浏览器里 20 KB 文件要等
-8 秒）。逐项实测后采用"low + 关闭运行期昂贵 pass"的组合，实测表见
-`tools/build/build-web.js` 的 `selfObfOptions`。想更硬可以往上加 pass，代价明码标价。
+1. **自混淆**——用项目自己的混淆器跑一遍，实测综合 **1.31×**（预算 ≤1.5×）；
+2. **模块体加密**——45 个受保护模块在 `dist/` 里不再有源码文本，只剩明文 stub；
+   真正的源码进一个密文载荷（约 1.2 MB），浏览器靠一个 3.6 KB 引导层解密后以
+   Blob URL 动态 import 物化。爬走的字节是密文，最长可读连续段 14 字节。
 
-调试线上问题时用 `npm run build:web -- --plain` 退回逐字节复制。详见 `DEPLOY.md` 4.5。
+产物仍是合法 ESM——stub 会按模块**静态**再导出（ESM 的导出名必须在解析期确定），
+所以跨文件引用不受影响；项目内依赖图无环，顶层 await 物化链不会死锁。
+
+**按实测挑 pass，不按直觉**。旧文档写的"low + 关闭运行期昂贵 pass，运行期 1.63×/3.6×"
+已过时且指错了方向——真实代价结构（同一输入、同一种子、11 次取中位数）：
+
+| pass | 运行期 | 说明 |
+| --- | --- | --- |
+| `objectKeyEncoding` | 21.37× | 每次属性访问变成分段解密取键 |
+| `opaquePredicates` | **2.99×** | 单项第二贵，**旧文档漏了这条** |
+| `stringArray` | 2.59× | 阈值降到 0.10 仍要 1.65×，装不进预算 |
+| `numberObfuscation` | 1.11× | |
+| 控制流 / 死码 / 逻辑 / 条件 | 各 1.02~1.04× | 近乎免费 |
+| 基线（全关昂贵项） | 0.99× | 混淆后的核心并不比原核心慢 |
+
+于是当前配置 = 免费的全开 + 昂贵项全关。**改这几行前先跑 `npm run bench:selfobf`**，
+别照旧文档的名单猜。字符串仍是明文，那一层由模块体加密补上。调试线上问题时用
+`npm run build:web -- --plain` 退回逐字节复制（两层都跳过）。详见 `DEPLOY.md` 4.5。
 
 ## 激活
 
@@ -577,10 +593,15 @@ src/                跨环境核心：浏览器与 Worker 共用同一份，零�
 
 worker/             Cloudflare Worker 入口（Pages 的 functions/ 转调它）
   index.js          无任何 node: 依赖的纯 Web 代码，wrangler.toml 的 main 指向它
+  gate-policy.js    受保护路径名单（worker 与 build:web 共用同一份，见 DEPLOY.md 4.5）
 
 web/                网页界面源码（原生 ESM，无打包器，无第三方依赖）
 tools/
-  build/            构建与发布验证  build-web.js、verify-deploy.js
+  build/            构建与发布验证  build-web.js（自混淆 + 模块体加密）、
+                                  enc-loader.js（加密层实现与引导层生成）、
+                                  bench-selfobf.js（自混淆运行期预算基准）、
+                                  verify-encryption.js（加密层端到端校验）、
+                                  verify-deploy.js（发布验证）
   test/             测试          selftest.js、hashtest.js、semantics.js、bench.js（性能基准）
   issue/            发卡与密钥    keygen.js（发卡）、signingkey.js（生成密钥对）、
                                   keyrotate.js（轮换）、selfdigest.js
@@ -643,7 +664,9 @@ npm run semantics                        # 语义保持扫描（42 用例 × 4 �
 npm run bench                            # 混淆性能基准（各预设 × 各规模 + per-pass 分布）
 node tools/issue/selfdigest.js --check   # 自身摘要表与版本号一致性
 node tools/test/webfp.js                 # 浏览器指纹线上实测（playwright + 线上域名）
-npm run verify                           # 发布验证：打线上域名核对接口与资源
+npm run build:web && npm run verify:enc  # 加密层端到端校验（对 dist，见 DEPLOY.md 4.5）
+npm run bench:selfobf                    # 自混淆运行期预算基准（逐 pass 代价，可复现）
+npm run verify                           # 发布验证：打线上域名核对接口、资源与门控
 ```
 
 ### 网络依赖

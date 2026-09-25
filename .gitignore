@@ -22,6 +22,10 @@ _*.mjs
 _*.cjs
 _preview/
 
+# 自混淆预算基准的产物目录（tools/build/bench-selfobf.js 每次实跑写在这里）。
+# 里面是逐候选配置混淆后的 src/** 副本，只用于量运行期代价，不是发布产物。
+_selfobf-bench/
+
 # 密钥与本地环境。
 # **卡密密钥**（v5 对称，base64 32 字节）：随源码分发（B64_CODE_KEY），但签发方的
 # 私有副本不进仓库；部署方用 npx wrangler secret put JSLB_CODE_KEY 覆盖服务端取值。

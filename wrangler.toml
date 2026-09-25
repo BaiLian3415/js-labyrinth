@@ -26,10 +26,19 @@ not_found_handling = "404-page"
 # 没有 /api/* 这个文件，于是 /api/health 在浏览器里打开会得到 404 页面而不是
 # JSON。界面里的 fetch 属于 cors 请求，本来就会命中 Worker，所以不加这一行
 # 前端也能跑——但直接访问接口会莫名其妙地 404。写上之后两条路径一致。
-# 核心算法的六个入口也要先过 Worker：按设备鉴权下发，见下面的 JSLB_GATE_CORE。
-# 只列入口，不列 /src/**——其余模块要公开，界面靠它们渲染激活表单。
+# 核心算法的入口与目录也要先过 Worker：按设备鉴权下发，见下面的 JSLB_GATE_CORE。
+# 只列入口与目录，不逐个列文件——其余模块要公开，界面靠它们渲染激活表单。
+# 注意 /src/utils/* 也在这里，但 worker 侧对 hash.js 与 zip.js 有豁免（激活表单要用），
+# 豁免名单在 worker/gate-policy.js 的 GATED_EXEMPT。
+#
+# /src/__jslb_core.js 与 /src/__core.pack 是模块体加密层（构建期生成）：引导层含密钥、
+# 载荷是密文，两者都必须挡。它们不在 src/ 源码树里，所以构建期不会被混淆/加密。
+#
+# 这份列表必须与 worker/gate-policy.js 的 GATED_PREFIXES 一致——两处漂移不会报错，
+# 只在线上表现为"未激活界面空白"或"加密层形同虚设"。改一处记得改另一处。
 run_worker_first = ["/api/*", "/src/index.js", "/src/obfuscate.js", "/src/pipeline.js",
-                    "/src/html.js", "/src/passes/*", "/src/ast/*"]
+                    "/src/html.js", "/src/passes/*", "/src/ast/*", "/src/utils/*",
+                    "/src/__jslb_core.js", "/src/__core.pack"]
 
 [vars]
 # 网页版策略，JSON 文本。这里显式要求激活卡密：未激活一律拒绝。

@@ -34,32 +34,24 @@ import pipeline from '../src/pipeline.js';
 import plan from '../src/plan.js';
 import i18n from '../src/i18n.js';
 import { VERSION } from '../src/version.js';
+import { isGatedPath } from './gate-policy.js';
 
 const { runJob } = pipeline;
 const { t } = i18n;
 
 /**
- * 需要鉴权才能下载的核心产物：混淆算法本体。
+ * 受保护路径名单在 `worker/gate-policy.js`——与 build:web 共用同一份。
  *
- * 界面是原生 ESM，`src/**` 整棵模块树都必须能被浏览器取到，于是默认任何人都能顺着
- * index.html 里的 modulepreload 清单把实现整个爬走。这里按路径挡一道：未激活设备
- * 拿不到算法，只能拿到页面外壳与授权链路。
+ * 共用的理由很实：dist/src 下受保护模块在构建期被加密（明文 stub + 密文载荷），
+ * 而 Worker 要对着**同一个集合**做匿名 403。两处各写一份名单迟早漂移，且两种漂移
+ * 方向都不报错：名单偏大 → 未激活界面取不到激活表单依赖的模块（死锁）；名单偏小
+ * → 引导层与 stub 被匿名取走，加密层形同虚设。所以单点定义。
  *
- * 只挡"算法本体"这六个入口，其余模块（options / presets / plan / license-* / i18n /
- * platform / utils / options-meta / options-gate）保持公开——界面要靠它们渲染出
- * 激活表单，否则未激活用户永远走不到激活那一步（这是第一版全挡 /src/ 时的死锁）。
- * 前提是 `web/app.js` 已经把核心改成激活后 `import('./src/index.js')`。
+ * 2026-09-25 补漏：原先只列六个入口，`/src/utils/` 整个目录敞开，匿名请求能直接下到
+ * encode.js（字符串编解码器）、rand.js（PRNG）、hide.js、ws.js、ed25519.js。
  *
  * 只对 Workers 生效——Pages 的静态资源不经过这个函数（functions/ 只匹配 /api/*）。
  */
-const GATED_PREFIXES = [
-  '/src/index.js',
-  '/src/obfuscate.js',
-  '/src/pipeline.js',
-  '/src/html.js',
-  '/src/passes/',
-  '/src/ast/',
-];
 
 /** 是否开启核心下载鉴权。默认关，部署方显式开启。 */
 function gateCoreOn(env) {
@@ -450,7 +442,7 @@ export default {
     // （1K9W9H9S065P0C7M834C1XC8）永不相等，严格比对会把所有设备判成未授权，
     // 且补登记也救不回来。详见 license-core.verifyLicenseData。
     if (gateCoreOn(env) && request.method === 'GET'
-        && GATED_PREFIXES.some((p) => url.pathname.startsWith(p))) {
+        && isGatedPath(url.pathname)) {
       const dev = cookieDevice(request);
       if (dev) licenseWeb.setRequestDeviceId(dev);
       const ens = await licenseWeb.ensure({ selfAnchored: true });

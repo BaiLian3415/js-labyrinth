@@ -25,6 +25,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { VERSION } from '../../src/version.js';
+import { isGatedModuleId } from '../../worker/gate-policy.js';
+import * as enc from './enc-loader.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 
@@ -227,18 +229,28 @@ function listJs(dir, base) {
 /**
  * 自混淆用的混淆选项。
  *
- * **不是 low 预设**——直接套 low 会让混淆后的核心慢 70 倍，浏览器里一个 20 KB
- * 的文件要等 8 秒。逐项实测（同一输入，混淆后的核心跑 medium 档，与原核心比）：
+ * **按实测挑 pass，不按直觉**。逐项实测（`tools/build/bench-selfobf.js` 可复现，
+ * 同一输入、同一 seed，混淆后的核心 vs 原核心，11 次取中位数）：
  *
- *   low 全量                                70.6×
- *   关 objectKeyEncoding                    27.9×   ← 单项最大，把每次属性访问变成
- *                                                    分段解密取键 + 计算下标
- *   再关 stringArray                        10.8×   ← 每次取字符串都要解密校验
- *   再关 谓词/死码/逻辑/条件                  3.6×   ← 本配置
+ *   对象键编码 objectKeyEncoding   21.37×  ← 每次属性访问变成分段解密取键 + 计算下标
+ *   不透明谓词 opaquePredicates     2.99×  ← **单项第二贵**，旧文档漏了这条
+ *   字符串池 stringArray            2.59×  ← 全量；阈值降到 0.10 仍要 1.65×
+ *   数字混淆 numberObfuscation      1.11×
+ *   条件混淆 conditionObfuscation   1.04×
+ *   控制流平坦化 controlFlow        1.02×
+ *   逻辑表达式 logicalExpressions   1.02×
+ *   死代码注入 deadCodeInjection    1.02×
  *
- * 代价说清楚：本配置**保留**重命名（名字全不可读）与 RT 内核（原生 API 名不出现），
- * 但字符串字面量、控制流结构保持明文。想更硬就往上加，代价见上表。
- * 用 JSLB_BUILD_OBF_PRESET=low 可退回全量 low（慢 70 倍，仅用于对比）。
+ * 注意基线（关掉全部昂贵项）自身就是 **0.99×**——混淆后的核心并不比原核心慢，
+ * 旧文档里"3.6× / 1.63×"两个数字都已过时，且把昂贵项指成了 objectKey/stringArray，
+ * 漏掉了真正第二贵的 opaquePredicates。
+ *
+ * 于是本配置 = **免费的部分全开 + 昂贵项全关**：控制流 / 死码 / 逻辑 / 条件 /
+ * 数字混淆五项，实测综合 **1.31×**，在"运行期不超过 1.5×"的预算内还剩 0.19× 余量。
+ * 字符串池哪怕压到阈值 0.10 也要 1.65×，装不进预算，所以字符串仍是明文——
+ * 这一层靠下面的模块体加密（见 tools/build/enc-loader.js）来补。
+ *
+ * 用 JSLB_BUILD_OBF_PRESET=low 可退回全量 low（70.6×，仅用于对比）。
  */
 function selfObfOptions(preset) {
   if (preset !== 'low') {
@@ -247,13 +259,14 @@ function selfObfOptions(preset) {
   }
   return {
     preset: 'low',
-    objectKeyEncoding: false,
-    stringArray: false,
-    controlFlowFlattening: false,
-    opaquePredicates: false,
-    deadCodeInjection: false,
-    logicalExpressions: false,
-    conditionObfuscation: false,
+    // 实测超预算，逐项关掉。改动这几行前先跑 tools/build/bench-selfobf.js
+    objectKeyEncoding: false,   // 21.37×
+    opaquePredicates: false,    //  2.99×
+    stringArray: false,         //  2.59×（阈值 0.10 也要 1.65×）
+    // 其余 low 默认项保持开启：控制流平坦化 / 死代码 / 逻辑表达式 / 条件混淆
+    // 都是 1.0~1.04× 量级。low 预设里数字混淆默认关，这里显式打开。
+    numberObfuscation: true,
+    numberObfuscationThreshold: 0.5,
   };
 }
 
@@ -310,6 +323,83 @@ async function writeObfuscatedSrc(outDir, opts) {
   return stats;
 }
 
+/**
+ * 模块体加密：把上一步写进 dist/src 的受保护模块换成「明文 stub + 一个密文载荷」。
+ *
+ * 必须在自混淆之后跑——加密的输入就是自混淆的产物，两层叠加（先混淆、再加密）。
+ * 顺序反了没有意义：加密后自混淆器看不到明文，没法改写 AST。
+ *
+ * 受保护集合取自 `worker/gate-policy.js`，与 Worker 侧的匿名 403 判定是**同一份名单**。
+ * 为什么要共用：这两个集合必须严格相等，偏大偏小都不报错、只在线上表现为怪现象
+ * （见 gate-policy.js 头注释）。这里的失败模式是致命的：若某个受保护模块没被加密却
+ * 被 403，浏览器取不到它；若被加密却没被 403，等于把密文与引导层一起公开。
+ *
+ * 公开模块（激活表单的静态依赖）保持明文直出——未激活界面必须能渲染出激活表单。
+ *
+ * @param {string} outDir 产物根目录
+ * @param {{seed:number, keyText?:string}} opts
+ * @returns {{stubs:number, packBytes:number, loaderBytes:number, plain:number}}
+ */
+function writeEncryptedCore(outDir, opts) {
+  const LOADER = '__jslb_core.js';
+  const PACK = '__core.pack';
+  const srcOut = path.join(outDir, 'src');
+  const loaderAbs = path.join(srcOut, LOADER);
+
+  const modules = {};
+  let stubs = 0;
+  let plainCount = 0;
+
+  for (const rel of listJs(path.join(ROOT, 'src'))) {
+    if (!isGatedModuleId(rel)) {
+      plainCount++;
+      continue;
+    }
+    const obfPath = path.join(srcOut, rel);
+    if (!fs.existsSync(obfPath)) {
+      throw new Error('受保护模块在 dist 里不存在，无法加密: ' + rel);
+    }
+
+    // 导出名从**原始**源码枚举：自混淆产物里 export 语句的形态可能被生成器改写，
+    // 原始源码是最可靠的依据。枚举不全会让浏览器 import 到 undefined，且只在走到
+    // 那条 import 时才炸，所以 collectExportNames 对 export * 是直接抛错的。
+    const original = fs.readFileSync(path.join(ROOT, 'src', rel), 'utf8');
+    const shape = {
+      default: enc.hasDefaultExport(original),
+      names: enc.collectExportNames(original),
+    };
+
+    modules[rel] = fs.readFileSync(obfPath, 'utf8');
+
+    // stub → 引导层的相对说明符。ESM 说明符必须是 POSIX 分隔符，且**必须**以 ./
+    // 或 ../ 开头：裸的名字会被当成包名去 node_modules 找。
+    let toLoader = path.relative(path.dirname(obfPath), loaderAbs).split(path.sep).join('/');
+    if (!toLoader.startsWith('.')) toLoader = './' + toLoader;
+
+    fs.writeFileSync(obfPath, enc.renderStub(rel, toLoader, shape));
+    stubs++;
+  }
+
+  const keyWords = opts.keyText
+    ? enc.keyWordsFromText(opts.keyText)
+    : enc.keyWordsFromSeed(opts.seed);
+
+  const packed = enc.packModules(modules, keyWords);
+
+  // 构建期往返自检：解不回来就说明密钥或格式有问题，宁可构建失败也不发一份
+  // 浏览器一加载就抛的产物。
+  const back = enc.unpackModules(packed, keyWords);
+  if (Object.keys(back.modules).length !== stubs) {
+    throw new Error('载荷往返自检失败：模块数 ' + Object.keys(back.modules).length + ' ≠ ' + stubs);
+  }
+
+  fs.writeFileSync(path.join(srcOut, PACK), packed);
+  const loader = enc.renderLoader({ keyWords, packRel: './' + PACK, moduleCount: stubs });
+  fs.writeFileSync(loaderAbs, loader);
+
+  return { stubs, packBytes: packed.length, loaderBytes: Buffer.byteLength(loader), plain: plainCount };
+}
+
 function main(argv) {
   const outIdx = argv.indexOf('--out');
   const outName = outIdx >= 0 && argv[outIdx + 1] ? argv[outIdx + 1] : 'dist';
@@ -332,6 +422,7 @@ function main(argv) {
   const obfSeed = Number(process.env.JSLB_BUILD_OBF_SEED || 20260920);
   return (async () => {
     let obf = null;
+    let encl = null;
     if (plain) {
       for (const d of SRC_DIRS) {
         files += copyDir(path.join(ROOT, d), path.join(outDir, d), (p) => p.endsWith('.js'));
@@ -345,6 +436,11 @@ function main(argv) {
         process.exit(1);
       }
       files += obf.files;
+
+      // 第二层：模块体加密。受保护模块在 dist 里不再有源码文本。
+      // JSLB_BUILD_ENC_KEY 可换成部署方自己的密钥（此时产物不再与默认构建逐字节相同）。
+      encl = writeEncryptedCore(outDir, { seed: obfSeed, keyText: process.env.JSLB_BUILD_ENC_KEY });
+      files += 2; // 引导层 __jslb_core.js + 载荷 __core.pack
     }
     pruneEmptyDirs(outDir);
 
@@ -362,6 +458,12 @@ function main(argv) {
         + ' 倍），耗时 ' + obf.ms + ' ms');
     } else {
       console.log('  核心未混淆（--plain）：与源码逐字节一致，仅供调试');
+    }
+    if (encl) {
+      console.log('  核心已模块体加密：' + encl.stubs + ' 个受保护模块 → 明文 stub + '
+        + (encl.packBytes / 1024).toFixed(0) + ' KB 载荷，引导层 '
+        + (encl.loaderBytes / 1024).toFixed(1) + ' KB；'
+        + encl.plain + ' 个公开模块（激活表单依赖）保持明文');
     }
     console.log('  首页已注入 ' + mods + ' 条 modulepreload（原生 ESM 的请求瀑布在构建期拉平）');
     console.log('  Pages:  npx wrangler pages deploy ' + outName);

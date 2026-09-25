@@ -97,6 +97,21 @@ function readWebConfigVars() {
   }
 }
 
+/**
+ * 读 wrangler.toml 的 JSLB_GATE_CORE（形如 `JSLB_GATE_CORE = "true"`）。
+ * 读不到返回 null，调用方改用线上实测结果当期望依据——Pages 部署的配置来源不是
+ * 这个文件，不该因为本地读不到 toml 就判失败。
+ */
+function readGateCoreFlag() {
+  try {
+    const toml = readFileSync(new URL('../../wrangler.toml', import.meta.url), 'utf8');
+    const m = toml.match(/^[ \t]*JSLB_GATE_CORE[ \t]*=[ \t]*(['"])([\s\S]*?)\1/m);
+    return m ? m[2] === 'true' : null;
+  } catch (e) {
+    return null;
+  }
+}
+
 console.log('发布后验证：' + base);
 console.log('');
 
@@ -213,6 +228,60 @@ console.log('4) POST /api/machine');
   // 只收 POST：用 GET 试探，405 才对（返回 200 说明路由被别的处理器吃掉了）
   const g = await probe('/api/machine');
   report(g.status === 405, 'GET 返回 405', '实得 ' + (g.status || '连接失败'));
+}
+
+// ---- 5. 核心下载鉴权真的按名单生效 ----
+//
+// 2026-09-25 补漏时加的：原先只挡六个入口，`/src/utils/` 整个目录敞开，匿名请求能
+// 直接下到 encode.js（字符串编解码器）、rand.js（PRNG）、hide.js、ws.js、ed25519.js,
+// 等于把混淆器的加密核心白送。这条同时守住两个方向，缺一不可：
+//
+//   正向：受保护模块匿名必须 403 —— 挡不住就说明算法能被爬走；
+//   反向：豁免模块（hash / zip）必须 200 —— 挡多了未激活界面渲染不出激活表单，
+//         与第一版全挡 /src/ 那次死锁同类，且只在未激活时暴露，极易漏测。
+//
+// 只认确定的 200/403，其余（404/500/连接失败）一律判失败。
+console.log('');
+console.log('5) 核心下载鉴权 JSLB_GATE_CORE');
+{
+  const GATED = [
+    '/src/passes/stringArray.js',
+    '/src/ast/parser.js',
+    '/src/utils/encode.js',
+    '/src/utils/rand.js',
+    '/src/utils/hide.js',
+    '/src/utils/ed25519.js',
+    // 模块体加密层自身。这两条最要紧：引导层里就是解密密钥，它若公开，
+    // 整个加密层等于没做；载荷虽是密文，也不该被匿名整份拖走。
+    '/src/__jslb_core.js',
+    '/src/__core.pack',
+  ];
+  const EXEMPT = ['/src/utils/hash.js', '/src/utils/zip.js'];
+  const PUBLIC = ['/src/plan.js', '/src/presets.js'];
+
+  const status = new Map();
+  for (const p of [...GATED, ...EXEMPT, ...PUBLIC]) {
+    status.set(p, (await probe(p)).status);
+  }
+  const fmt = (list) => list.map((p) => status.get(p) + ' ' + p).join(' | ');
+  const gateLocal = readGateCoreFlag();
+
+  if (gateLocal === false) {
+    // 配置明写关闭：核心本就该公开。线上却 403 说明部署的不是这份配置
+    const blocked = GATED.filter((p) => status.get(p) === 403);
+    report(blocked.length === 0, 'JSLB_GATE_CORE=false，核心应公开',
+      blocked.length ? '线上却 403：' + fmt(blocked) : '线上与配置一致');
+  } else {
+    const leaked = GATED.filter((p) => status.get(p) !== 403);
+    report(leaked.length === 0, '受保护模块匿名一律 403（' + GATED.length + '/' + GATED.length + '）',
+      leaked.length ? '未挡住：' + fmt(leaked) : '');
+    const overBlocked = EXEMPT.filter((p) => status.get(p) !== 200);
+    report(overBlocked.length === 0, '豁免模块必须 200（激活表单静态依赖）',
+      overBlocked.length ? '挡多了会死锁在激活：' + fmt(overBlocked) : '');
+    const publicBad = PUBLIC.filter((p) => status.get(p) !== 200);
+    report(publicBad.length === 0, '授权链路模块必须 200',
+      publicBad.length ? '异常：' + fmt(publicBad) : '');
+  }
 }
 
 console.log('');
