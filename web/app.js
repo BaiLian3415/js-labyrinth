@@ -1118,7 +1118,8 @@ async function init() {
     'fileInput', 'files', 'input', 'inInfo', 'output', 'outInfo', 'outSize', 'statsBox',
     'statsBody', 'runBtn', 'copyBtn', 'dlBtn', 'zipBtn', 'drawer', 'apiBase', 'apiHint',
     'licKey', 'actBtn', 'deactBtn', 'licInfo', 'licDevice', 'licBadge', 'seed', 'presetHint',
-    'resetBtn', 'status', 'quota', 'ver', 'inputPane', 'outputPane', 'apiState', 'shortcutHint']) {
+    'resetBtn', 'status', 'quota', 'ver', 'inputPane', 'outputPane', 'apiState', 'shortcutHint',
+    'compareBtn', 'compareModal', 'compareClose', 'compareBackdrop']) {
     els[id] = $(id);
   }
 
@@ -1163,6 +1164,13 @@ async function init() {
   els.optsBtn.addEventListener('click', () => {
     setDrawer(els.drawer.getAttribute('data-open') !== '1');
   });
+
+  // 混淆强度对比弹窗：打开/关闭（Esc、点背景、点 ✕ 均关闭）。
+  const openCompare = () => { els.compareModal.hidden = false; };
+  const closeCompare = () => { els.compareModal.hidden = true; };
+  els.compareBtn.addEventListener('click', openCompare);
+  els.compareClose.addEventListener('click', closeCompare);
+  els.compareBackdrop.addEventListener('click', closeCompare);
 
   els.mode.addEventListener('change', () => { state.mode = els.mode.value; saveState(); });
   els.runBtn.addEventListener('click', run);
@@ -1224,6 +1232,7 @@ async function init() {
   // Ctrl/Cmd + Enter 运行
   document.addEventListener('keydown', (e) => {
     if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') { e.preventDefault(); run(); }
+    else if (e.key === 'Escape' && !els.compareModal.hidden) { els.compareModal.hidden = true; }
   });
 
   // 手机屏幕寸土寸金：首屏默认收起选项抽屉，把高度留给输入/输出面板

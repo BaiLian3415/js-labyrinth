@@ -271,6 +271,24 @@ const STRINGS = {
     guiAriaTheme: '切换深浅色',
     guiAriaOptions: '展开或收起选项面板',
     guiAriaOutput: '混淆结果',
+
+    // 混淆强度对比（十维雷达，max 档 vs obfuscator.io Pro VM）
+    cmpOpen: '对比 obfuscator.io',
+    cmpTitle: '混淆强度对比 · JsLabyrinth vs obfuscator.io',
+    cmpNote: '双方最强档：JsLabyrinth 用 max 预设，obfuscator.io 用 Pro VM。十维 0–10 评分，分数越高强度越强。',
+    cmpLegendJs: 'JsLabyrinth（max）',
+    cmpLegendObf: 'obfuscator.io（Pro VM）',
+    cmpDim1: '标识符重命名',
+    cmpDim2: '字符串加密',
+    cmpDim3: '控制流平坦化',
+    cmpDim4: '死代码注入',
+    cmpDim5: '调试保护',
+    cmpDim6: '代码压缩',
+    cmpDim7: 'VM 虚拟化',
+    cmpDim8: '自防御/防篡改',
+    cmpDim9: '常量/数字混淆',
+    cmpDim10: '反自动化/反LLM',
+    cmpAriaClose: '关闭对比',
   },
 
   en: {
@@ -541,6 +559,24 @@ const STRINGS = {
     guiAriaTheme: 'Toggle light/dark theme',
     guiAriaOptions: 'Show or hide the options panel',
     guiAriaOutput: 'Obfuscated output',
+
+    // obfuscation strength comparison (ten-dimension radar, max tier vs obfuscator.io Pro VM)
+    cmpOpen: 'vs obfuscator.io',
+    cmpTitle: 'Obfuscation strength · JsLabyrinth vs obfuscator.io',
+    cmpNote: 'Both at maximum tier: JsLabyrinth "max" preset vs obfuscator.io Pro VM. Ten dimensions scored 0–10; higher is stronger.',
+    cmpLegendJs: 'JsLabyrinth (max)',
+    cmpLegendObf: 'obfuscator.io (Pro VM)',
+    cmpDim1: 'Identifiers',
+    cmpDim2: 'Strings',
+    cmpDim3: 'Control flow',
+    cmpDim4: 'Dead code',
+    cmpDim5: 'Debug guard',
+    cmpDim6: 'Compression',
+    cmpDim7: 'VM bytecode',
+    cmpDim8: 'Self-defense',
+    cmpDim9: 'Constants',
+    cmpDim10: 'Anti-LLM',
+    cmpAriaClose: 'Close comparison',
   },
 };
 

@@ -62,6 +62,7 @@
              data-i18n：applyI18n() 会把它一律刷成写死的那一个键，加载后永远显示"深色"。 -->
         <span>深色</span>
       </button>
+      <button id="compareBtn" class="mini" type="button" data-i18n="cmpOpen">对比 obfuscator.io</button>
     </header>
 
     <header class="mainbar">
@@ -169,6 +170,81 @@
       <span id="shortcutHint" class="hint"></span>
       <span id="quota" class="dim right"></span>
     </footer>
+  </div>
+</div>
+
+<!-- 混淆强度对比弹窗（十维雷达，零依赖手绘 SVG，随主题切换配色）。 -->
+<div class="compare-modal" id="compareModal" hidden role="dialog" aria-modal="true" aria-labelledby="compareTitle">
+  <div class="compare-backdrop" id="compareBackdrop"></div>
+  <div class="compare-card">
+    <div class="compare-head">
+      <h2 id="compareTitle" data-i18n="cmpTitle">混淆强度对比 · JsLabyrinth vs obfuscator.io</h2>
+      <button id="compareClose" class="mini" type="button" data-i18n-aria="cmpAriaClose" aria-label="close">✕</button>
+    </div>
+    <p class="compare-note" data-i18n="cmpNote">双方最强档：JsLabyrinth 用 max 预设，obfuscator.io 用 Pro VM。十维 0–10 评分，分数越高强度越强。</p>
+
+    <div class="compare-legend">
+      <span class="lg-item"><span class="lg-dot lg-js"></span><span data-i18n="cmpLegendJs">JsLabyrinth（max）</span><strong class="lg-mean lg-js-text">8.9</strong></span>
+      <span class="lg-item"><span class="lg-dot lg-obf"></span><span data-i18n="cmpLegendObf">obfuscator.io（Pro VM）</span><strong class="lg-mean lg-obf-text">7.7</strong></span>
+    </div>
+
+    <div class="compare-chart">
+      <svg viewBox="0 0 720 500" class="cmp-svg" role="img" aria-label="JsLabyrinth 与 obfuscator.io 的十维混淆强度雷达图">
+        <g class="cmp-grid">
+          <polygon points="360.0,216.0 380.0,222.5 392.3,239.5 392.3,260.5 380.0,277.5 360.0,284.0 340.0,277.5 327.7,260.5 327.7,239.5 340.0,222.5"/>
+          <polygon points="360.0,182.0 400.0,195.0 424.7,229.0 424.7,271.0 400.0,305.0 360.0,318.0 320.0,305.0 295.3,271.0 295.3,229.0 320.0,195.0"/>
+          <polygon points="360.0,148.0 420.0,167.5 457.0,218.5 457.0,281.5 420.0,332.5 360.0,352.0 300.0,332.5 263.0,281.5 263.0,218.5 300.0,167.5"/>
+          <polygon points="360.0,114.0 439.9,140.0 489.3,208.0 489.3,292.0 439.9,360.0 360.0,386.0 280.1,360.0 230.7,292.0 230.7,208.0 280.1,140.0"/>
+          <polygon points="360.0,80.0 459.9,112.5 521.7,197.5 521.7,302.5 459.9,387.5 360.0,420.0 260.1,387.5 198.3,302.5 198.3,197.5 260.1,112.5"/>
+        </g>
+        <g class="cmp-axes">
+          <line x1="360" y1="250" x2="360.0" y2="80.0"/>
+          <line x1="360" y1="250" x2="459.9" y2="112.5"/>
+          <line x1="360" y1="250" x2="521.7" y2="197.5"/>
+          <line x1="360" y1="250" x2="521.7" y2="302.5"/>
+          <line x1="360" y1="250" x2="459.9" y2="387.5"/>
+          <line x1="360" y1="250" x2="360.0" y2="420.0"/>
+          <line x1="360" y1="250" x2="260.1" y2="387.5"/>
+          <line x1="360" y1="250" x2="198.3" y2="302.5"/>
+          <line x1="360" y1="250" x2="198.3" y2="197.5"/>
+          <line x1="360" y1="250" x2="260.1" y2="112.5"/>
+        </g>
+        <g class="cmp-data">
+          <polygon class="js-series" points="360.0,105.5 454.9,119.3 513.6,200.1 505.5,297.3 454.9,380.7 360.0,343.5 265.1,380.7 206.4,299.9 214.5,202.7 270.1,126.2"/>
+          <polygon class="obf-series" points="360.0,97.0 439.9,140.0 473.2,213.2 465.1,284.1 439.9,360.0 360.0,352.0 270.1,373.8 214.5,297.3 263.0,218.5 280.1,140.0"/>
+        </g>
+        <g class="cmp-labels">
+          <text x="360" y="64" text-anchor="middle" data-i18n="cmpDim1">标识符重命名</text>
+          <text x="469.3" y="99.5" text-anchor="start" data-i18n="cmpDim2">字符串加密</text>
+          <text x="536.9" y="192.5" text-anchor="start" data-i18n="cmpDim3">控制流平坦化</text>
+          <text x="536.9" y="307.5" text-anchor="start" data-i18n="cmpDim4">死代码注入</text>
+          <text x="469.3" y="400.5" text-anchor="start" data-i18n="cmpDim5">调试保护</text>
+          <text x="360" y="436" text-anchor="middle" data-i18n="cmpDim6">代码压缩</text>
+          <text x="250.7" y="400.5" text-anchor="end" data-i18n="cmpDim7">VM 虚拟化</text>
+          <text x="183.1" y="307.5" text-anchor="end" data-i18n="cmpDim8">自防御/防篡改</text>
+          <text x="183.1" y="192.5" text-anchor="end" data-i18n="cmpDim9">常量/数字混淆</text>
+          <text x="250.7" y="99.5" text-anchor="end" data-i18n="cmpDim10">反自动化/反LLM</text>
+        </g>
+      </svg>
+    </div>
+
+    <table class="cmp-table">
+      <thead>
+        <tr><th></th><th class="th-js" data-i18n="cmpLegendJs">JsLabyrinth</th><th class="th-obf" data-i18n="cmpLegendObf">obfuscator.io</th></tr>
+      </thead>
+      <tbody>
+        <tr><td data-i18n="cmpDim1">标识符重命名</td><td>8.5</td><td class="win-obf">9.0</td></tr>
+        <tr><td data-i18n="cmpDim2">字符串加密</td><td class="win-js">9.5</td><td>8.0</td></tr>
+        <tr><td data-i18n="cmpDim3">控制流平坦化</td><td class="win-js">9.5</td><td>7.0</td></tr>
+        <tr><td data-i18n="cmpDim4">死代码注入</td><td class="win-js">9.0</td><td>6.5</td></tr>
+        <tr><td data-i18n="cmpDim5">调试保护</td><td class="win-js">9.5</td><td>8.0</td></tr>
+        <tr><td data-i18n="cmpDim6">代码压缩</td><td>5.5</td><td class="win-obf">6.0</td></tr>
+        <tr><td data-i18n="cmpDim7">VM 虚拟化</td><td class="win-js">9.5</td><td>9.0</td></tr>
+        <tr><td data-i18n="cmpDim8">自防御/防篡改</td><td class="win-js">9.5</td><td>9.0</td></tr>
+        <tr><td data-i18n="cmpDim9">常量/数字混淆</td><td class="win-js">9.0</td><td>6.0</td></tr>
+        <tr><td data-i18n="cmpDim10">反自动化/反LLM</td><td class="win-js">9.0</td><td>8.0</td></tr>
+      </tbody>
+    </table>
   </div>
 </div>
 
