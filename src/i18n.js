@@ -276,7 +276,7 @@ const STRINGS = {
     // 混淆强度对比（十维雷达，max 档 vs obfuscator.io Pro VM）
     cmpOpen: '对比 obfuscator.io',
     cmpTitle: '混淆强度对比 · JsLabyrinth vs obfuscator.io',
-    cmpNote: '双方最强档：JsLabyrinth 用 max 预设，obfuscator.io 用 Pro VM。十维 0–10 评分，分数越高强度越强。',
+    cmpNote: '双方最强档：JsLabyrinth 用 max 预设，obfuscator.io 用 Pro VM。十维 0–10 分，按公开能力面逐项对照——obfuscator.io 在标识符/属性重命名与成熟度（实战检验、边界用例覆盖）上更优，JsLabyrinth 在调试保护、防篡改、反自动化与 VM/WASM 内核上更强；代码压缩两者都偏弱（都不是真正的 minifier）。评分为能力覆盖度，不等于实测破解耗时。',
     cmpLegendJs: 'JsLabyrinth（max）',
     cmpLegendObf: 'obfuscator.io（Pro VM）',
     cmpDim1: '标识符重命名',
@@ -565,7 +565,7 @@ const STRINGS = {
     // obfuscation strength comparison (ten-dimension radar, max tier vs obfuscator.io Pro VM)
     cmpOpen: 'vs obfuscator.io',
     cmpTitle: 'Obfuscation strength · JsLabyrinth vs obfuscator.io',
-    cmpNote: 'Both at maximum tier: JsLabyrinth "max" preset vs obfuscator.io Pro VM. Ten dimensions scored 0–10; higher is stronger.',
+    cmpNote: 'Both at their maximum tier: JsLabyrinth "max" preset vs obfuscator.io Pro VM. Ten dimensions scored 0–10 against public capabilities — obfuscator.io leads in identifier/property renaming and battle-tested maturity (edge-case coverage); JsLabyrinth leads in debug protection, tamper resistance, anti-automation and its VM/WASM core; both are weak on compression (neither is a real minifier). Scores reflect capability coverage, not measured cracking time.',
     cmpLegendJs: 'JsLabyrinth (max)',
     cmpLegendObf: 'obfuscator.io (Pro VM)',
     cmpDim1: 'Identifiers',
