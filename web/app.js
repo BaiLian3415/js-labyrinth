@@ -900,24 +900,38 @@ async function refreshLicensePanel() {
   els.licBadge.title = trial ? t('guiTrialHint', { limits: limitsText(ent) }) : '';
   els.licBadge.dataset.state = nextLic;
   if (prevLic && prevLic !== nextLic) replay(els.licBadge, 'pop');
+  // 用量一律按**本地**记录显示，不能用服务端那份。
+  //
+  // 界面这一侧的混淆在浏览器内跑，consumeRun 只把用量写进本地签名记录；服务端那份
+  // 是 /api/obfuscate 的计数，浏览器跑多少次它都不知道（这是设计如此，见
+  // license-web.importRecord 的说明：服务端拒绝采纳客户端推上来的用量，否则客户端
+  // 每刷新一次页面就把服务端的累计计数清零）。
+  //
+  // 原先这里在 state.serverLicense 存在时直接显示服务端的 quotaText，于是有两个症状：
+  //   1) 跑完一次不刷新次数——显示的是一份激活时刻的服务端快照；
+  //   2) 刷新页面后先看到本地计数，紧接着被服务端的旧值（通常是 0）覆盖掉。
+  // 而 state.serverLicense 在**本地有记录**时也会被赋值（见 syncLicenseWithServer），
+  // 所以这条分支的"本地没有可读的记录"前提并不成立。
+  const localQuota = await licenseWeb.quotaText();
   if (state.serverLicense) {
-    // 服务端认定的授权：本地没有可读的记录，横幅与配额都直接用服务端答复
+    // 服务端答复仍提供横幅与机器码（那两项不随用量变化），只是用量换成本地的；
+    // 本地确实没有记录时（比如换了浏览器、只剩 cookie）才回落到服务端那份。
     els.licInfo.textContent = (state.serverLicense.banner || '')
-      + (state.serverLicense.quotaText ? '\n' + state.serverLicense.quotaText : '');
+      + (localQuota ? '\n' + localQuota
+        : (state.serverLicense.quotaText ? '\n' + state.serverLicense.quotaText : ''));
     els.licInfo.style.whiteSpace = 'pre-line';
     // 服务端没激活时它回的机器码是服务端自己环境派生的展示值，与这台机器无关；
     // 那种情况下仍显示本机那个。已激活时两端必须一致——机器码由服务端签发并与
     // 卡密绑定，本机那份记录里存的就是同一个值。
     const serverMachine = state.serverLicense.trial ? '' : (state.serverLicense.machine || '');
     els.licDevice.textContent = t('guiDevice') + ': ' + (serverMachine || (await licenseWeb.machineId()));
-    els.quota.textContent = state.serverLicense.quotaText || '';
+    els.quota.textContent = localQuota || state.serverLicense.quotaText || '';
   } else {
     const banner = await licenseWeb.bannerText();
-    const q = await licenseWeb.quotaText();
-    els.licInfo.textContent = banner + (q ? '\n' + q : '');
+    els.licInfo.textContent = banner + (localQuota ? '\n' + localQuota : '');
     els.licInfo.style.whiteSpace = 'pre-line';
     els.licDevice.textContent = t('guiDevice') + ': ' + (await licenseWeb.machineId());
-    els.quota.textContent = q;
+    els.quota.textContent = localQuota;
   }
   refreshGateStyles();
   updatePresetHint();
