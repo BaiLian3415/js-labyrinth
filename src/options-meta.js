@@ -19,6 +19,8 @@ export const VALUE_OPTIONS = {
   preset: { kind: 'enum', values: PRESET_NAMES, caseInsensitive: true, group: 'basic', zh: '混淆强度预设', en: 'Strength preset' },
   identifierPrefix: { kind: 'string', group: 'basic', zh: '标识符前缀', en: 'Identifier prefix' },
   extraGlobals: { kind: 'string', group: 'basic', zh: '宿主全局白名单', en: 'Extra host globals', hintZh: '逗号分隔，如 WebSocketPair', hintEn: 'comma separated, e.g. WebSocketPair' },
+  reservedNames: { kind: 'string', group: 'basic', zh: '保留名（正则）', en: 'Reserved names', hintZh: '逗号分隔的正则；匹配的变量/函数名不改名，如 ^__webpack, ^process$', hintEn: 'comma separated regex; matching identifiers are not renamed, e.g. ^__webpack, ^process$' },
+  reservedStrings: { kind: 'string', group: 'basic', zh: '保留字符串（正则）', en: 'Reserved strings', hintZh: '逗号分隔的正则；匹配的字符串字面量不收集/不拆分/不编码', hintEn: 'comma separated regex; matching string literals are left untouched' },
   domainLock: { kind: 'string', group: 'defense', zh: '域名锁定', en: 'Domain lock', hintZh: '逗号分隔的域名白名单；example.com 精确匹配，.example.com 含任意层子域，example.com:8443 额外锁端口；留空关闭。非授权域整池字符串乱码，锁定与解密密钥耦合', hintEn: 'comma separated; example.com exact, .example.com with subdomains, example.com:8443 locks port; empty disables. Key-coupled: unauthorized domains garble the whole string pool' },
   bannerText: { kind: 'string', group: 'basic', zh: '自定义文件头注释', en: 'Custom header banner', hintZh: '付费档可自定义；留空写默认署名与反 LLM 声明', hintEn: 'paid tiers; empty writes the default notice' },
   dirSkip: { kind: 'string', group: 'basic', guiHide: true, zh: '目录模式追加跳过', en: 'Extra skipped dirs' },
@@ -98,6 +100,7 @@ export const FLAG_CANDIDATES = [
 
 const BOOL_LABELS = {
   mangle: ['标识符重命名', 'Identifier renaming'],
+  renameProperties: ['属性名重命名', 'Property renaming'],
   functionWrapper: ['函数包装（IIFE）', 'Function wrapper (IIFE)'],
   callProxy: ['动态调用层', 'Call proxy dispatch'],
   templateToConcat: ['模板串降级', 'Template literal lowering'],
@@ -142,7 +145,7 @@ const BOOL_LABELS = {
 };
 
 const BOOL_GROUPS = {
-  mangle: 'structure', functionWrapper: 'structure', callProxy: 'structure',
+  mangle: 'structure', renameProperties: 'structure', functionWrapper: 'structure', callProxy: 'structure',
   templateToConcat: 'structure', objectKeyEncoding: 'structure',
   stringArray: 'strings', stringArrayRotate: 'strings', stringArrayCache: 'strings',
   stringArrayMixedEncoding: 'strings', stringIndexMask: 'strings', honeyStrings: 'strings',

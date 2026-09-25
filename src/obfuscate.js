@@ -11,6 +11,7 @@ import randUtil from './utils/rand.js';
 const { setSeed, rand, randInt } = randUtil;
 import rtlib from './passes/rtlib.js';
 import simplify from './passes/simplify.js';
+import renameProperties from './passes/renameProperties.js';
 import vm from './passes/vm.js';
 import wasm from './passes/wasm.js';
 import wasmvm from './passes/wasmvm.js';
@@ -156,6 +157,15 @@ function obfuscate(code, userOptions) {
     options.domainLock = [];
   }
 
+  // reservedNames / reservedStrings 归一化：字符串（逗号分隔）→ 正则文本数组
+  for (const key of ['reservedNames', 'reservedStrings']) {
+    if (typeof options[key] === 'string') {
+      options[key] = options[key].split(',').map((s) => s.trim()).filter(Boolean);
+    } else if (!Array.isArray(options[key])) {
+      options[key] = [];
+    }
+  }
+
   const tParse = platform.nowMs();
   const ast = parse(code, {
     sourceType: 'unambiguous',
@@ -214,6 +224,11 @@ function obfuscate(code, userOptions) {
   // AST 简化（simplify）：常量折叠 / 死代码消除 / 空语句清除 / 声明合并。
   // 必须在 rtlib 之前、任何注入发生之前跑，此时 AST 只有用户代码。
   if (options.simplify) timePass('simplify', () => simplify(ast, options, ctx));
+
+  // 属性名重命名（renameProperties，safe 模式）：同样在最前，只作用于用户代码。
+  // 必须在 objectKeys / stringArray 之前：那时属性名还是干净的 Identifier /
+  // StringLiteral，还没被改写成计算键 + 字符串池形态
+  if (options.renameProperties) timePass('renameProperties', () => renameProperties(ast, options, ctx));
 
   if (options.rtlib !== false) timePass('rtlib', () => rtlib(ast, options, ctx));
 

@@ -145,11 +145,17 @@ export default function stringArray(ast, options, ctx) {
   // 诱饵串：垃圾串池里混入高信号假串，包含假密钥、假 URL、假 token。
   // 语义分析和 LLM 归纳会被引向并不存在的外部资产
   const honey = options.honeyStrings !== false;
+  // reservedStrings：匹配的字符串字面量不收集 / 不拆分 / 不编码（正则保留名单）
+  const reservedRe = (options.reservedStrings || [])
+    .map((s) => { try { return new RegExp(s); } catch (e) { return null; } })
+    .filter(Boolean);
+  const isReservedString = (v) => reservedRe.length > 0 && reservedRe.some((re) => re.test(v));
 
   const candidates = [];
   traverse(ast, {
     StringLiteral(path) {
       if (!isEligible(path)) return;
+      if (isReservedString(path.node.value)) return;
       if (rng() > threshold) return;
       // 非计算属性的键位置字符串要先置 computed，才能在键位换成解码调用
       const pp = path.parentPath;
@@ -164,7 +170,9 @@ export default function stringArray(ast, options, ctx) {
       const quasis = path.node.quasis;
       if (quasis.length !== 1) return;
       const q = quasis[0].value;
-      candidates.push({ path, value: q.cooked !== undefined && q.cooked !== null ? q.cooked : q.raw, parts: null });
+      const value = q.cooked !== undefined && q.cooked !== null ? q.cooked : q.raw;
+      if (isReservedString(value)) return;
+      candidates.push({ path, value, parts: null });
     },
     noScope: true,
   });

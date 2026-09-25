@@ -1595,7 +1595,10 @@ section('VM 保护与用户标识符冲突');
   const runNode = (code, name) => {
     const file = path.join(TMP, name + '.js');
     fs.writeFileSync(file, code);
-    return runSync(process.execPath, [file], { encoding: 'utf8', timeout: 30000 }).trim();
+    // max 预设的 VM+WASM 产物在较慢宿主上单次执行实测 25~31s，30s 超时是边界值，
+    // 会以 ETIMEDOUT 形式偶发误报（每次漂移到不同 case/seed，放宽后结果全对）。
+    // 这里放到 90s 只影响夹具判定，不改变被判定产物的语义。
+    return runSync(process.execPath, [file], { encoding: 'utf8', timeout: 90000 }).trim();
   };
   let mismatch = 0;
   let firstBad = '';
@@ -2193,6 +2196,90 @@ process.stdout.write(String(a) + '|' + String(b) + '|' + c + '\\n');`, 'Infinity
   ok(obfuscate(simCases[0][0], { preset: 'high', shell: false, simplify: true, seed: 97 }).code ===
     obfuscate(simCases[0][0], { preset: 'high', shell: false, simplify: true, seed: 97 }).code,
     'simplify 固定 seed 可复现');
+}
+
+// ---------------------------------------------------------------- 属性名重命名与保留名单
+
+section('属性名重命名（renameProperties）与保留名单（reservedNames/reservedStrings）');
+{
+  // 内部契约属性（定义 + 访问）：foo/bar/baz 三处同步改名；o2 走点号与字面量键两条路
+  const rpSrc = `var obj = { foo: 1, bar: 2, baz: 3 };
+function get() { return obj.foo + obj.bar * obj.baz; }
+var o2 = { foo: 'a' };
+o2['foo'] = 'b';
+process.stdout.write(get() + '|' + o2.foo + '\\n');`;
+  const rpWant = '7|b\n';
+
+  // 改名生效 + 语义等价（文本探针会被 objectKeyEncoding/vm 改写，改用 stats 计数）
+  {
+    const on = obfuscate(rpSrc, { preset: 'low', shell: false, renameProperties: true, seed: 1 });
+    const off = obfuscate(rpSrc, { preset: 'low', shell: false, renameProperties: false, seed: 1 });
+    const st = on.stats.find((s) => s.pass === 'renameProperties');
+    ok(st && st.result && st.result.renamed >= 3, 'renameProperties 开启时三处属性名同步改名',
+      JSON.stringify(st && st.result));
+    ok(!off.stats.some((s) => s.pass === 'renameProperties'), 'renameProperties 关闭时 pass 不出现');
+    ok(on.code !== off.code, 'renameProperties 开启确实改动了产物');
+    ok(runNode(on.code, 'rp-on') === rpWant && runNode(off.code, 'rp-off') === rpWant,
+      'renameProperties 开/关语义一致');
+  }
+
+  // 白名单：body 在保留名单不改，len 不在则改（定义 ∩ 访问均命中）
+  {
+    const bodySrc = `var o = { body: 1, len: 2 };
+process.stdout.write(String(o.body + o.len) + '\\n');`;
+    const r = obfuscate(bodySrc, { preset: 'low', shell: false, renameProperties: true, seed: 1 });
+    const st = r.stats.find((s) => s.pass === 'renameProperties');
+    ok(st && st.result && st.result.renamed === 1, '白名单属性（body）不改、非白名单（len）改',
+      JSON.stringify(st && st.result));
+    ok(runNode(r.code, 'rp-body') === '3\n', '白名单样例语义正确');
+  }
+
+  // 组合：high 预设 + renameProperties 全链路语义不变（2 seed）
+  {
+    let comboBad = '';
+    for (let seed = 1; seed <= 2 && !comboBad; seed++) {
+      for (const rp of [false, true]) {
+        const code = obfuscate(rpSrc, { preset: 'high', shell: false, renameProperties: rp, seed }).code;
+        let got;
+        try { got = runNode(code, 'rp-combo-' + seed + '-' + rp); } catch (e) { got = 'THREW'; }
+        if (got !== rpWant) { comboBad = 'seed=' + seed + ' rp=' + rp + ' → ' + got.slice(0, 40); break; }
+      }
+    }
+    ok(comboBad === '', 'high 预设 + renameProperties 全链路语义不变', comboBad);
+  }
+
+  // reservedNames：匹配名不改，其余照常改
+  {
+    const src = `function myPublicApi(x) { return x * 2; }
+var internalVar = 5;
+process.stdout.write(myPublicApi(internalVar) + '\\n');`;
+    const r = obfuscate(src, { preset: 'low', shell: false, reservedNames: ['^myPublic'], seed: 1 });
+    ok(runNode(r.code, 'rn') === '10\n', 'reservedNames 语义正确');
+    ok(r.code.includes('myPublicApi') && !r.code.includes('internalVar'),
+      'reservedNames 保留匹配名、其余改名');
+  }
+
+  // reservedStrings：匹配字符串不进池（threshold=1 保证非保留串必进池）
+  {
+    const src = `var a = 'secret-string';
+var b = 'normal-string';
+process.stdout.write(a + '|' + b + '\\n');`;
+    const r = obfuscate(src, { preset: 'low', shell: false, reservedStrings: ['secret'], stringArrayThreshold: 1, seed: 1 });
+    ok(runNode(r.code, 'rs') === 'secret-string|normal-string\n', 'reservedStrings 语义正确');
+    ok(r.code.includes('secret-string') && !r.code.includes('normal-string'),
+      'reservedStrings 保留匹配串、其余进池');
+  }
+
+  // 门控：free 锁死 renameProperties（reservedNames/reservedStrings 是减混淆兼容功能，不门控）
+  ok(plan.violations({ renameProperties: true }, 'free').length === 1, 'free 档 renameProperties 锁死');
+  ok(plan.violations({ renameProperties: false }, 'free').length === 0, 'free 档关闭放行');
+  ok(plan.violations({ renameProperties: true }, 'plus').length === 0, 'plus 档 renameProperties 放行');
+  ok(obfuscateMod.DEFAULTS.renameProperties === false, 'renameProperties 默认关闭');
+
+  // 可复现
+  ok(obfuscate(rpSrc, { preset: 'high', shell: false, renameProperties: true, seed: 97 }).code ===
+    obfuscate(rpSrc, { preset: 'high', shell: false, renameProperties: true, seed: 97 }).code,
+    'renameProperties 固定 seed 可复现');
 }
 
 // ---------------------------------------------------------------- 收尾

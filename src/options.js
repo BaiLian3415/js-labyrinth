@@ -7,6 +7,11 @@ export default {
   "simplify": false,
   "identifierPrefix": "_0x",
   "mangle": true,
+  // 属性名重命名（renameProperties，safe 模式）：改成员访问 obj.foo / 对象键
+  // {foo:1} / 方法名 / 类方法·类属性名的属性名。只改「程序内定义 ∩ 访问」的
+  // 属性，叠加高风险名白名单。与外部代码共享属性可能被破坏（safe 模式固有局限）。
+  // Paid 档（plus+）可用；free 档闸门锁死 false。
+  "renameProperties": false,
   "stringArray": true,
   "stringArrayEncoding": "rc4",
   "stringArrayMixedEncoding": true,
@@ -80,6 +85,11 @@ export default {
   "shell": true,
   "shellDepth": 1,
   "extraGlobals": [],
+  // reservedNames / reservedStrings：正则保留名单。匹配的绑定名不改名、匹配的
+  // 字符串字面量不收集/不拆分/不编码。逗号分隔的正则文本（减混淆的兼容性功能，
+  // 不收费门控）。
+  "reservedNames": [],
+  "reservedStrings": [],
   "wasmInterpreter": false,
   "rtDepth": 2,
   "stringScatter": false,

@@ -159,6 +159,10 @@ export default function mangle(ast, options, ctx) {
   const { traverse } = ctx;
   const used = new Set(ctx.usedNames);
   const prefix = options.identifierPrefix || '_0x';
+  // reservedNames：匹配的绑定名不改名（正则，供跨库 / 外部契约保留）
+  const reservedRe = (options.reservedNames || [])
+    .map((s) => { try { return new RegExp(s); } catch (e) { return null; } })
+    .filter(Boolean);
 
   // 预处理，先展开解构 pattern 里的 shorthand。parser 对简写会生成 key 与
   // value 指向同一节点的情况，直接改 value 名会连带污染属性名，先分离成
@@ -239,6 +243,7 @@ export default function mangle(ast, options, ctx) {
 
   let renamed = 0;
   for (const { name, binding } of targets) {
+    if (reservedRe.length && reservedRe.some((re) => re.test(name))) continue;
     const newName = uniqueName(used, prefix);
     try {
       // 声明点。同一条绑定的重复声明（var 重复、Annex B 提升上来的块级函数

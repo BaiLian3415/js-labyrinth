@@ -69,7 +69,8 @@ export default {
     "antiLLM": false,
     "bannerText": '',
     "domainLock": '',
-    "simplify": false
+    "simplify": false,
+    "renameProperties": false
   },
   "medium": {
     "compact": true,
@@ -141,7 +142,8 @@ export default {
     "antiLLM": false,
     "bannerText": '',
     "domainLock": '',
-    "simplify": false
+    "simplify": false,
+    "renameProperties": false
   },
   "high": {
     "compact": true,
@@ -213,7 +215,8 @@ export default {
     "antiLLM": false,
     "bannerText": '',
     "domainLock": '',
-    "simplify": false
+    "simplify": false,
+    "renameProperties": false
   },
   "max": {
     "compact": true,
@@ -285,6 +288,7 @@ export default {
     "antiLLM": true,
     "bannerText": '',
     "domainLock": '',
-    "simplify": false
+    "simplify": false,
+    "renameProperties": false
   }
 };
