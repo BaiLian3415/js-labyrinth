@@ -10,6 +10,7 @@ import PRESETS from './presets.js';
 import randUtil from './utils/rand.js';
 const { setSeed, rand, randInt } = randUtil;
 import rtlib from './passes/rtlib.js';
+import simplify from './passes/simplify.js';
 import vm from './passes/vm.js';
 import wasm from './passes/wasm.js';
 import wasmvm from './passes/wasmvm.js';
@@ -210,6 +211,10 @@ function obfuscate(code, userOptions) {
     return r;
   };
 
+  // AST 简化（simplify）：常量折叠 / 死代码消除 / 空语句清除 / 声明合并。
+  // 必须在 rtlib 之前、任何注入发生之前跑，此时 AST 只有用户代码。
+  if (options.simplify) timePass('simplify', () => simplify(ast, options, ctx));
+
   if (options.rtlib !== false) timePass('rtlib', () => rtlib(ast, options, ctx));
 
   const applyPass = (fn, name) => {
@@ -329,6 +334,8 @@ function obfuscate(code, userOptions) {
         // 域名锁定只锁载荷：外壳引导层自身不注入（payload 里的校验已经
         // 覆盖整个产物，重复注入只会让引导代码在非授权域先崩在半路）
         domainLock: [],
+        // simplify 同样只作用于载荷：引导层代码本就精简，不重复压缩
+        simplify: false,
         controlFlowFlattening: true, logicalExpressions: true,
         conditionObfuscation: true, opaquePredicates: true,
         deadCodeInjection: true, objectKeyEncoding: true,

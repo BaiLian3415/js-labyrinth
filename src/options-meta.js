@@ -137,6 +137,7 @@ const BOOL_LABELS = {
   shell: ['外层保护壳', 'Outer protective shell'],
   compact: ['压缩输出', 'Compact output'],
   escapeNonAscii: ['非 ASCII 转义', 'Escape non-ASCII'],
+  simplify: ['AST 简化（常量折叠）', 'AST simplify (constant folding)'],
   dirCopyOthers: ['复制非 JS 文件', 'Copy non-JS files'],
 };
 
@@ -157,7 +158,7 @@ const BOOL_GROUPS = {
   antiCDP: 'defense',
   selfDefending: 'defense', envFingerprint: 'defense', integrityCheck: 'defense',
   selfCheck: 'defense', shell: 'defense',
-  compact: 'output', escapeNonAscii: 'output',
+  compact: 'output', escapeNonAscii: 'output', simplify: 'output',
 };
 
 export const OPTION_GROUPS = [

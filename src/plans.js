@@ -22,6 +22,7 @@ export default {
       "debugProtection": false,
       "antiCDP": false,
       "domainLock": [""],
+      "simplify": false,
       "debugPoison": false,
       "selfDefending": false,
       "envFingerprint": false,

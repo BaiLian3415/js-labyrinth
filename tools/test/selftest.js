@@ -2113,6 +2113,88 @@ process.stdout.write(a + '|' + b + '\\n');
     'domainLock 固定 seed 可复现');
 }
 
+// ---------------------------------------------------------------- AST 简化（simplify）
+
+section('AST 简化（simplify：常量折叠 / 死代码 / 声明合并）');
+{
+  // 三组样例：① 数值/字符串/一元折叠 + if(false) 死代码 + var 合并；② 位运算/
+  // typeof/逻辑/条件/字符串比较/nullish 折叠；③ 除零/NaN 这类必须保守跳过。
+  const simCases = [
+    [`function calc(n) {
+  var base = 1 + 2 * 3;
+  var msg = 'a' + 'b' + n;
+  var flag = !0;
+  if (false) { base = 999; }
+  var sum = 0;
+  for (var i = 0; i < 3; i++) { sum += i; }
+  var d1 = 1; var d2 = 2;
+  return [base, msg, flag, sum, d1, d2].join(',');
+}
+process.stdout.write(calc('X') + '\\n');`, '7,abX,true,3,1,2\n'],
+    [`var r = [];
+r.push((5 & 3) + (1 << 4));
+r.push(typeof 5);
+r.push((true && 'yes'));
+r.push((false ? 'a' : 'b'));
+r.push(('abc' < 'abd'));
+r.push((10 === 10));
+r.push((null ?? 'fallback'));
+process.stdout.write(r.join('|') + '\\n');`, '17|number|yes|b|true|true|fallback\n'],
+    [`var a = 1 / 0;
+var b = 0 / 0;
+var c = 'x' + (2 + 3);
+process.stdout.write(String(a) + '|' + String(b) + '|' + c + '\\n');`, 'Infinity|NaN|x5\n'],
+  ];
+
+  // 形态：开启时折叠/死代码/声明合并均生效；关闭时 pass 不出现且产物不变
+  const rSimOn = obfuscate(simCases[0][0], { preset: 'low', shell: false, simplify: true, seed: 1 });
+  const rSimOff = obfuscate(simCases[0][0], { preset: 'low', shell: false, simplify: false, seed: 1 });
+  const stSim = rSimOn.stats.find((s) => s.pass === 'simplify');
+  ok(stSim && stSim.result && stSim.result.folded > 0 && stSim.result.removed > 0
+    && stSim.result.merged > 0,
+    'simplify 开启时折叠/死代码/声明合并均生效', JSON.stringify(stSim && stSim.result));
+  ok(!rSimOff.stats.some((s) => s.pass === 'simplify'), 'simplify 关闭时 pass 不出现');
+  ok(rSimOn.code !== rSimOff.code, 'simplify 开启确实改动了产物');
+
+  // 语义等价：三组样例开/关输出一致（含除零/NaN 这类被保守跳过的陷阱）
+  let simBad = '';
+  for (let i = 0; i < simCases.length && !simBad; i++) {
+    const [src, want] = simCases[i];
+    for (const flag of [false, true]) {
+      const code = obfuscate(src, { preset: 'low', shell: false, simplify: flag, seed: 1 }).code;
+      let got;
+      try { got = runNode(code, 'sim-' + i + '-' + flag); } catch (e) { got = 'THREW'; }
+      if (got !== want) { simBad = '样例' + i + ' simplify=' + flag + ' → ' + got.slice(0, 40); break; }
+    }
+  }
+  ok(simBad === '', '三组样例 simplify 开/关语义一致（除零/NaN 保守跳过）', simBad);
+
+  // 组合：high 预设 + simplify 全链路语义不变（2 seed）
+  {
+    let comboBad = '';
+    for (let seed = 1; seed <= 2 && !comboBad; seed++) {
+      for (const flag of [false, true]) {
+        const code = obfuscate(simCases[0][0], { preset: 'high', shell: false, simplify: flag, seed }).code;
+        let got;
+        try { got = runNode(code, 'sim-combo-' + seed + '-' + flag); } catch (e) { got = 'THREW'; }
+        if (got !== simCases[0][1]) { comboBad = 'seed=' + seed + ' simplify=' + flag + ' → ' + got.slice(0, 40); break; }
+      }
+    }
+    ok(comboBad === '', 'high 预设 + simplify 全链路语义不变', comboBad);
+  }
+
+  // 门控：free 锁死、plus 放行；默认关闭
+  ok(plan.violations({ simplify: true }, 'free').length === 1, 'free 档 simplify 被闸门锁死');
+  ok(plan.violations({ simplify: false }, 'free').length === 0, 'free 档关闭放行');
+  ok(plan.violations({ simplify: true }, 'plus').length === 0, 'plus 档 simplify 放行');
+  ok(obfuscateMod.DEFAULTS.simplify === false, 'simplify 默认关闭');
+
+  // 可复现：固定 seed 逐字节一致
+  ok(obfuscate(simCases[0][0], { preset: 'high', shell: false, simplify: true, seed: 97 }).code ===
+    obfuscate(simCases[0][0], { preset: 'high', shell: false, simplify: true, seed: 97 }).code,
+    'simplify 固定 seed 可复现');
+}
+
 // ---------------------------------------------------------------- 收尾
 
 section('其他');

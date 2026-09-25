@@ -68,7 +68,8 @@ export default {
     "stringScatter": false,
     "antiLLM": false,
     "bannerText": '',
-    "domainLock": ''
+    "domainLock": '',
+    "simplify": false
   },
   "medium": {
     "compact": true,
@@ -139,7 +140,8 @@ export default {
     "stringScatter": false,
     "antiLLM": false,
     "bannerText": '',
-    "domainLock": ''
+    "domainLock": '',
+    "simplify": false
   },
   "high": {
     "compact": true,
@@ -210,7 +212,8 @@ export default {
     "stringScatter": false,
     "antiLLM": false,
     "bannerText": '',
-    "domainLock": ''
+    "domainLock": '',
+    "simplify": false
   },
   "max": {
     "compact": true,
@@ -281,6 +284,7 @@ export default {
     "stringScatter": true,
     "antiLLM": true,
     "bannerText": '',
-    "domainLock": ''
+    "domainLock": '',
+    "simplify": false
   }
 };

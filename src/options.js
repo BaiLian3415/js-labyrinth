@@ -1,6 +1,10 @@
 export default {
   "compact": true,
   "escapeNonAscii": true,
+  // AST 简化（simplify）：混淆前对用户代码做常量折叠 / 死代码消除 / 空语句
+  // 清除 / 声明合并，缩小产物。默认关（预设不动，避免改既有产物基线），
+  // Paid 档（plus+）可显式开启；free 档闸门锁死 false。
+  "simplify": false,
   "identifierPrefix": "_0x",
   "mangle": true,
   "stringArray": true,
