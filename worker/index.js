@@ -3,7 +3,10 @@
  *
  * 两条路都提供：
  *   静态资源   绑定 ASSETS 时，非 /api/ 的请求原样交给静态资源（网页界面就在那里）；
- *   JSON API   /api/obfuscate、/api/license、/api/plans、/api/health。
+ *   JSON API   /api/obfuscate、/api/license、/api/plans、/api/health、/api/machine。
+ *
+ * /api/machine 负责发机器码：激活时客户端向它要一个，服务端按**卡密编号**登记
+ * 后永久保存，同一张卡此后拿到的永远是同一个值（详见 license-web 的"机器码"一节）。
  *
  * 与浏览器内执行共用同一份核心（src/**），因此相同输入、相同卡密在两端得到
  * 相同结果与相同拦截。区别只在计算位置：Worker 有 CPU 时间上限（免费版 10 ms，
@@ -271,6 +274,37 @@ async function handleObfuscate(request, env) {
   }, 200);
 }
 
+/**
+ * /api/machine：取某张卡密绑定的机器码，没有就签发一个并永久登记。
+ *
+ * 机器码不再由客户端的设备特征派生——那样换环境就变（Worker 里没有 navigator，
+ * 派生出的值与浏览器永不相等，界面上就是"激活之后机器码变了"）。现在由服务端
+ * 签发并与卡密绑定：同一张卡在任何设备、任何时间拿到的都是同一个值。
+ *
+ * 卡密必须合法（走 codec.parseCode 的校验码），认不出卡就无从绑定——机器码是
+ * 绑在卡上的，不是绑在请求上的。
+ */
+async function handleMachine(request) {
+  if (request.method !== 'POST') {
+    return json({ ok: false, message: 'use POST with {key}' }, 405);
+  }
+  const body = await readBody(request);
+  if (body === null) return json({ ok: false, message: 'invalid JSON body' }, 400);
+  const key = request.headers.get('X-JSLB-Key') || body.key;
+  if (!key) return json({ ok: false, message: 'missing key' }, 400);
+  const r = await licenseWeb.machineForCode(key);
+  if (!r.ok) {
+    return json({ ok: false, message: t('licReason_' + r.reason) }, 400);
+  }
+  return json({
+    ok: true,
+    machine: r.machine,
+    // issued 为真表示这次是首次签发（之前没有绑定），客户端可据此判断是不是新卡
+    issued: !!r.issued,
+    source: r.source || '',
+  }, 200);
+}
+
 /** /api/license：查询或激活。 */
 async function handleLicense(request) {
   if (request.method === 'GET') {
@@ -362,6 +396,12 @@ async function handleApi(request, env) {
       plans: plan.rows(),
       web: platform.getWebConfig(),
     }, 200, corsHeaders(env));
+  }
+
+  if (path === '/api/machine') {
+    const res = await handleMachine(request);
+    for (const [k, v] of Object.entries(corsHeaders(env))) res.headers.set(k, v);
+    return res;
   }
 
   if (path === '/api/license') {

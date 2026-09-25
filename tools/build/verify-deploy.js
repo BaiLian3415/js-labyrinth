@@ -17,6 +17,8 @@
  *   2. /api/plans 的档位数与本地一致，且 web.requireLicense 与预期一致
  *   3. /api/plans 的 web.* 与 wrangler.toml 的 [vars] JSLB_WEB_CONFIG 逐键一致
  *   4. 无卡密 POST /api/obfuscate 被拒（默认期望 402）
+ *   5. /api/machine 路由已上线（非法卡密 400、GET 405）——旧构建没有这条路由，
+ *      界面会静默退回本机兜底机器码，表现就是"激活之后机器码变了"
  *
  * 都不消耗配额：用的是随机设备码，且期望结果是被拒绝。
  *
@@ -188,6 +190,29 @@ console.log('3) 无卡密 POST /api/obfuscate');
   try { j = JSON.parse(r.text); } catch (e) { /* 非 JSON，例如 1102 CPU 超限页 */ }
   report(r.status === want, 'HTTP ' + want + '（未激活一律拒绝）',
     '实得 ' + (r.status || '连接失败') + (j && !j.ok ? '  ' + String(j.message || '').slice(0, 60) : ''));
+}
+
+// ---- 4. 机器码路由真的上线了 ----
+//
+// 机器码 2026-09-25 起由服务端签发并与卡密永久绑定（激活时客户端向 /api/machine
+// 要一个）。这条只验"路由在"：拿一张必然非法的卡密，期望 400 而不是 404——404 说明
+// 部署的是旧版本，界面激活时会静默退回本机兜底值，表现就是"激活后机器码变了"。
+console.log('');
+console.log('4) POST /api/machine');
+{
+  const r = await probe('/api/machine', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ key: 'JSLB-0-00000000-0000000000000000-0000' }),
+  });
+  let j = null;
+  try { j = JSON.parse(r.text); } catch (e) { /* 非 JSON */ }
+  report(r.status === 400, 'HTTP 400（非法卡密被拒，说明路由是新版本）',
+    '实得 ' + (r.status || '连接失败') + (j && j.message ? '  ' + String(j.message).slice(0, 40) : ''));
+  report(!!j && j.ok === false, 'ok=false', j ? '' : '响应不是 JSON');
+  // 只收 POST：用 GET 试探，405 才对（返回 200 说明路由被别的处理器吃掉了）
+  const g = await probe('/api/machine');
+  report(g.status === 405, 'GET 返回 405', '实得 ' + (g.status || '连接失败'));
 }
 
 console.log('');

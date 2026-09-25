@@ -12,10 +12,11 @@
  *   目录模式   递归混淆、镜像目录结构、非 JS 文件按开关复制或跳过
  *   闸门       试用/低档卡密的预设上限与逐项闸门按预期拦截
  *   许可证     codec 签发-校验往返、篡改卡密/用量/套餐一律失败
+ *   机器码     服务端按卡密编号签发并永久绑定（同卡恒等、异卡不同、激活前后一致）
  *   网页链路   runJob 在浏览器侧等价路径上可跑通（授权、限额、记账）
  *   额度包     一次性额度按总额度累计、跨日不重置、用尽即拦
  *   解除激活   服务端按设备码存的那份记录被真正删掉，刷新不再恢复
- *   Worker API health / plans / license / obfuscate 四个路由（进程内，不打网络）
+ *   Worker API health / plans / license / machine / obfuscate 五个路由（进程内，不打网络）
  *   ZIP        文件头、CRC 与中央目录结构
  *   线上验收   打已部署的 Cloudflare 站点，确认部署与策略真的生效
  *
@@ -761,8 +762,11 @@ section('卡密赎回（严格一次性，防重复使用）');
   ok(a1.ok && a1.plan === 'plus', '不绑定卡首次激活成功', JSON.stringify(a1));
   ok(store.has('redeem:77777'), '赎回登记已写入全局 KV（按编号分键）');
   const rec1 = JSON.parse(store.get('redeem:77777'));
-  ok(rec1 && rec1.k === free && rec1.m === mid && rec1.t > 0,
-    '登记含卡密原文、赎回机器码与时间戳');
+  // 机器码 2026-09-25 起由服务端按卡密签发，赎回登记记的是**这张卡的绑定码**，
+  // 不再是上面那个未激活时的本机兜底值——激活之后 machineId() 返回的正是它。
+  const freeMid = await licenseWeb.machineId();
+  ok(rec1 && rec1.k === free && rec1.m === freeMid && rec1.t > 0,
+    '登记含卡密原文、赎回机器码与时间戳', rec1 && rec1.m);
 
   // 同机再激活同一张：严格一次性，拒绝（同机重复验证应走 restore，不来到这里）
   licenseWeb.resetRequestState();
@@ -786,10 +790,98 @@ section('卡密赎回（严格一次性，防重复使用）');
   const b1 = await licenseWeb.activate(bound);
   ok(b1.ok && b1.plan === 'plus', '另一张不绑定卡激活成功');
   const rec2 = JSON.parse(store.get('redeem:88888'));
-  ok(rec2 && rec2.k === bound && rec2.m === mid, '另一张卡也按卡密+机器码登记赎回');
+  ok(rec2 && rec2.k === bound && rec2.m === (await licenseWeb.machineId()),
+    '另一张卡也按卡密+机器码登记赎回（机器码随卡，与上一张不同）', rec2 && rec2.m);
+  ok(rec2 && rec2.m !== freeMid, '两张卡的机器码互不相同', rec2 && rec2.m);
 
   platform.setKv(null);
   platform.setStorage(null);
+}
+
+// ---------------------------------------------------------------- 机器码（服务端签发）
+
+// 老做法的毛病：机器码由浏览器设备特征派生，而 Worker 里没有 navigator / WebGL，
+// 派生出的是另一个常量——界面上就是"激活前显示 A、激活后服务端回 B"；特征里任何
+// 一项漂移（GPU 渲染器取不到、改时区/语言）还会让已激活的卡在 restore 时判成
+// machine 不一致，用户什么都没干就被踢回未激活。
+//
+// 现在机器码由服务端按**卡密编号**签发并永久登记：同一张卡在任何设备、任何时间
+// 拿到的都是同一个值。这一段钉住的就是这个"恒"。
+
+section('机器码：服务端签发并与卡密永久绑定');
+{
+  const store = new Map();
+  const kv = {
+    get: async (k) => (store.has(k) ? store.get(k) : null),
+    put: async (k, v) => { store.set(k, v); },
+    del: async (k) => { store.delete(k); },
+  };
+  licenseWeb.setKeyMaterial(TEST_CODE_KEY, null);
+  const today = Math.floor((Date.now() - codec.DAY_ZERO) / 86400000);
+  const cardA = codec.issueCode(TEST_CODE_KEY, 'plus', 30, '410001', today);
+  const cardB = codec.issueCode(TEST_CODE_KEY, 'plus', 30, '410002', today);
+
+  // ① 服务端没绑 KV：退化为"由卡号确定性派生"，跨请求、跨存储仍然恒等
+  platform.setKv(null);
+  licenseWeb.resetRequestState();
+  platform.setStorage(platform.newMemoryStorage());
+  const d1 = await licenseWeb.machineForCode(cardA);
+  licenseWeb.resetRequestState();
+  platform.setStorage(platform.newMemoryStorage());
+  const d2 = await licenseWeb.machineForCode(cardA);
+  ok(d1.ok && d2.ok && d1.machine === d2.machine && d1.machine.length === 24,
+    '无 KV 时同一张卡的机器码仍恒等（按卡号确定性派生）', d1.machine + ' / ' + d2.machine);
+  const dB = await licenseWeb.machineForCode(cardB);
+  ok(dB.ok && dB.machine !== d1.machine, '不同卡密得到不同机器码', dB.machine);
+
+  // ② 绑了 KV：随机签发一次并登记，之后永远回同一个值
+  platform.setKv(kv);
+  platform.setStorage(platform.newMemoryStorage());
+  licenseWeb.resetRequestState();
+  const k1 = await licenseWeb.machineForCode(cardA);
+  ok(k1.ok && k1.issued === true && k1.source === 'issued', '首次取机器码由服务端签发', k1.source);
+  ok(store.has('machine:410001'), '机器码按卡密编号登记进 KV（全局键 machine:<编号>）');
+  licenseWeb.resetRequestState();
+  platform.setStorage(platform.newMemoryStorage());
+  const k2 = await licenseWeb.machineForCode(cardA);
+  ok(k2.ok && k2.machine === k1.machine && k2.issued === false && k2.source === 'binding',
+    '第二次取同一张卡的机器码就是那个值（issued=false）', k2.source);
+
+  // ③ 激活用的就是这张卡的绑定码，记录与赎回登记三处一致
+  licenseWeb.resetRequestState();
+  licenseWeb.setRequestDeviceId('1'.repeat(32));
+  const actA = await licenseWeb.activate(cardA);
+  const recA = await licenseWeb.exportRecord();
+  ok(actA.ok && recA && recA.machine === k1.machine,
+    '激活写下的记录用同一个机器码', recA && recA.machine);
+  const redeemA = JSON.parse(store.get('redeem:410001') || '{}');
+  ok(redeemA.m === k1.machine, '赎回登记里的机器码与之一致（审计对得上）');
+
+  // ④ 绑定键被清掉、赎回登记还在：沿用登记里的机器码，不重新随机
+  store.delete('machine:410001');
+  licenseWeb.resetRequestState();
+  platform.setStorage(platform.newMemoryStorage());
+  licenseWeb.setRequestDeviceId('1'.repeat(32));
+  const k3 = await licenseWeb.machineForCode(cardA);
+  ok(k3.ok && k3.machine === k1.machine && k3.source === 'redeem',
+    '绑定键被删后由赎回登记恢复同一个码（不重新随机）', k3.source);
+
+  // ⑤ 激活态：界面显示的机器码 == 卡的绑定码 == 记录里的码
+  licenseWeb.resetRequestState();
+  licenseWeb.setRequestDeviceId('1'.repeat(32));
+  const restA = await licenseWeb.restore();
+  ok(restA.ok, '激活后的记录可被 restore 恢复', JSON.stringify(restA));
+  const shown = await licenseWeb.machineId();
+  ok(shown === k1.machine, 'restore 后 machineId() 即许可证上那个码（刷新不变）', shown);
+  ok((licenseWeb.current() || {}).machine === k1.machine, '状态里的机器码同步为绑定码');
+
+  // ⑤ 非法卡密无从绑定——机器码绑在卡上，不是绑在请求上
+  const bogus = await licenseWeb.machineForCode('JSLB-0-000-0000');
+  ok(!bogus.ok, '非法卡密取不到机器码', JSON.stringify(bogus));
+
+  platform.setKv(null);
+  platform.setStorage(null);
+  licenseWeb.resetRequestState();
 }
 
 // ---------------------------------------------------------------- Worker API
@@ -824,6 +916,66 @@ section('Cloudflare Worker 路由');
   const licJson = await lic.json();
   ok(lic.status === 200 && licJson.ok === true && licJson.trial === true, 'GET /api/license 返回试用状态');
   ok(typeof licJson.machine === 'string' && licJson.machine.length === 24, 'API 侧机器码为 24 字符');
+
+  // /api/machine：机器码由服务端签发并与卡密永久绑定。这条链路是"激活前后界面
+  // 显示同一个机器码"的保证——老做法里服务端拿自己的环境派生，与浏览器永远不等。
+  {
+    const mStore = new Map();
+    const mEnv = {
+      JSLB_WEB_CONFIG: '{"trialPreset":"low","trialMaxFileBytes":65536}',
+      JSLB_CODE_KEY: TEST_CODE_KEY,
+      JSLB_KV: {
+        get: async (k) => (mStore.has(k) ? mStore.get(k) : null),
+        put: async (k, v) => { mStore.set(k, v); },
+        delete: async (k) => { mStore.delete(k); },
+      },
+    };
+    const callKv = async (pathname, init) => worker.fetch(
+      new Request('https://example.com' + pathname, init), mEnv, {},
+    );
+    const mCode = codec.issueCode(TEST_CODE_KEY, 'plus', 30, '420001');
+
+    const r1 = await callKv('/api/machine', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ key: mCode }),
+    });
+    const j1 = await r1.json();
+    ok(r1.status === 200 && j1.ok === true && j1.machine.length === 24 && j1.issued === true,
+      'POST /api/machine 签发 24 字符机器码', JSON.stringify(j1));
+    ok(mStore.has('jslb:machine:420001'), '机器码按卡密编号登记进 KV');
+
+    const r2 = await callKv('/api/machine', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'X-JSLB-Key': mCode },
+      body: '{}',
+    });
+    const j2 = await r2.json();
+    ok(j2.ok === true && j2.machine === j1.machine && j2.issued === false,
+      '同一张卡再次请求返回同一个机器码（issued=false）', JSON.stringify(j2));
+
+    const badM = await callKv('/api/machine', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ key: 'JSLB-BAD' }),
+    });
+    ok(badM.status === 400 && (await badM.json()).ok === false, '非法卡密取机器码被拒（400）');
+    const noKey = await callKv('/api/machine', {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}',
+    });
+    ok(noKey.status === 400, '缺卡密返回 400');
+    ok((await callKv('/api/machine')).status === 405, 'GET /api/machine 返回 405（只收 POST）');
+
+    // 关键回归：激活之后服务端回的机器码必须与 /api/machine 签发的一致
+    const actM = await callKv('/api/license', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'X-JSLB-Device': '9'.repeat(32) },
+      body: JSON.stringify({ key: mCode }),
+    });
+    const aj = await actM.json();
+    ok(actM.status === 200 && aj.ok === true && aj.machine === j1.machine,
+      '激活后 /api/license 的机器码与 /api/machine 一致（激活前后不再变）',
+      aj.machine + ' vs ' + j1.machine);
+  }
 
   // 服务端文案要按**请求**语言回。原先语言只在模块加载时读一次 JSLABYRINTH_LANG，
   // 于是界面切了英文的访问者拿到的 API 报错仍是中文（"Activation failed: 激活失败: …"）。

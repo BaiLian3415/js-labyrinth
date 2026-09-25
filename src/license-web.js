@@ -4,15 +4,22 @@
  * 与 Node 版的差别只在宿主能力，判定规则完全一致：卡密由同一份 license-codec
  * 解析，许可证记录由同一份 license-core 校验，套餐闸门与配额口径也一致。
  *
- * 机器码的来源不同。浏览器里**没有**可靠的唯一硬件标识，能拿到的只有一组设备
- * 特征（平台、CPU 核心数、屏幕、GPU 渲染器、时区、语言），同型号机器算出来是
- * 同一个值。所以网页端的"机器绑定"是**设备特征绑定**，比 Node 端的硬件指纹弱
- * 一档：两台同型号同配置的机器可以共用一张卡。这是浏览器沙箱里的物理上限，
- * 不是实现偷懒；真要一对一，得把签发权搬到服务端（本项目刻意不这么做，见下）。
+ * ## 机器码：由服务端签发，与卡密永久绑定
  *
- * 设备特征里不含任何随机量，因此换浏览器、清站点数据、隐私模式都不会换机器码
- * ——这正是绑定机器时需要的行为。特征算法一变（改动字段集合或其顺序），所有
- * 已签发的网页卡都会失效，改动前务必确认。
+ * 老做法是拿设备特征（平台、CPU 核数、GPU 渲染器、时区、语言）派生机器码，
+ * 结果有两个绕不开的毛病：① Worker 里没有 navigator / screen / WebGL，派生出的
+ * 是另一个常量，于是"激活前界面显示 A、激活后服务端回 B"——看上去就是激活之后
+ * 机器码变了；② 特征里任何一项漂移（GPU 渲染器取不到、改时区、改语言）都会让
+ * 已激活的卡在 restore 时判成 machine 不一致，用户什么都没干就被踢回未激活。
+ *
+ * 现在改为**服务端签发**：激活时向 Worker 要一个机器码，Worker 按**卡密编号**
+ * 登记（KV 里随机签发并持久保存），此后同一张卡在任何设备、任何时间取到的都是
+ * 同一个值——"永久绑定"就是说这个。服务端没绑 KV 时退化成"由卡号确定性派生"
+ * （同一张卡恒等），保证恒定性不依赖存储是否可用。
+ *
+ * 离线或纯静态部署（没有同源服务）时依次退回本机缓存与设备特征派生值，并把
+ * 结论记进本机缓存，保证刷新前后一致。设备特征因此只剩兜底用途，不再参与
+ * 已激活卡的身份判定。
  *
  * 反调试与自身文件摘要校验不在这里实现：网页端的代码与密钥对使用者完全可见，
  * 那两项在网页里没有实际防护意义，硬搬只会变成误导。部署方若要真正强制授权，
@@ -47,12 +54,27 @@ const K_LICENSE = 'jslabyrinth.license.v2';
 const K_TRIAL_USAGE = 'jslabyrinth.trial-usage.v1';
 /** 卡密赎回登记键前缀（按卡密编号分键，全局，不按设备隔离）。 */
 const K_REDEEM_PREFIX = 'jslabyrinth.redeem.';
+/** 本机最近一次拿到的机器码（离线重放用，保证刷新前后同一个值）。 */
+const K_MACHINE = 'jslabyrinth.machine.v2';
+/** 机器码绑定键前缀（按卡密编号分键，全局；无 KV 时落到本机存储）。 */
+const K_MACHINE_BIND_PREFIX = 'jslabyrinth.machinebind.';
+
+/** 机器码长度：24 字符 base32，与设备特征派生出的旧值同形制。 */
+const MACHINE_LEN = 24;
+/** KV 里的机器码绑定键前缀（全局，不按设备隔离）。 */
+const KV_MACHINE_PREFIX = 'machine:';
 
 /** 设备码内存缓存。 */
 let deviceCache = null;
 
 /** 设备特征串内存缓存（派生机器码用，不含随机量）。 */
 let fingerprintCache = null;
+
+/** 机器码内存缓存。 */
+let machineCache = null;
+
+/** 授权服务地址（浏览器侧由界面注入；空串表示同源）。 */
+let apiBase = null;
 
 /** 当前授权状态：null 表示未激活且未进入试用。 */
 let state = null;
@@ -103,16 +125,33 @@ export function resetRequestState() {
   deviceCache = null;
   requestDeviceId = null;
   fingerprintCache = null;
+  machineCache = null;
 }
+
+/**
+ * 设置授权服务地址（浏览器侧）。
+ *
+ * 界面允许把 API 指到别的域（自托管、本地联调），机器码是向这个地址要的，
+ * 不跟着走就会出现"界面在 A、机器码在 B"。空串即同源。
+ *
+ * @param {string} base 形如 https://api.example.com，末尾斜杠会被去掉
+ */
+export function setApiBase(base) {
+  apiBase = base == null ? null : String(base).replace(/\/+$/, '');
+}
+
+/** @returns {string} 当前授权服务地址（未设置时为空串）。 */
+export const getApiBase = () => apiBase || '';
 
 /** @returns {boolean} 是否使用了外部注入的密钥。 */
 export const usingExternalKeys = () => keysOverridden;
 
 /**
- * 把签发时用的机器码格式化成绑定段，供界面提示"把这段报给签发方"。
+ * 界面上"机器码"一栏该显示的值。
  *
- * 直接给出机器码而不是绑定摘要：签发方用 --bind 接受的就是机器码，让他自己
- * 算摘要，免得界面与服务端两处算法漂移。
+ * v5 起卡密不再携带绑定段（keygen 的 --bind 已废除），这一栏不再是"报给签发方
+ * 去绑卡"的输入，而是这张授权的身份标识：它由服务端签发、与卡密永久绑定，
+ * 激活之后不再变化。未激活时给的是本机兜底值（见 machineId 的取值顺序）。
  *
  * @returns {Promise<string>} 机器码，24 字符 base32
  */
@@ -331,16 +370,223 @@ function deviceFingerprint() {
   return fingerprintCache;
 }
 
+/** 设备特征派生的机器码。只作兜底：未激活、且拿不到服务端签发值时才有它出场。 */
+function fingerprintMachineId() {
+  return codec.digestToB32(hmacSha256Hex(machineSalt, deviceFingerprint()), MACHINE_LEN);
+}
+
 /**
- * 当前机器码，base32 24 字符，形制与 Node 版一致（验签与长度校验都按 24 字符）。
+ * @param {*} v 待判定的值
+ * @returns {boolean} 是否为 24 字符 base32 的机器码
+ */
+function isMachineCode(v) {
+  return typeof v === 'string' && v.length === MACHINE_LEN && codec.isB32Text(v);
+}
+
+/**
+ * 随机机器码。
  *
- * 由设备特征派生，同型号同配置的机器会得到同一个值——这是浏览器里能做到的
- * 最接近"机器绑定"的语义，边界见文件头注释。
+ * 字符表正好 32 个字符，随机字节 & 31 之后仍是均匀分布，不需要拒绝采样。
+ * @returns {string} 24 字符 base32
+ */
+function newMachineCode() {
+  const bytes = platform.randomBytes(MACHINE_LEN);
+  let s = '';
+  for (let i = 0; i < MACHINE_LEN; i++) s += codec.ALPHABET[bytes[i] & 31];
+  return s;
+}
+
+/**
+ * 由卡密编号确定性派生机器码。
  *
+ * 只在**服务端没绑 KV** 时用：随机签发的值得有地方存才恒等，没 KV 就存不住
+ * （每个 isolate 的内存都是干净的），这时改用"卡号 → 机器码"的确定性映射，
+ * 同一张卡在任何 isolate、任何时间都算出同一个值。
+ *
+ * HMAC 的密钥取固定常量而不是机器盐：部署方覆盖 JSLB_MACHINE_SALT 时不该把
+ * 已激活卡的机器码换成另一个。
+ *
+ * @param {string} cardId 卡密编号（十进制文本）
+ * @returns {string} 24 字符 base32
+ */
+function deriveMachineCode(cardId) {
+  return codec.digestToB32(hmacSha256Hex('JSLB/MACHINE/v1', 'JSLB-MACHINE-1|' + cardId), MACHINE_LEN);
+}
+
+/** 读取某张卡已登记的机器码；没有或已损坏时返回 null。 */
+async function getMachineBinding(cardId) {
+  const kv = platform.getKv();
+  if (kv && typeof kv.get === 'function') {
+    try {
+      const v = await kv.get(KV_MACHINE_PREFIX + cardId);
+      return isMachineCode(v) ? v : null;
+    } catch (e) {
+      return null;
+    }
+  }
+  const v = platform.getStorage().get(K_MACHINE_BIND_PREFIX + cardId);
+  return isMachineCode(v) ? v : null;
+}
+
+/** 登记某张卡的机器码。 */
+async function setMachineBinding(cardId, mid) {
+  const kv = platform.getKv();
+  if (kv && typeof kv.put === 'function') {
+    try {
+      await kv.put(KV_MACHINE_PREFIX + cardId, mid);
+      return true;
+    } catch (e) {
+      return false;
+    }
+  }
+  return platform.getStorage().set(K_MACHINE_BIND_PREFIX + cardId, mid);
+}
+
+/**
+ * 把机器码与卡密永久绑定（先写者为准，绝不覆盖）。
+ *
+ * 第一次成功激活留下的那个码就是这张卡的身份，之后谁再来都不改——允许覆盖就
+ * 等于让机器码随最后一次激活漂移，"永久绑定"名存实亡。
+ */
+async function bindMachineToCard(cardId, mid) {
+  if (!isMachineCode(mid)) return;
+  const cur = await getMachineBinding(cardId);
+  if (cur) return;
+  await setMachineBinding(cardId, mid);
+}
+
+/**
+ * 向服务端要这张卡的机器码（只有浏览器走这条路）。
+ *
+ * 服务端是权威：绑定关系存在它的 KV 里，浏览器自己怎么算都只是一家之言。
+ * 拿不到（离线、纯静态部署、跨域被拦）返回 null，由调用方落到本地兜底。
+ *
+ * @param {string} code 归一化后的卡密原文
+ * @returns {Promise<string|null>} 机器码
+ */
+async function requestRemoteMachine(code) {
+  // Worker 自己就是服务端，不能回头请求自己；Node 侧默认也没有服务可问。
+  // 只有浏览器（或显式指定了服务地址）才走网络。
+  if (!platform.isBrowser && apiBase === null) return null;
+  const f = typeof globalThis.fetch === 'function' ? globalThis.fetch.bind(globalThis) : null;
+  if (!f) return null;
+  const ctl = typeof AbortController === 'function' ? new AbortController() : null;
+  const timer = ctl ? setTimeout(() => ctl.abort(), 4000) : null;
+  try {
+    const res = await f((apiBase || '') + '/api/machine', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ key: code }),
+      ...(ctl ? { signal: ctl.signal } : {}),
+    });
+    const data = await res.json().catch(() => null);
+    if (res.ok && data && data.ok && isMachineCode(data.machine)) return data.machine;
+  } catch (e) {
+    // 离线或被拦：落到本地兜底，不阻断激活
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+  return null;
+}
+
+/**
+ * 取某张卡密绑定的机器码，没有就签发一个并永久登记。
+ *
+ * 这是"同一张卡永远同一个机器码"的唯一保证，四个来源按优先级：
+ *   ① 已登记的绑定（服务端 KV，或本机缓存的上次结果）
+ *   ② 服务端答复（浏览器在线时以服务端为准）
+ *   ③ 赎回登记里记的机器码（绑定键被清掉、或升级前的历史记录）
+ *   ④ 新签发：绑了 KV 就随机生成并登记；没绑 KV 就按卡号确定性派生
+ *
+ * 卡密非法时直接拒绝：机器码绑在卡上，认不出卡就无从绑定。
+ *
+ * @param {string} rawKey 卡密原文
+ * @returns {Promise<{ok:boolean, reason?:string, machine?:string, issued?:boolean, source?:string}>} 结果
+ */
+export async function machineForCode(rawKey) {
+  const parsed = codec.parseCode(codeKey, String(rawKey == null ? '' : rawKey).trim());
+  if (!parsed.ok) return { ok: false, reason: parsed.reason };
+  const cardId = parsed.id;
+  const bound = await getMachineBinding(cardId);
+  if (bound) return { ok: true, machine: bound, issued: false, source: 'binding' };
+  const remote = await requestRemoteMachine(parsed.code);
+  if (remote) {
+    await setMachineBinding(cardId, remote);
+    return { ok: true, machine: remote, issued: false, source: 'server' };
+  }
+  const redeemer = await getRedeemer(cardId);
+  if (redeemer && isMachineCode(redeemer.m)) {
+    await setMachineBinding(cardId, redeemer.m);
+    return { ok: true, machine: redeemer.m, issued: false, source: 'redeem' };
+  }
+  return allocateMachineCode(cardId);
+}
+
+/**
+ * 签发一个新机器码并登记。
+ *
+ * 绑了 KV 才用随机值——随机必须有地方持久化才恒等；写 KV 失败时同样落回确定
+ * 性派生：宁可少一点随机性，也不能让同一张卡两次拿到不同的码。
+ *
+ * @param {string} cardId 卡密编号
+ * @returns {Promise<{ok:boolean, machine:string, issued:boolean, source:string}>} 结果
+ */
+async function allocateMachineCode(cardId) {
+  const kv = platform.getKv();
+  if (kv && typeof kv.put === 'function') {
+    const m = newMachineCode();
+    try {
+      await kv.put(KV_MACHINE_PREFIX + cardId, m);
+      return { ok: true, machine: m, issued: true, source: 'issued' };
+    } catch (e) {
+      // KV 写不进去：落到下面的派生，保证恒等
+    }
+  }
+  const derived = deriveMachineCode(cardId);
+  await setMachineBinding(cardId, derived);
+  return { ok: true, machine: derived, issued: true, source: 'derived' };
+}
+
+/** 记下本机当前机器码：离线刷新也要保持同一个值，不能退回设备特征去。 */
+async function rememberMachine(mid) {
+  if (!isMachineCode(mid)) return;
+  machineCache = mid;
+  await storeSet(K_MACHINE, mid);
+}
+
+/**
+ * 当前机器码，24 字符 base32，形制与旧的设备特征值一致（长度校验按 24 字符）。
+ *
+ * 取值优先级：
+ *   ① 已激活许可证上那个——服务端签发，恒定不变
+ *   ② 给了卡密 → 这张卡绑定的机器码（首次由服务端随机签发并永久登记）
+ *   ③ 本机上次拿到的（离线重放，保证刷新前后一致）
+ *   ④ 设备特征派生（未激活且拿不到服务端时的展示值）
+ *
+ * ①是"激活前后界面显示同一个机器码"的关键：服务端验过记录后 state.machine 就是
+ * 记录里那个码，Worker 不会再拿自己的环境去派生一个对不上的值。
+ *
+ * @param {object} [opts]
+ * @param {string} [opts.code] 卡密原文；给了就按这张卡取绑定的机器码
  * @returns {Promise<string>} 机器码
  */
-export async function machineId() {
-  return codec.digestToB32(hmacSha256Hex(machineSalt, deviceFingerprint()), 24);
+export async function machineId(opts) {
+  if (state && !state.trial && isMachineCode(state.machine)) return state.machine;
+  const o = opts || {};
+  if (o.code) {
+    const r = await machineForCode(o.code);
+    if (r.ok) {
+      await rememberMachine(r.machine);
+      return r.machine;
+    }
+  }
+  if (machineCache) return machineCache;
+  const cached = await storeGet(K_MACHINE);
+  if (isMachineCode(cached)) {
+    machineCache = cached;
+    return cached;
+  }
+  return fingerprintMachineId();
 }
 
 /**
@@ -430,7 +676,9 @@ export async function restore(opts) {
 export async function activate(rawKey) {
   const parsed = codec.parseCode(codeKey, String(rawKey == null ? '' : rawKey).trim());
   if (!parsed.ok) return { ok: false, reason: parsed.reason };
-  const mid = await machineId();
+  // 机器码按这张卡取：首次由服务端随机签发并永久登记，之后同一张卡恒等——
+  // 不能现场拿设备特征现算，那玩意儿换个环境就变（详见文件头的"机器码"一节）。
+  const mid = await machineId({ code: parsed.code });
   // 机器绑定必须在激活这一刻就判定，不能留给 restore：激活成功立即获得完整
   // 权益（本次会话直接可用；Worker 按卡密激活的 API 请求更是每次都要走这里），
   // 等下次 restore 才以 reason:'bind' 拒绝，等于换机的绑定卡已经白用了一整轮。
@@ -459,6 +707,8 @@ export async function activate(rawKey) {
     // 登记写不进去就不放行：否则这张卡等于从未赎回，换台机器还能再激活一次
     return { ok: false, reason: 'write' };
   }
+  // 赎回即绑定：这张卡的机器码从此固定为 mid，先写者为准
+  await bindMachineToCard(parsed.id, mid);
   const usage = { day: licCore.todayKey(), used: 0 };
   // 到期时间只由卡密里已签名的签发日与天数决定，激活时刻不参与——续期得重新
   // 签卡，本地改 issuedAt 没用。issuedAt 仍记下来，但只是"本机何时激活"的台账。
@@ -542,6 +792,8 @@ export async function importRecord(record) {
     if (await setRedeemer(parsedRec.id, parsedRec.code, mid) === false) {
       return { ok: false, reason: 'write' };
     }
+    // 补登记同样固定机器码：客户端那份记录里的码就是这张卡此后恒定的身份
+    await bindMachineToCard(parsedRec.id, mid);
   }
   await storeSet(K_LICENSE, JSON.stringify(record));
   state = {
@@ -729,7 +981,10 @@ export default {
   setRequestDeviceId,
   resetRequestState,
   usingExternalKeys,
+  setApiBase,
+  getApiBase,
   machineId,
+  machineForCode,
   deviceCode,
   bindTarget,
   trialEntitlements,

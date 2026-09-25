@@ -905,7 +905,11 @@ async function refreshLicensePanel() {
     els.licInfo.textContent = (state.serverLicense.banner || '')
       + (state.serverLicense.quotaText ? '\n' + state.serverLicense.quotaText : '');
     els.licInfo.style.whiteSpace = 'pre-line';
-    els.licDevice.textContent = t('guiDevice') + ': ' + (state.serverLicense.machine || '');
+    // 服务端没激活时它回的机器码是服务端自己环境派生的展示值，与这台机器无关；
+    // 那种情况下仍显示本机那个。已激活时两端必须一致——机器码由服务端签发并与
+    // 卡密绑定，本机那份记录里存的就是同一个值。
+    const serverMachine = state.serverLicense.trial ? '' : (state.serverLicense.machine || '');
+    els.licDevice.textContent = t('guiDevice') + ': ' + (serverMachine || (await licenseWeb.machineId()));
     els.quota.textContent = state.serverLicense.quotaText || '';
   } else {
     const banner = await licenseWeb.bannerText();
@@ -1101,6 +1105,9 @@ function loadState() {
       if (typeof s.seed === 'string') state.seed = s.seed;
       if (Array.isArray(s.touched)) state.touched = new Map(s.touched);
     }
+    // 授权模块自己也要知道服务地址：机器码是向它要的，界面在 A、机器码去 B 取
+    // 就会出现"激活前后两个机器码"。
+    licenseWeb.setApiBase(state.apiBase);
   } catch (e) { /* 存档损坏就按默认值起 */ }
 }
 
@@ -1183,6 +1190,7 @@ async function init() {
 
   els.apiBase.addEventListener('change', () => {
     state.apiBase = els.apiBase.value.trim();
+    licenseWeb.setApiBase(state.apiBase);
     saveState();
     state.apiOnline = null;
     renderApiState();

@@ -37,6 +37,28 @@ _preview/
 .dev.vars
 .dev.vars.*
 
+# 私钥与凭据的通用兜底。上面两个点文件是本项目自己写的路径，这里防的是改了名字
+# 或从别处拷进来的（*.pem / *.key / id_rsa 一类）——误收一次就等于把签发权交出去。
+*.pem
+*.key
+*.p12
+*.pfx
+id_rsa
+id_rsa.*
+
+# 发卡台账：keygen 的 --ledger / --csv 输出，**每行都是可直接激活的卡密原文**。
+# 这是本项目最该藏的本地数据，却最容易在"顺手 git add -A"时进仓库。
+issued*.csv
+batch*.csv
+ledger*.csv
+codes.csv
+*.codes.csv
+
+# 本地覆盖与联调台账（授权服务地址、机器码绑定导出、本机调试用的覆盖项）。
+# 换台机器就失效，写进仓库只会误导别人；`.jslb-code-key` 与 `.jslb-signing-key`
+# 两条显式规则也落在这个前缀里，这里一并兜住未来新增的同前缀本地文件。
+.jslb-*
+
 # AI 会话记忆。`.workbuddy-ai/memory/` 是旧路径，`.workbuddy/memory/` 是当前路径，
 # 两者内容相同：项目约定与踩坑记录，但也可能写到**已签发的卡密原文**，所以默认都不入库。
 # （它们同时是工程笔记，日常 `git add -A` 极易误收，因此必须显式忽略而不是靠自觉。）
@@ -49,6 +71,12 @@ node_modules/
 .wrangler/
 .DS_Store
 Thumbs.db
+
+# 编辑器与终端的本地配置（各人不同，进仓库只会制造无意义冲突）
+.vscode/
+.idea/
+*.swp
+*.swo
 
 # 日志与打包残留
 *.log
