@@ -550,7 +550,17 @@ input.text:focus, select.mini:focus, button:focus-visible, textarea:focus {
   min-width: 0;
 }
 
-.opt-row .name { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* 标签的 flex 基准必须是 0，不能是 auto：
+   .opt-row 是 flex-wrap 容器（字符串项的输入框要折到第二行），而换行判定发生在收缩之前
+   ——基准是 auto 时"标签的内容宽 + 徽章 + ⓘ"一超宽，徽章就被挤到第二行去。
+   基准给 0 之后标签不参与基准宽度，徽章与 ⓘ 先落在第一行，标签再吃剩余空间并省略号截断。 */
+.opt-row .name {
+  flex: 1 1 0;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .opt-row.gated { opacity: .55; }
 .opt-row.gated .name { text-decoration: line-through; }
 

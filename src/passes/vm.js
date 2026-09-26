@@ -570,6 +570,17 @@ function compileFunction(fn, ctx) {
   // WASM 内核档的解释器在模块里、按绝对下标硬编码，该档自动关闭本项。
   const jumpEnc = !!opts.vmJumpsEncoding && !ctx.__vmWasmShared;
 
+  // 栈编码（vmStackEncoding）。操作数栈上装的是任意 JS 值，XOR 只对数字成立，所以
+  // 编码函数必须对非数字透明：SE(v) 在 v 是 32 位整数且非 -0 时返回 v ^ K，否则原样
+  // 返回。SE 是幂等的（SE∘SE = id），所以编码与解码共用同一个函数。
+  // 栈上存的永远是 SE(值)：压栈时编码、出栈时解码；DUP 原样复制已编码值（不能再编一次）、
+  // 条件跳转与 GETMK 取键要解码、M2 的地址栈迁移原样搬运（两张栈同一密钥，值可以直传）。
+  // WASM 内核档的栈在模块里，该档自动关闭本项。
+  const stackEnc = !!opts.vmStackEncoding && !ctx.__vmWasmShared;
+  const nSE = stackEnc ? uniqueName(ctx.usedNames, '_0x') : null; // 编码函数名
+  const nSEK = stackEnc ? uniqueName(ctx.usedNames, '_0x') : null; // 逐函数密钥
+  const nSEV = stackEnc ? uniqueName(ctx.usedNames, '_0x') : null; // 编码函数的形参名
+
   // 运行时密钥取值（vmRuntimeKeyGetter）。与编译期密钥**配对**使用：产物在每个 VM
   // 函数开头求值用户给的表达式，用取回的值重跑一遍上面这套派生，把结果当初始掩码、
   // 位置散列常数、轮换函数与链种子。取回的值不等于编译期密钥 → 派生出另一套掩码 →
@@ -1435,8 +1446,11 @@ function compileFunction(fn, ctx) {
     return t.sequenceExpression(parts);
   };
   const Slen = () => t.memberExpression(S, t.identifier('length'), false);
+  // topElem 是**原样**栈顶（已编码值），供 DUP 直接复制；topVal 是解码后的真值，
+  // 供条件跳转判值、GETMK 取键这类"要用真值"的地方。
   const topElem = () => t.memberExpression(S,
     t.binaryExpression('-', Slen(), t.numericLiteral(1)), true);
+  const topVal = () => seCall(topElem());
   // 任意数组的栈顶引用。地址栈与操作数栈共用同一形态
   const topOf = (arr) => t.memberExpression(arr,
     t.binaryExpression('-',
@@ -1492,36 +1506,38 @@ function compileFunction(fn, ctx) {
     if (REGN === 0) throw new Error(msg('vmUnknownOpcode', { kind: 'nextReg@M0' }));
     const r = REGS[regSpin % REGN]; regSpin = (regSpin + 1) % REGN; return r;
   };
+  // 栈编解码。SE 幂等，编解码共用；只在压栈/出栈点各调用一次，
+  // 绝不把 S.pop() 这类有副作用的表达式内联展开（展开三次就会弹三次）。
+  const seCall = (x) => (stackEnc ? t.callExpression(t.identifier(nSE), [x]) : x);
+  const SPUSH = (x) => t.callExpression(
+    t.memberExpression(S, t.identifier('push'), false), [seCall(x)]);
+  const SPUSHRAW = (x) => t.callExpression(
+    t.memberExpression(S, t.identifier('push'), false), [x]); // 复制已编码值，不能再编一次
+  const SPOPRAW = () => t.callExpression(t.memberExpression(S, t.identifier('pop'), false), []);
+  const SPOP = () => seCall(SPOPRAW());
+
   // 压栈经寄存器：R = 值; push(R)。M0 纯栈式模型下没有寄存器，直接落栈。
   // （P4 多态寄存器模型：M0 纯栈 / M1 寄存器优先 / M2 双栈分立，见 ctx.vmModel）
   const pushR = (val) => {
-    if (REGN === 0) {
-      return [t.expressionStatement(t.callExpression(
-        t.memberExpression(S, t.identifier('push'), false), [val]))];
-    }
+    if (REGN === 0) return [t.expressionStatement(SPUSH(val))];
     const r = nextReg();
     return [
       t.expressionStatement(t.assignmentExpression('=', idn(r), val)),
-      t.expressionStatement(t.callExpression(
-        t.memberExpression(S, t.identifier('push'), false), [idn(r)])),
+      t.expressionStatement(SPUSH(idn(r))),
     ];
   };
   // 出栈经寄存器：R = pop()，表达式值就是 R 的引用。M0 下直接 pop。
   const popR = () => {
-    if (REGN === 0) {
-      return t.callExpression(t.memberExpression(S, t.identifier('pop'), false), []);
-    }
+    if (REGN === 0) return SPOP();
     const r = nextReg();
     return t.sequenceExpression([
-      t.assignmentExpression('=', idn(r),
-        t.callExpression(t.memberExpression(S, t.identifier('pop'), false), [])),
+      t.assignmentExpression('=', idn(r), SPOP()),
       idn(r),
     ]);
   };
   // 不经寄存器的原语。部分 case 直连栈，两种形态混用让数据流更不规则
-  const pushCall = (x) => t.expressionStatement(t.callExpression(
-    t.memberExpression(S, t.identifier('push'), false), [x]));
-  const popCall = () => t.callExpression(t.memberExpression(S, t.identifier('pop'), false), []);
+  const pushCall = (x) => t.expressionStatement(SPUSH(x));
+  const popCall = () => SPOP();
 
   // P4 模型 M2：地址栈。成员访问类指令（GETM/SETM/CALLM）的目标对象与键不改从
   // 操作数栈出，而从第二张栈 SA 出。静态上「一个栈」的模型不再成立：同一条指令
@@ -1530,7 +1546,9 @@ function compileFunction(fn, ctx) {
   const SA = vmModel === 'M2' ? t.identifier(uniqueName(ctx.usedNames, '_0x')) : null;
   const pushA = (x) => t.expressionStatement(t.callExpression(
     t.memberExpression(SA, t.identifier('push'), false), [x]));
-  const popA = () => t.callExpression(t.memberExpression(SA, t.identifier('pop'), false), []);
+  // 地址栈与操作数栈同一密钥，值可以直传：入栈原样（不动），出栈才解码。
+  // 因此 STA 必须用 SPOPRAW 搬运，不能走 popCall（那会先解码，再被 popA 解第二次）。
+  const popA = () => seCall(t.callExpression(t.memberExpression(SA, t.identifier('pop'), false), []));
   // 模型 M2 的成员指令栈序：目标对象走 SA，键留在 S，操作数在 S。
   // 编译期压栈顺序是 [obj, key, ...args]（与栈机一致），所以出栈顺序是倒序。
   const popMemberTarget = (kind) => {
@@ -1596,13 +1614,13 @@ function compileFunction(fn, ctx) {
     // 复制栈顶两个（o、k）再求 o[k]，S = [..., o, k, o[k]]。
     if (kind === 'GETMK') {
       return [pushCall(t.memberExpression(
-        t.memberExpression(S, t.binaryExpression('-', Slen(), t.numericLiteral(2)), true),
-        topElem(), true))];
+        seCall(t.memberExpression(S, t.binaryExpression('-', Slen(), t.numericLiteral(2)), true)),
+        topVal(), true))];
     }
-    if (kind === 'DUP') return [pushCall(topElem())];
+    if (kind === 'DUP') return [t.expressionStatement(SPUSHRAW(topElem()))];
     if (kind === 'POP') return [t.expressionStatement(popCall())];
     // P4 模型 M2：把操作数栈顶搬到地址栈。只在 M2 的成员目标处出现。
-    if (kind === 'STA') return [pushA(popCall())];
+    if (kind === 'STA') return [pushA(SPOPRAW())]; // 原样搬运，见 pushA/popA 的约定
     // 跳转类取目标字与目标链值字，跳转之后 PC 与链状态一起重置。
     // N_A 要用 var 预声明：bAt 的序列式里含 N_A=nCHN 的赋值，若用 const
     // 初始化器会在内部自引用触发 TDZ。
@@ -1646,7 +1664,7 @@ function compileFunction(fn, ctx) {
         t.expressionStatement(t.assignmentExpression('=', idn(N_A), bAt(N_A))),
         declConst(N_N, bAt(null)),
         t.expressionStatement(bAt(null)), // 链值字，nCHAIN 落到目标链值，也是顺序预期值
-        declConst(N_V, topElem()),
+        declConst(N_V, topVal()),
         t.ifStatement(
           cond,
           t.blockStatement([
@@ -2381,6 +2399,30 @@ function compileFunction(fn, ctx) {
       t.arrayExpression(row.map((n) => t.numericLiteral(n)))))),
     t.variableDeclarator(B, t.arrayExpression(flat.map((n) => t.numericLiteral(n)))),
     t.variableDeclarator(S, t.arrayExpression([])),
+    // 栈编码：逐函数密钥 + 幂等的编解码函数。谓词只对 32 位整数成立、且排除 -0
+    // （位运算出不了 -0，所以"已编码值"永远不进 -0 分支，谓词在编码侧与解码侧一致）；
+    // 浮点、大整数、字符串、对象、NaN/Infinity 一律原样通过。
+    ...(stackEnc ? [
+      t.variableDeclarator(t.identifier(nSEK), t.numericLiteral(krand(0x1000, 0x3fffffff))),
+      t.variableDeclarator(t.identifier(nSE), t.arrowFunctionExpression(
+        [t.identifier(nSEV)],
+        t.conditionalExpression(
+          t.binaryExpression('&&',
+            t.binaryExpression('===',
+              t.unaryExpression('typeof', t.identifier(nSEV)),
+              t.stringLiteral('number')),
+            t.binaryExpression('&&',
+              t.binaryExpression('===',
+                t.binaryExpression('|', t.identifier(nSEV), t.numericLiteral(0)),
+                t.identifier(nSEV)),
+              t.unaryExpression('!', t.binaryExpression('&&',
+                t.binaryExpression('===', t.identifier(nSEV), t.numericLiteral(0)),
+                t.binaryExpression('<',
+                  t.binaryExpression('/', t.numericLiteral(1), t.identifier(nSEV)),
+                  t.numericLiteral(0)))))),
+          t.binaryExpression('^', t.identifier(nSEV), t.identifier(nSEK)),
+          t.identifier(nSEV)))),
+    ] : []),
     // P4 模型 M2 的地址栈。仅在 M2 下声明；M0/M1 下 SA 为 null，声明里不出现。
     ...(SA ? [t.variableDeclarator(SA, t.arrayExpression([]))] : []),
     t.variableDeclarator(PC, t.numericLiteral(0)),
