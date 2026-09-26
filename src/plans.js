@@ -1,4 +1,9 @@
 export default {
+  // 配额口径（2026-09-26 起）：全部按**宿主免费档包络**反推，见 src/host-limits.js。
+  // 之所以要往下压：云端执行时上行走 Vercel 函数，平台对请求体有 4.5 MB 硬线，
+  // 而免费档的 CPU 额度也只够跑小文件；把配额写成"10 MB/1000 次"只会让用户跑到
+  // 一半撞平台 413/超时。每个档的 maxFileBytes 必须 ≤ 该档预设的单文件上限
+  // （host-limits.presetInputCap），plan.js 在加载期断言这一点。
   "free": {
     "rank": 0,
     "code": "F",
@@ -66,9 +71,9 @@ export default {
     "display": "Plus",
     "preset": "high",
     "limits": {
-      "maxFileBytes": 4194304,
-      "maxFilesPerRun": 5,
-      "runsPerDay": 20,
+      "maxFileBytes": 524288,
+      "maxFilesPerRun": 3,
+      "runsPerDay": 15,
       "runsTotal": 0
     },
     "gates": {
@@ -112,9 +117,9 @@ export default {
     "display": "Team",
     "preset": "max",
     "limits": {
-      "maxFileBytes": 7340032,
-      "maxFilesPerRun": 10,
-      "runsPerDay": 200,
+      "maxFileBytes": 1048576,
+      "maxFilesPerRun": 5,
+      "runsPerDay": 50,
       "runsTotal": 0
     },
     "gates": {}
@@ -125,14 +130,13 @@ export default {
     "display": "Business",
     "preset": "max",
     // 2026-09-20：配额由"不限"改为有限值 1000/天。
-    // 原来 runsPerDay=0（不限）+ note:"contact"，实际限制靠"不签卡"而不是代码，
-    // 界面上也永远显示"联系作者"，数字看不到。改成有限值后：① 配额有真实上限，
-    // ② 去掉 note 让界面显示"每日 1000 次"，③ 仍高于 Team 的 200，阶梯不倒挂。
-    // 需要更高额度的客户按合同单独签卡（改这里或另出定制档）。
+    // 2026-09-26：再按 Vercel 免费档包络收敛到 200/天、单文件 1.25 MiB——
+    // max 预设实测 87× 膨胀、170 ms/KB，免费档 CPU 与上传硬线撑不住更大的值。
+    // 需要更高额度：升级 Vercel 套餐后用 JSLB_* 环境变量放宽包络（见 DEPLOY-VERCEL.md）。
     "limits": {
-      "maxFileBytes": 10485760,
-      "maxFilesPerRun": 10,
-      "runsPerDay": 1000,
+      "maxFileBytes": 1310720,
+      "maxFilesPerRun": 8,
+      "runsPerDay": 200,
       "runsTotal": 0
     },
     "gates": {}
@@ -150,8 +154,8 @@ export default {
     "kind": "pack",
     "preset": "max",
     "limits": {
-      "maxFileBytes": 10485760,
-      "maxFilesPerRun": 10,
+      "maxFileBytes": 1310720,
+      "maxFilesPerRun": 8,
       "runsPerDay": 0,
       "runsTotal": 100
     },
@@ -164,8 +168,8 @@ export default {
     "kind": "pack",
     "preset": "max",
     "limits": {
-      "maxFileBytes": 10485760,
-      "maxFilesPerRun": 10,
+      "maxFileBytes": 1310720,
+      "maxFilesPerRun": 8,
       "runsPerDay": 0,
       "runsTotal": 1000
     },
@@ -178,8 +182,8 @@ export default {
     "kind": "pack",
     "preset": "max",
     "limits": {
-      "maxFileBytes": 10485760,
-      "maxFilesPerRun": 10,
+      "maxFileBytes": 1310720,
+      "maxFilesPerRun": 8,
       "runsPerDay": 0,
       "runsTotal": 10000
     },
@@ -194,8 +198,8 @@ export default {
     "preset": "max",
     "note": "contact",
     "limits": {
-      "maxFileBytes": 10485760,
-      "maxFilesPerRun": 10,
+      "maxFileBytes": 1310720,
+      "maxFilesPerRun": 8,
       "runsPerDay": 0,
       "runsTotal": 0
     },

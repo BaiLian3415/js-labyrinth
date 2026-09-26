@@ -1,58 +1,68 @@
 # JsLabyrinth
 
-JavaScript 混淆器，**完全运行在 Cloudflare 上**。核心混淆逻辑跑在浏览器或 Worker
-里，项目不依赖任何本地服务、不需要本地 hosts 映射、也没有 Node 端运行时入口。
+JavaScript 混淆器，**完全运行在 Vercel 上**。界面与 JSON API 同域，混淆在服务端执行，
+项目不依赖任何本地服务、不需要本地 hosts 映射。
 
 | 场景 | 入口 | 说明 |
 | --- | --- | --- |
-| 网页界面（浏览器内执行） | `web/`（构建到 `dist/`） | 用访问者自己的 CPU，代码不出本机，无服务端 CPU 时限 |
-| Cloudflare Worker / Pages | `worker/index.js`、`functions/api/[[path]].js` | 静态界面 + JSON API，绑 KV 做跨请求计数 |
+| 网页界面 | `web/`（构建到 `dist/`） | 上传源码 → `/api/obfuscate` 云端执行 → 返回结果 |
+| JSON API | `api/*.js` → `vercel/entry.js` → `server/handler.js` | 五个端点，程序化调用走这里 |
 
-混淆核心（`src/obfuscate.js` 及其依赖：AST 解析器、生成器、二十个 pass、许可证编解码）不引用任何
-Node 内建模块，因此浏览器与 Worker 加载的是同一份代码、同一套选项表、同一套套餐闸门。
+混淆核心（`src/obfuscate.js` 及其依赖：AST 解析器、生成器、二十个 pass、许可证编解码）
+不引用任何 Node 内建模块，因此浏览器与服务端加载的是同一份代码、同一套选项表、
+同一套套餐闸门。
 
-`src/` 与 `web/`、`worker/` 里**没有一行 `node:` 引用**，两者都是纯粹的 Web 标准代码。
+`src/`、`web/`、`server/` 里**没有一行 `node:` 引用**，两者都是纯粹的 Web 标准代码。
 `tools/` 下的脚本（发卡、自测、构建）是给维护者在本地用的开发工具，不属于运行时。
 
 ## 快速开始
 
 ```bash
-# 1) 自测（末段会打线上域名做验收；纯离线跑用 JSLB_SKIP_LIVE=1）
+# 1) 自测（末段会打线上站点做验收，需 JSLB_LIVE_ORIGIN=<域名>；纯离线用 JSLB_SKIP_LIVE=1）
 npm test
 
-# 2) 构建静态产物（界面 + 核心；核心默认自混淆，见下）
-npm run build:web
+# 2) 构建静态产物（云端执行形态：界面 + 公开模块，混淆核心不进产物）
+npm run build:web:cloud
 
-# 3) 预览与调试：一律走 Cloudflare，本地不起任何服务器
-npx wrangler dev         # 本地 workerd：静态资源 + /api/*，与线上同构
-npx wrangler deploy      # 发布到线上，浏览器打开线上域名
+# 3) 本地预览：起与线上一致的 Vercel 运行时（静态资源 + /api/*）
+npx vercel dev
+
+# 4) 发布
+npx vercel --prod
 ```
 
-`build:web` 分两层处理 `src/**`（种子固定，所以产物可复现）：
+`build:web:cloud` 只对**公开模块**（授权链路与选项元数据，未激活界面要靠它们渲染激活
+表单）做自混淆后下发；受保护模块（混淆核心）**根本不进产物**，混淆一律由
+`/api/obfuscate` 在服务端执行。想在浏览器里本地跑混淆，用不带 `--cloud` 的
+`npm run build:web`——那一支会把自混淆 + 模块体加密的核心放进 `dist/`，代价是核心随
+静态资源公开（适合自建，不适合公开站点）。
+
+浏览器内执行那一支（`npm run build:web`）对 `src/**` 分两层处理（种子固定，产物可复现）：
 
 1. **自混淆**——用项目自己的混淆器跑一遍，实测综合 **1.31×**（预算 ≤1.5×）；
-2. **模块体加密**——45 个受保护模块在 `dist/` 里不再有源码文本，只剩明文 stub；
-   真正的源码进一个密文载荷（约 1.2 MB），浏览器靠一个 3.6 KB 引导层解密后以
-   Blob URL 动态 import 物化。爬走的字节是密文，最长可读连续段 14 字节。
+2. **模块体加密**——受保护模块在 `dist/` 里不再有源码文本，只剩明文 stub；
+   真正的源码进一个密文载荷，浏览器靠一个引导层解密后以 Blob URL 动态 import 物化。
 
 产物仍是合法 ESM——stub 会按模块**静态**再导出（ESM 的导出名必须在解析期确定），
 所以跨文件引用不受影响；项目内依赖图无环，顶层 await 物化链不会死锁。
 
-**按实测挑 pass，不按直觉**。旧文档写的"low + 关闭运行期昂贵 pass，运行期 1.63×/3.6×"
-已过时且指错了方向——真实代价结构（同一输入、同一种子、11 次取中位数）：
+**按实测挑 pass，不按直觉**。真实代价结构（同一输入、同一种子、11 次取中位数）：
 
 | pass | 运行期 | 说明 |
 | --- | --- | --- |
 | `objectKeyEncoding` | 21.37× | 每次属性访问变成分段解密取键 |
-| `opaquePredicates` | **2.99×** | 单项第二贵，**旧文档漏了这条** |
+| `opaquePredicates` | **2.99×** | 单项第二贵 |
 | `stringArray` | 2.59× | 阈值降到 0.10 仍要 1.65×，装不进预算 |
 | `numberObfuscation` | 1.11× | |
 | 控制流 / 死码 / 逻辑 / 条件 | 各 1.02~1.04× | 近乎免费 |
 | 基线（全关昂贵项） | 0.99× | 混淆后的核心并不比原核心慢 |
 
-于是当前配置 = 免费的全开 + 昂贵项全关。**改这几行前先跑 `npm run bench:selfobf`**，
-别照旧文档的名单猜。字符串仍是明文，那一层由模块体加密补上。调试线上问题时用
-`npm run build:web -- --plain` 退回逐字节复制（两层都跳过）。详见 `DEPLOY.md` 4.5。
+于是当前配置 = 免费的全开 + 昂贵项全关。**改这几行前先跑 `npm run bench:selfobf`**。
+字符串仍是明文，那一层由模块体加密补上。调试构建问题时用
+`npm run build:web -- --plain` 退回逐字节复制（两层都跳过）。
+
+> 云端执行部署（`build:web:cloud`）**不走这两层**：受保护模块压根不进产物，
+> 混淆在服务端跑，浏览器只拿到公开模块。
 
 ## 激活
 
@@ -63,93 +73,94 @@ npx wrangler deploy      # 发布到线上，浏览器打开线上域名
 不再变化（`--bind` 绑机器发卡自 v5 起已废除，卡密不再携带绑定段）。
 （签发工具是维护者本地用的开发工具，不是运行时组件。）
 
-## 部署到 Cloudflare
+## 部署到 Vercel
 
 ```bash
-npm run build:web            # 产出 dist/：界面 + 自混淆后的核心（--plain 可退回纯复制）
-npx wrangler dev             # 本地起 workerd（静态资源 + /api/*），与线上一致
-npx wrangler deploy          # Workers：静态资源与 API 同域
-
-# 或者当 Pages 项目发布（静态界面 + functions/ 里的 API）
-npx wrangler pages deploy dist
+npm run build:web:cloud        # 产出 dist/：界面 + 公开模块（核心不进产物）
+npx vercel dev                 # 本地起 Vercel 运行时（静态资源 + /api/*），与线上一致
+npx vercel --prod              # 发布（npm run deploy 等价）
 ```
+
+**必须先装 Upstash Redis**（项目 → Marketplace）。Vercel 的函数是无状态的，没有云存储
+时授权记录与每日计数只在单实例内存里活着，表现是"刚激活又提示未激活"。装完自动注入
+环境变量，`/api/health` 里 `store` 字段应显示 `upstash`（显示 `memory` 就是没装成）。
+
+`vercel.json` 已配好构建命令（`build:web:cloud`）、输出目录、区域、`JSLB_WEB_CONFIG`
+与函数时长。`api/` 下每个路由一个文件（一行转发），逻辑在 `vercel/entry.js` → 
+`server/handler.js`。
 
 ### 发布后必须验证
 
 ```bash
-npm run verify                       # 默认验自定义域名
-node tools/build/verify-deploy.js https://你的域名/
+npm run verify -- https://你的域名
 ```
 
-**配置写了、部署没报错，不等于生效。** 2026-09-19 就踩过这个坑：`wrangler.toml` 里
-`JSLB_WEB_CONFIG` 明确写着 `requireLicense: true`，`wrangler deploy` 也把这条列进了
-bindings，但线上 `/api/plans` 返回的是代码里的默认值 `false`——**站点一直在无卡密
+**配置写了、部署没报错，不等于生效。** 2026-09-19 就踩过这个坑：部署配置里
+`JSLB_WEB_CONFIG` 明确写着 `requireLicense: true`，部署输出也把这条列进了
+环境变量，但线上 `/api/plans` 返回的是代码里的默认值 `false`——**站点一直在无卡密
 自由使用的试用模式**，而部署输出没有任何异常。
 
-所以发布后固定打这三个探针（都不消耗配额，用的是随机设备码且期望被拒）：
+所以发布后固定打这几个探针（都不消耗配额，用的是随机设备码且期望被拒）：
 
-1. `/api/health` 活着，`runtime` 为 `worker`
-2. `/api/plans` 的档位数与本地一致、`web.requireLicense` 与预期一致，并且**逐档
-   比对**预设上限、各项配额与关闭项
+1. `/api/health` 活着，`runtime=vercel`、`engine=vercel-functions`、`host=vercel-hobby`
+2. `/api/plans` 的档位数与本地一致、`web.requireLicense` 与预期一致、`web.cloudOnly=true`，
+   并且**逐档**比对预设上限、各项配额与关闭项
 3. 无卡密 `POST /api/obfuscate` 被拒（默认期望 `402`）
+4. 混淆核心不在静态产物里：`/src/index.js` 一律 404，而公开模块仍 200
 
 第 2 项的逐档比对是为了防"部署的不是这份代码"：改了 `plans.js` 而忘记重新发布
 （或发布到了别的服务）时，档位数常常还是一样的，只有逐字段比对才看得出。
 
-任一项不过就别对外公布。排查顺序：① 确认域名指向的是哪个 Worker
-（`npx wrangler deployments list`）② 改一个醒目的值（如 `trialRunsPerDay: 7`）
+任一项不过就别对外公布。排查顺序：① 确认域名指向的是哪个 Vercel 项目
+（`npx vercel ls`）② 改一个醒目的值（如 `trialRunsPerDay: 7`）
 重新发布，看 `/api/plans` 会不会跟着变 ③ 若不变，说明发布的不是同一个服务。
 
-`wrangler.toml` 里已配好 `[assets] directory = "./dist"`、`binding = "ASSETS"` 与
-`run_worker_first = ["/api/*"]`。最后一项不能省：`compatibility_date` 在 `2025-04-01`
-及以后时，浏览器地址栏直接打开 `/api/health`（导航请求，带 `Sec-Fetch-Mode: navigate`）
-会优先走静态资源，而 `dist/` 里没有这个文件，于是返回 404 页面而不是 JSON。界面里的
-`fetch` 属于 cors 请求，本来就会命中 Worker，所以不加也能跑——只是直接访问接口会莫名 404。
-
-Pages 侧的函数在 `functions/api/[[path]].js`，与 Worker 共用同一份处理逻辑。
+`vercel.json` 的 `buildCommand` 必须是 `npm run build:web:cloud`：`/api/plans` 强写
+`cloudOnly=true`，而产物里没有混淆核心，两者必须对上，否则用户点运行只会看到一句
+import 404。
 
 完整部署流程（平台选型依据、Secrets 注入、自定义域名、常见报错排查）见
 [`DEPLOY.md`](DEPLOY.md)；本地环境变量模板见 `.env.example`。
 
-### Worker 是无状态的
+### 服务端是无状态的
 
-未绑 KV 时，Worker 不保留任何跨请求的东西：许可证记录、试用计数都是逐请求即弃，
-`state`、设备码缓存、内存存储都在每个请求开头重置。这既是安全要求（一个 isolate 会
+没接云存储时，服务端不保留任何跨请求的东西：许可证记录、试用计数都是逐请求即弃，
+`state`、设备码缓存、内存存储都在每个请求开头重置。这既是安全要求（一个函数实例会
 连续处理互不相干的请求，共用模块级状态会把 A 的授权泄漏给 B），也决定了调用方式——
 **每次请求都要带上卡密**（`X-JSLB-Key` 或请求体 `key`）与设备码（`X-JSLB-Device`），
-否则请求按试用档处理。绑定 KV（`JSLB_KV`）后记录按设备码分键持久化，计数才真正
-跨请求、跨 isolate 生效。
+否则请求按试用档处理。接上 Upstash（`JSLB_KV`）后记录按设备码分键持久化，计数才真正
+跨请求、跨实例生效。
 
-设备码（`X-JSLB-Device`）由客户端随机生成并持久化，只用于 KV 按设备分键；**机器码已改由
-服务端签发并与卡密绑定，不再依赖它**，所以清掉浏览器存储不会让已激活的卡失效。反过来，
-设备码本身仍是客户端提供的，清掉它只能重置**试用计数**——配额是"防误用"级别的，不是防作弊
-级别的。
+设备码（`X-JSLB-Device`）由客户端随机生成并持久化，只用于云存储按设备分键；**机器码
+已改由服务端签发并与卡密绑定，不再依赖它**，所以清掉浏览器存储不会让已激活的卡失效。
+反过来，设备码本身仍是客户端提供的，清掉它只能重置**试用计数**——配额是"防误用"级别的，
+不是防作弊级别的。
 
 > **机器码为什么不再由设备特征派生（2026-09-25 改）**：浏览器只能拿到平台、CPU 核数、
-> GPU 渲染器、时区、语言这类特征，而 Worker 里根本没有 navigator / WebGL，派生出的是另一个
+> GPU 渲染器、时区、语言这类特征，而服务端根本没有 navigator / WebGL，派生出的是另一个
 > 常量——界面上就表现为"激活前显示 A、激活后服务端回 B"；特征里任何一项漂移（GPU 渲染器
 > 取不到、改时区/语言）还会让已激活的卡在 restore 时判成 machine 不一致，用户什么都没干
 > 就被踢回未激活。现在改为激活时向 `/api/machine` 要一个码，服务端按**卡密编号**登记后
-> 永久保存（KV）；服务端没绑 KV 时退化为"由卡号确定性派生"，同样恒等。离线时退回本机
+> 永久保存（云存储）；没接云存储时退化为"由卡号确定性派生"，同样恒等。离线时退回本机
 > 缓存与设备特征值，并把结论记进本机缓存，保证刷新前后一致。
 
 ### 运行限制
 
-- **免费版 CPU 预算只有 10 ms**，稍大的输入会直接超时（错误 1102）。这条只约束
-  `/api/obfuscate`：界面把混淆放在浏览器内（用户自己的 CPU，代码不出本机），不受
-  影响。要放开 API 的预算，改用付费版并把 `limits.cpu_ms` 调高。
-- **核心模块图里不能有字符串代码生成**。Cloudflare 禁用 `eval` 与 `new Function`，
-  上传时直接报 `EvalError: Code generation from strings disallowed`，整个 Worker 发不出去。
+- **免费档有硬约束**，全部按 Vercel Hobby 定（数字见 `src/host-limits.js`）：函数请求体
+  4.5 MB、单次上传 2 MiB、每日 CPU 预算 300 s、函数时长 60 s。超限分别表现为 413、413、
+  503（预算用尽）、超时。`/api/obfuscate` 在入口就预检这些，所以用户看到的是可读的
+  中文/英文提示，而不是平台的 `FUNCTION_PAYLOAD_TOO_LARGE`。
+- **核心模块图里不能有字符串代码生成**。浏览器的 CSP 与不少函数运行时禁用 `eval` 与
+  `new Function`，跑起来直接报 `EvalError: Code generation from strings disallowed`。
   `src/passes/shell.js` 原先用 `(0, eval)(PRIMITIVES)` 保证"产物文本与构建期实现不漂移"，
-  已改成手写等价实现，比对挪进 `tools/test/selftest.js`（那里不随 Worker 上传）。
-  自测里有一条守卫会拦住回退，改核心时别引入 `eval`/`new Function`。
-  注意产物**里面**的 `(0,eval)` 是给宿主跑的引导器，不受这条限制。
+  已改成手写等价实现，比对挪进 `tools/test/selftest.js`。自测里有一条守卫会拦住回退，
+  改核心时别引入 `eval`/`new Function`。注意产物**里面**的引导器不受这条限制。
 
 
-## Worker API
+## JSON API
 
-> **网页界面不使用这一节**：界面把混淆完全留在浏览器内（见上）。下面的接口是给
-> **程序化调用**准备的，同时也承担界面的授权与策略下发。
+> **网页界面也用这一节**（云端执行部署）：界面把源码 POST 到 `/api/obfuscate`，
+> 由服务端跑完整流水线。下面的接口同时给程序化调用用。
 
 ```bash
 curl -s https://<host>/api/health
@@ -176,7 +187,7 @@ curl -s -X POST https://<host>/api/obfuscate \
 ### 消息语言按请求协商
 
 响应里的 `message`、`banner`、`quotaText` 等文案是**本地化过的**，语言按请求判定
-（`worker/index.js` 的 `resolveLang`），优先级：
+（`server/handler.js` 的 `resolveLang`），优先级：
 
 1. `X-JSLB-Lang: zh | en` —— 网页界面用它，值与用户在界面上选的语言严格一致；
 2. `Accept-Language` —— 脚本 / curl 场景，浏览器也会自动带；
@@ -436,7 +447,7 @@ Plus 闸门把它显式关着，改上限却忘了动那一条，加载期直接
 本地记录里另有一份机器码与 HMAC 令牌，防的是把许可证记录直接拷到另一台机器——那一层的
 密钥派生自卡密密钥、是公开的，只留下篡改痕迹，**不是**安全边界。
 
-- **网页/Worker**：机器码与浏览器设备特征**无关**了，因此清掉站点数据、换浏览器、进隐私
+- **网页/服务端**：机器码与浏览器设备特征**无关**了，因此清掉站点数据、换浏览器、进隐私
   模式都不会换机器码——已激活的卡不会因为环境变动而失效。旧的"设备特征派生"只剩一个用途：
   未激活且拿不到服务端时，界面那一栏的兜底展示值。
 
@@ -450,9 +461,11 @@ Plus 闸门把它显式关着，改上限却忘了动那一条，加载期直接
 未激活时的行为由网页版策略 `JSLB_WEB_CONFIG` 决定，把 `requireLicense` 设为 `true`
 即要求先激活，未激活一律拒绝（API 返回 `402`，界面直接提示失败）：
 
-```toml
-[vars]
-JSLB_WEB_CONFIG = '{"requireLicense":true,"trialPreset":"low","trialMaxFileBytes":524288,"trialRunsPerDay":10}'
+```jsonc
+// vercel.json
+"env": {
+  "JSLB_WEB_CONFIG": "{\"requireLicense\":true,\"trialPreset\":\"low\",\"trialMaxFileBytes\":524288,\"trialRunsPerDay\":10}"
+}
 ```
 
 `trialRunsPerDay` 默认是 **10 次/天**（`src/platform.js` 的 `DEFAULT_WEB_CONFIG`）。
@@ -462,14 +475,15 @@ JSLB_WEB_CONFIG = '{"requireLicense":true,"trialPreset":"low","trialMaxFileBytes
 界面启动时会从 `/api/plans` 读回这份策略并套用，因此服务端要求激活时界面不会按
 "允许试用"放行——两端判断始终一致。
 
-部署方需要注意的边界：静态站点会把核心一起发给访问者。但**卡密是 Ed25519 签名的，
-私钥只在签发方**，所以拿到全部源码也**签不出新卡密**——这是非对称签名拿到的性质，
-也是"源码公开"这件事不再致命的原因。要再进一步让验签发生在服务端，部署 Worker
-并用自己的密钥对即可（混淆仍留在浏览器内，只是授权由服务端判定）：
+部署方需要注意的边界：**卡密是 Ed25519 签名的，私钥只在签发方**，所以拿到全部源码也
+**签不出新卡密**——这是非对称签名拿到的性质，也是"源码公开"这件事不再致命的原因。
+（云端执行部署下混淆核心压根不在静态产物里，这一层比"加密后公开"更靠前。）
+要再进一步让验签发生在服务端，用自己的密钥对即可（Vercel 项目设置里配
+`JSLB_CODE_KEY` 环境变量）：
 
 ```bash
 node tools/issue/keyrotate.js --write        # 生成密钥对：公钥进源码，私钥进 .jslb-code-key
-npx wrangler secret put JSLB_CODE_KEY      # 值 = 上一步打印的公钥（可选；内置公钥也能用）
+# 然后在 Vercel 项目设置里加环境变量 JSLB_CODE_KEY = 上一步打印的公钥（可选；内置公钥也能用）
 ```
 
 用**自己的**密钥对时，发卡与验签才同源：
@@ -508,7 +522,7 @@ npm run keygen -- --plan plus --days 30 --date 2026-01-01   # 指定签发日（
 npm run keygen -- --check <卡密>                            # 校验一张卡
 
 # 3) 查一张卡绑定到了哪台机器（机器码由服务端签发，见"机器码"一节）
-curl -s -X POST https://<worker>/api/machine -H 'content-type: application/json' \
+curl -s -X POST https://<host>/api/machine -H 'content-type: application/json' \
   -d '{"key":"JSLB-..."}'                                  # → {"ok":true,"machine":"…","issued":false}
 ```
 
@@ -535,28 +549,32 @@ curl -s -X POST https://<worker>/api/machine -H 'content-type: application/json'
 用自己的密钥对之后，浏览器手里那把内置公钥永远验不过卡密，所以界面做了两条配合：
 
 - **激活交给服务端**。点"激活"先本地验签，验不过就把卡密 POST 给 `/api/license`，
-  由 Worker 用它的公钥验。成功后授权记在服务端（绑 KV 时按设备码分键），
+  由服务端用它的公钥验。成功后授权记在服务端（接云存储时按设备码分键），
   之后每次请求只带设备码即可恢复。
 - **策略与服务端对齐**。界面启动时从 `/api/plans` 读回网页版策略，因此服务端把
   `requireLicense` 设成 `true`，界面也会同步要求激活，不会一边拒绝一边放行。
 
-### 混淆只在浏览器内跑
+### 混淆在哪里跑
 
-界面**没有**"服务端执行"这个选项，混淆一律在浏览器内完成：用访问者的 CPU，
-代码不出本机，也不受服务端 CPU 限额约束。服务端只负责两件事——授权（`/api/license`）
-与下发策略（`/api/plans`）。
+界面有**两种**执行模式，由部署决定（`cloudOnly`，`/api/plans` 下发）：
 
-这么定是因为代价不对称：免费版 Worker 单请求只有 **10 ms CPU**，实测 medium 预设
-只能跑 4 KB 以内的输入，8 KB 就 `1102` 超限；而浏览器内执行没有这个天花板。
-代价是本地运行服务端统计不到，因此服务端配额只对"激活/策略"这类请求有意义，
-`runsPerDay` 这类配额实际上管不到浏览器内的混淆次数。
+- **云端执行**（本部署，Vercel）：源码 POST 到 `/api/obfuscate`，服务端跑完整流水线。
+  代价是吃服务端的 CPU 与带宽预算，收益是**混淆核心不随静态资源下发**，爬站点的
+  人拿不到实现。免费档的硬约束（请求体 4.5 MB、单次上传 2 MiB、每日 CPU 300 s、
+  函数 60 s）由入口预检强制，超了给的是可读提示。
+- **浏览器内执行**（`build:web` 不带 `--cloud`，自建/离线用）：用访问者的 CPU，代码
+  不出本机，没有服务端天花板。代价是核心随静态资源公开（已自混淆 + 模块体加密，
+  但密钥也随静态资源走）。
 
-**两个计数器是分开的，且这是设计如此**（2026-09-25 修显示 bug 时确认）：
+**云端执行下两个计数器是分开的，且这是设计如此**（2026-09-25 修显示 bug 时确认）：
 
 | 计数器 | 存在哪 | 统计什么 | 谁读它 |
 | --- | --- | --- | --- |
 | 本机用量 | 本地签名记录（`consumeRun` 写） | 界面里每一次混淆 | 界面显示的用量、界面侧的配额判定 |
-| 服务端用量 | KV | 只有 `/api/obfuscate` 的调用 | 服务端配额判定、程序化调用 |
+| 服务端用量 | 云存储 | 只有 `/api/obfuscate` 的调用 | 服务端配额判定、程序化调用 |
+
+云端执行时界面在**每个文件成功后**也记一次本机用量，就是为了与服务端那份对齐，
+否则两边会越走越远。
 
 两者不合并是有意的：服务端**拒绝采纳**客户端推上来的用量（见 `license-web.importRecord`
 的说明——客户端每刷新一次页面就会推一次记录，无脑覆盖等于把服务端累计的用量清零，
@@ -580,25 +598,25 @@ curl -s -X POST https://<worker>/api/machine -H 'content-type: application/json'
 
 界面上的"解除激活"同时清两端：本机的许可证记录，以及**服务端按设备码存的那一份**。
 
-服务端那份必须带 `X-JSLB-Device` 才能删对——设备码进 KV 键名，缺了它服务端删的是
+服务端那份必须带 `X-JSLB-Device` 才能删对——设备码进存储键名，缺了它服务端删的是
 无后缀的共享键，这台设备的记录原封不动，刷新后授权又回来了（`src/license-web.js`
-的 `scopedKey`）。解除走的是真正的删除（KV `delete` / localStorage `remove`），
+的 `scopedKey`）。解除走的是真正的删除（存储 `delete` / localStorage `remove`），
 不是写空串。
 
 ## 环境变量
 
 | 变量 | 作用域 | 说明 |
 | --- | --- | --- |
-| `JSLABYRINTH_LANG` | 全部 | 语言 `zh`/`en`（浏览器可改用 `window.JSLB_ENV`）。**Worker 侧只是兜底默认**：服务端文案的语言按请求判定（`X-JSLB-Lang` > `Accept-Language` > 本变量），见「Worker API」一节 |
+| `JSLABYRINTH_LANG` | 全部 | 语言 `zh`/`en`（浏览器可改用 `window.JSLB_ENV`）。**服务端只是兜底默认**：文案的语言按请求判定（`X-JSLB-Lang` > `Accept-Language` > 本变量），见「JSON API」一节 |
 | `JSLABYRINTH_KEYGEN_STATE` | 发卡工具 | 编号计数器路径 |
 | `JSLABYRINTH_CODE_KEY_FILE` | 发卡工具 | 签发私钥文件路径（默认 `.jslb-code-key`） |
 | `JSLB_CODE_KEY` | 发卡工具 | **签发私钥**（base64，32 字节种子）。**机密**，泄露 = 发卡权泄露 |
-| `JSLB_WEB_CONFIG` | 网页/Worker | 网页版策略 JSON |
-| `JSLB_CODE_KEY` | 网页/Worker | 覆盖内置签发公钥（base64，非机密） |
-| `JSLB_MACHINE_SALT` | 网页/Worker | 覆盖机器码派生盐（base64，非机密）。只影响未激活时的**兜底**机器码，已激活卡的机器码由服务端签发，与它无关 |
-| `JSLB_CORS_ORIGIN` | Worker | `/api/*` 的跨域来源，默认 `*` |
-| `JSLB_DEVICE_ID` | 网页/Worker | 固定设备码（仅 KV 分键与试用计数），便于测试 |
-| `JSLB_LIVE_ORIGIN` | 测试 | 线上验收目标域名（默认 `https://jslb.lllm.dpdns.org`） |
+| `JSLB_WEB_CONFIG` | 网页/服务端 | 网页版策略 JSON |
+| `JSLB_CODE_KEY` | 网页/服务端 | 覆盖内置签发公钥（base64，非机密） |
+| `JSLB_MACHINE_SALT` | 网页/服务端 | 覆盖机器码派生盐（base64，非机密）。只影响未激活时的**兜底**机器码，已激活卡的机器码由服务端签发，与它无关 |
+| `JSLB_CORS_ORIGIN` | 服务端 | `/api/*` 的跨域来源，默认 `*` |
+| `JSLB_DEVICE_ID` | 网页/服务端 | 固定设备码（仅存储分键与试用计数），便于测试 |
+| `JSLB_LIVE_ORIGIN` | 测试 | 线上验收目标站点（**必须显式给**，如 `https://<站点>.vercel.app`；不给则跳过该段） |
 | `JSLB_SKIP_LIVE` | 测试 | 设为 `1` 跳过线上验收段，纯离线跑 |
 | `DSH_VM_DEBUG` | 全部 | VM 编译失败时打印原因 |
 
@@ -608,13 +626,13 @@ curl -s -X POST https://<worker>/api/machine -H 'content-type: application/json'
 
 ## 目录结构
 
-按用途分：`src/` 是跨环境核心，`web/` 是界面，`worker/` 是 Cloudflare 入口，
-`tools/` 按用途三分。`functions/` 与 `dist/` 的位置由外部规范决定
-（Pages 只从项目根读函数，wrangler 指向 dist），不参与归整。
+按用途分：`src/` 是跨环境核心，`web/` 是界面，`server/` 是平台无关的服务端实现，
+`api/` + `vercel/` 是 Vercel 的接入层，`tools/` 按用途三分。`dist/` 是构建产物，
+由 `vercel.json` 的 `outputDirectory` 指定，不参与归整。
 
 ```
-src/                跨环境核心：浏览器与 Worker 共用同一份，零宿主依赖
-  index.js          公共入口（库用法、网页、Worker 都从这里取能力）
+src/                跨环境核心：浏览器与服务端共用同一份，零宿主依赖
+  index.js          公共入口（库用法、网页、服务端都从这里取能力）
   obfuscate.js      核心：pass 编排与自校验
   options.js        默认选项          options-meta.js  选项元数据（界面与闸门共用）
   presets.js        强度预设          plans.js         套餐定义
@@ -623,15 +641,21 @@ src/                跨环境核心：浏览器与 Worker 共用同一份，零�
   platform.js       运行环境适配层（env/随机数/存储/KV/网页版策略/设备特征）
   license-core.js   许可证校验（三端共用）  license-codec.js  卡密与令牌编解码
   license-secret.js 签发公钥与自身摘要表（**只有公钥**，私钥在库外）
-  license-web.js    网页/Worker 授权（服务端签发机器码、localStorage/KV、试用）
+  license-web.js    网页/服务端授权（服务端签发机器码、localStorage/云存储、试用）
   ast/              解析器、生成器、遍历、类型
   passes/           各 pass（vm、stringArray、controlFlow……）
   utils/            hash（纯 JS SHA-256/512、HMAC、base64）、ed25519（纯 JS 签名/验签）、
                     encode、rand、hide、ws、zip
 
-worker/             Cloudflare Worker 入口（Pages 的 functions/ 转调它）
-  index.js          无任何 node: 依赖的纯 Web 代码，wrangler.toml 的 main 指向它
-  gate-policy.js    受保护路径名单（worker 与 build:web 共用同一份，见 DEPLOY.md 4.5）
+server/            平台无关的服务端实现（Vercel 接入层转调它）
+  handler.js        /api/* 的实现：授权判定、混淆执行、机器码签发
+
+api/                Vercel 函数入口，每个路由一个文件（一行转发）
+  health.js  plans.js  license.js  machine.js  obfuscate.js
+
+vercel/             Vercel 接入层
+  entry.js          共用入口：上传预检 / CPU 预算记账 / 流式回执 / health 上报
+  store.js          Upstash Redis REST 适配（没配退化为单实例内存）
 
 web/                网页界面源码（原生 ESM，无打包器，无第三方依赖）
 tools/
@@ -644,18 +668,18 @@ tools/
   issue/            发卡与密钥    keygen.js（发卡）、signingkey.js（生成密钥对）、
                                   keyrotate.js（轮换）、selfdigest.js
 
-functions/api/      Cloudflare Pages Functions（必须留在项目根，Pages 只从这里读）
-dist/               构建产物（web/ 的界面 + src/ 的核心），不随仓库分发
+dist/               构建产物（web/ 的界面 + src/ 的公开模块），不随仓库分发
 ```
 
-`worker/` 与 `src/`、`web/` 一样零宿主依赖——三者都是能在浏览器和 workerd 里直接跑的
-Web 标准代码。构建只复制 `src/` 与 `web/`，所以不需要任何排除表。
+`server/` 与 `src/`、`web/` 一样零宿主依赖——三者都是能在浏览器和 Vercel 函数里直接跑的
+Web 标准代码。构建只复制 `src/` 与 `web/`，所以不需要任何排除表；`--cloud` 再按
+`tools/build/gate-policy.js` 剔掉受保护模块。
 
 > **已移除**：原先的 `host/` 目录（`cli.js` 命令行、`directory.js` 目录批量、
 > `license-node.js` Node 端许可证）随"全面转向云端"一并删除。这些能力在
-> Cloudflare Worker 里物理上不存在对应物：Worker 拿不到 `os.hostname()` 与网卡 MAC，
+> Vercel 函数里物理上不存在对应物：拿不到 `os.hostname()` 与网卡 MAC，
 > 也没有 debugger 可供反调试，更没有本地文件系统承载 `license.lic`。
-> 现在唯一的授权通道是网页界面 + Worker + KV。
+> 现在唯一的授权通道是网页界面 + `/api/*` + 云存储。
 
 ## 与改动前版本的差异
 
@@ -671,7 +695,7 @@ Web 标准代码。构建只复制 `src/` 与 `web/`，所以不需要任何排�
 
 为了跨环境，以下几点必须改动：
 
-1. **CommonJS → ESM**。浏览器与 Worker 只认 ESM，`require`/`module.exports` 全部换成
+1. **CommonJS → ESM**。浏览器与服务端函数只认 ESM，`require`/`module.exports` 全部换成
    `import`/`export default`。所有模块都保留默认导出，调用形态基本不变。
 2. **纯 JS 密码学**。`node:crypto` 只在 Node 可用、WebCrypto 又是异步的，卡密验签必须同步且
    三端一致，于是新增 `src/utils/hash.js`（SHA-256、HMAC-SHA256、base64 解码）。
@@ -680,7 +704,7 @@ Web 标准代码。构建只复制 `src/` 与 `web/`，所以不需要任何排�
 3. **数据文件 JSON → JS 模块**。原生 ESM 的 JSON 模块在各浏览器支持度不一，
    `options/presets/plans/builtin-*` 改成导出默认值的 `.js`。
 4. **许可证拆成共用判定与宿主适配**。原 `src/license.js` 里宿主相关的部分拆出；共用的判定进
-   `src/license-core.js`，网页/Worker 侧新增 `src/license-web.js`。自身文件摘要表覆盖的文件变了，
+   `src/license-core.js`，网页/服务端侧新增 `src/license-web.js`。自身文件摘要表覆盖的文件变了，
    `tools/issue/selfdigest.js` 已同步。
    （后续 2026-09-21 转向纯云端时，Node 侧那份 `host/license-node.js` 已删除，
    摘要表相应从 6 项缩到 5 项。）
@@ -688,21 +712,21 @@ Web 标准代码。构建只复制 `src/` 与 `web/`，所以不需要任何排�
    `process.env.DSH_*` 改成通用实现，`Buffer.byteLength` 改成 `platform.byteLength`。
 6. **新增**：`src/platform.js`、`src/pipeline.js`、`src/options-meta.js`、`src/options-gate.js`、
    `src/index.js`、`src/utils/zip.js`、`src/version.js`、`functions/`、`web/`、
-   `wrangler.toml`，以及 `tools/` 下的 `build-web.js`、`selftest.js`、`hashtest.js`。
+   `vercel.json`、`api/`、`server/`，以及 `tools/` 下的 `build-web.js`、`selftest.js`、`hashtest.js`。
 7. **版本号**从 `src/version.js` 读（避免浏览器导入 JSON），`tools/issue/selfdigest.js --check`
    会顺带校验它与 `package.json` 一致。
 
 ## 测试
 
 ```bash
-npm test                                 # 核心/HTML/目录/闸门/许可证/网页链路/Worker/ZIP/ESM/BigInt + 线上验收
+npm test                                 # 核心/HTML/目录/闸门/许可证/网页链路/服务端路由/ZIP/ESM/BigInt + 线上验收
 JSLB_SKIP_LIVE=1 npm test                # 同上，但不打网络（纯离线段）
 node tools/test/hashtest.js              # 118 项：SHA-256/512、HMAC、base64、Ed25519 与 node:crypto 逐位一致
 npm run semantics                        # 语义保持扫描（42 用例 × 4 预设 × 3 seed = 528 次比对）
 npm run bench                            # 混淆性能基准（各预设 × 各规模 + per-pass 分布）
 node tools/issue/selfdigest.js --check   # 自身摘要表与版本号一致性
 node tools/test/webfp.js                 # 浏览器指纹线上实测（playwright + 线上域名）
-npm run build:web && npm run verify:enc  # 加密层端到端校验（对 dist，见 DEPLOY.md 4.5）
+npm run build:web && npm run verify:enc  # 加密层端到端校验（对 dist，见 README「构建」一节）
 npm run bench:selfobf                    # 自混淆运行期预算基准（逐 pass 代价，可复现）
 npm run verify                           # 发布验证：打线上域名核对接口、资源与门控
 ```
@@ -710,7 +734,7 @@ npm run verify                           # 发布验证：打线上域名核对�
 ### 网络依赖
 
 除「线上验收」段外，`npm test` 全部离线运行，不读凭据、不写仓库内文件。
-该段会请求已部署的 Cloudflare 站点，确认部署与策略真的生效：
+该段会请求已部署的 Vercel 站点，确认部署与策略真的生效：
 
 | 环境变量 | 作用 |
 | --- | --- |

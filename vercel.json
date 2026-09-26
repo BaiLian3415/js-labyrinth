@@ -1,0 +1,26 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "buildCommand": "npm run build:web:cloud",
+  "outputDirectory": "dist",
+  "regions": ["hkg1"],
+  "env": {
+    "JSLB_WEB_CONFIG": "{\"requireLicense\":true,\"trialPreset\":\"low\",\"trialMaxFileBytes\":524288,\"trialRunsPerDay\":10}"
+  },
+  "functions": {
+    "api/obfuscate.js": { "maxDuration": 300 },
+    "api/license.js": { "maxDuration": 60 },
+    "api/machine.js": { "maxDuration": 30 },
+    "api/plans.js": { "maxDuration": 30 },
+    "api/health.js": { "maxDuration": 30 }
+  },
+  "headers": [
+    {
+      "source": "/index.html",
+      "headers": [{ "key": "cache-control", "value": "public, max-age=0, must-revalidate" }]
+    },
+    {
+      "source": "/src/(.*)",
+      "headers": [{ "key": "cache-control", "value": "public, max-age=0, must-revalidate" }]
+    }
+  ]
+}

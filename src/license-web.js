@@ -1,5 +1,5 @@
 /**
- * 网页版授权（浏览器与 Cloudflare Workers 共用）。
+ * 网页版授权（浏览器与服务端共用）。
  *
  * 与 Node 版的差别只在宿主能力，判定规则完全一致：卡密由同一份 license-codec
  * 解析，许可证记录由同一份 license-core 校验，套餐闸门与配额口径也一致。
@@ -40,7 +40,7 @@ const { t } = i18n;
 
 // 卡密密钥（对称，base64 32 字节）。信息段加密与校验码都用它；它随源码分发，
 // 浏览器才能本地验卡——代价是拿到源码的人也能自己造卡，真正的强制在服务端
-// （Worker 逐请求校验 + KV 赎回登记 + JSLB_GATE_CORE 门控，见 license-codec.js
+// （服务端逐请求校验 + 云存储赎回登记，见 license-codec.js
 // 的头注释）。部署方想用自己的密钥，用 JSLB_CODE_KEY 覆盖。
 const BUNDLED_CODE_KEY = secret.B64_CODE_KEY;
 

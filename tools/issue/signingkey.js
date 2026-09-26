@@ -21,9 +21,9 @@
  *
  *   - 它必须写进 src/license-secret.js（B64_CODE_KEY）随源码分发——浏览器本地
  *     验卡要用。因此它**不是秘密**：拿到源码的人能自己造卡，真正的强制在服务端
- *     （Worker 逐请求校验 + KV 赎回登记 + JSLB_GATE_CORE 门控）。
+ *     （/api/obfuscate 逐请求校验 + 云存储赎回登记）。
  *   - 它仍然等于"离线场景的发卡权"：不想用内置值时，把新密钥配进服务端
- *     （npx wrangler secret put JSLB_CODE_KEY），签发方用同一把，密钥不进 git。
+ *     （Vercel 项目设置里的 JSLB_CODE_KEY），签发方用同一把，密钥不进 git。
  *
  * 生成后会当场做一次"签发→校验"往返自检：新密钥签出的卡密必须能被它自己解析、
  * 且换一把密钥就解析不过。任何一步不过就拒绝输出。
@@ -57,7 +57,7 @@ const HELP = `JsLabyrinth 卡密密钥生成器
 
 拿到密钥之后：
   1) 填进 src/license-secret.js 的 B64_CODE_KEY（或直接用 keyrotate.js --write 一步到位）
-  2) 想让服务端与 git 里的值不同：npx wrangler secret put JSLB_CODE_KEY
+  2) 想让服务端与 git 里的值不同：Vercel 项目设置里加 JSLB_CODE_KEY 环境变量
   3) 发卡：node tools/issue/keygen.js --plan plus --days 365
 
 ⚠️ 密钥随源码分发（浏览器验卡要用），拿到源码的人能自己造卡；
@@ -182,7 +182,7 @@ function main(argv) {
   console.log('');
   console.log('  下一步：');
   console.log('    1) 密钥写进 src/license-secret.js（或改用 keyrotate.js --write 一步到位）');
-  console.log('    2) 服务端覆盖（可选）：npx wrangler secret put JSLB_CODE_KEY');
+  console.log('    2) 服务端覆盖（可选）：Vercel 项目设置里加 JSLB_CODE_KEY 环境变量');
   console.log('    3) 发卡：node tools/issue/keygen.js --plan plus --days 365');
   console.log('');
   console.log('  ⚠️ 密钥随源码分发（浏览器验卡要用），拿到源码的人能自己造卡；');

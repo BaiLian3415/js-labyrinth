@@ -28,7 +28,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { isGatedModuleId } from '../../worker/gate-policy.js';
+import { isGatedModuleId } from './gate-policy.js';
 
 const ROOT = path.resolve(import.meta.dirname, '../..');
 const DIST = path.join(ROOT, 'dist');

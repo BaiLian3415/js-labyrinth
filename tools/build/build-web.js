@@ -1,8 +1,14 @@
 #!/usr/bin/env node
 /**
- * 网页版构建：把界面与核心汇总到 dist/，供 Cloudflare Pages / Workers 静态资源发布。
+ * 网页版构建：把界面与核心汇总到 dist/，供 Vercel（outputDirectory）或任意静态托管发布。
  *
- *   node tools/build/build-web.js [--out dist]
+ *   node tools/build/build-web.js [--out dist] [--plain] [--cloud]
+ *
+ * 两层处理，取决于 --cloud：
+ *   默认        混淆核心照旧进 dist（自混淆 + 模块体加密），浏览器内执行；
+ *   --cloud     混淆核心**不进 dist**，只有公开模块下发，混淆一律由服务端的
+ *               /api/obfuscate 执行。Vercel 部署走这一支（vercel.json 的
+ *               buildCommand），这是"源码不出服务端"的落点。
  *
  * 不需要打包器：界面用的是原生 ESM（<script type="module">)，浏览器按 import 关系
  * 逐个取 src/ 下的模块，因此这里只做文件复制，产物与源码逐字节一致，也便于直接看
@@ -15,17 +21,18 @@
  *
  * 产物结构：
  *   dist/index.html  dist/app.js  dist/styles.css     界面
- *   dist/src/**                                       核心（与仓库里同一份源码）
- *   dist/404.html                                     自定义 404（not_found_handling 用）
+ *   dist/src/**                                       核心（--cloud 时只有公开模块）
+ *   dist/404.html                                     自定义 404
  *
- * 不含 tools/、functions/、license.lic 等：发卡工具与本地许可证不该出现在公开站点上。
- * functions/ 由 Pages 从项目根目录读取，不需要进 dist。
+ * 不含 tools/、server/、vercel/、license.lic 等：发卡工具、服务端实现与本地许可证
+ * 不该出现在公开站点上。api/ 与 vercel/ 是**服务端**代码，由托管平台的函数运行，
+ * 同样不进 dist。
  */
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { VERSION } from '../../src/version.js';
-import { isGatedModuleId } from '../../worker/gate-policy.js';
+import { isGatedModuleId } from './gate-policy.js';
 import * as enc from './enc-loader.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
@@ -145,23 +152,29 @@ function collectModules(entryAbs, outDirAbs) {
  *
  * 源码里的 web/index.html 留着 <!--JSLB_PRELOAD--> 占位注释，直接预览时
  * 它是一句无害的注释；构建时替换成真实清单。
+ *
+ * @param {string} outDir 产物根目录
+ * @param {boolean} [cloud] 云端执行构建：额外写一个 meta 标记，界面据此认出
+ *   "本产物没有混淆核心"（见 web/app.js 的 cloudBuilt），探活失败时也不会
+ *   去 import 一个不存在的 ./src/index.js。
  */
-function injectIndex(outDir) {
+function injectIndex(outDir, cloud) {
   const indexPath = path.join(outDir, 'index.html');
   let html = fs.readFileSync(indexPath, 'utf8');
   const mods = collectModules(path.join(outDir, 'app.js'), outDir)
     .filter((p) => p !== '/app.js');
   const links = mods.map((p) => '<link rel="modulepreload" href="' + p + '">').join('\n');
   const stamp = '<meta name="jslabyrinth-build" content="v' + VERSION
-    + ' ' + new Date().toISOString().slice(0, 10) + '">';
+    + ' ' + new Date().toISOString().slice(0, 10) + '">'
+    + (cloud ? '\n<meta name="jslabyrinth-cloud" content="1">' : '');
   html = html.replace('<!--JSLB_PRELOAD-->', links ? links + '\n' + stamp : stamp);
   fs.writeFileSync(indexPath, html);
   return mods.length;
 }
 
 /**
- * 404 页。走 Cloudflare 的 not_found_handling = "404-page" 时，访问者看到的是
- * 这一页，所以它得跟界面同一套配色，并且认深浅色偏好。
+ * 404 页。静态托管返回的默认错误页通常很朴素，把站点的这一页配成 404.html 时，
+ * 访问者看到的就是它，所以它得跟界面同一套配色，并且认深浅色偏好。
  */
 function write404(outDir) {
   fs.writeFileSync(path.join(outDir, '404.html'), `<!DOCTYPE html>
@@ -274,9 +287,9 @@ function selfObfOptions(preset) {
  * 用项目自己的混淆器把 src/** 跑一遍再写进 dist/。
  *
  * 为什么值得做：dist/ 里原本就是逐字节的完整源码，顺着首页的 modulepreload 清单
- * 可以一次性把 51 个模块全拉走。**鉴权下发（JSLB_GATE_CORE）已经挡住了匿名请求**，
- * 这一层是给"已激活用户"再抬一道逆向门槛——混淆后的代码仍然是合法 ESM，import
- * 绑定与文件路径原样保留，所以逐文件混淆不会破坏跨文件引用。
+ * 可以一次性把几十个模块全拉走。Vercel 部署更进一步——受保护模块**根本不发**
+ * （--cloud），所以这一层是给"浏览器内执行"的自建部署再抬一道逆向门槛：混淆后的
+ * 代码仍然是合法 ESM，import 绑定与文件路径原样保留，所以逐文件混淆不会破坏跨文件引用。
  *
  * 关键约束与代价：
  *   - **必须逐文件混淆**，不能合并成 bundle：项目是原生 ESM，界面按文件路径 import。
@@ -290,7 +303,8 @@ function selfObfOptions(preset) {
  * 任何语义破坏（2026-09-20 的 BigInt/谓词缺陷就是这么发现的）。
  *
  * @param {string} outDir 产物根目录
- * @param {object} opts 选项
+ * @param {{preset:string, seed:number, publicOnly?:boolean}} opts 选项（publicOnly 为
+ *   云端执行模式：只处理公开模块，受保护模块与加密层都不进 dist）
  * @returns {Promise<{files:number, inBytes:number, outBytes:number, failed:string[], ms:number}>} 统计
  */
 async function writeObfuscatedSrc(outDir, opts) {
@@ -303,6 +317,9 @@ async function writeObfuscatedSrc(outDir, opts) {
   };
   const t0 = Date.now();
   for (const rel of listJs(path.join(ROOT, 'src'), '')) {
+    // 云端执行（--cloud）：受保护模块**根本不进 dist**——混淆在服务端跑，浏览器
+    // 不需要也不该拿到核心源码。公开模块（激活表单的静态依赖）照旧自混淆后下发。
+    if (opts.publicOnly && isGatedModuleId(rel)) continue;
     const code = fs.readFileSync(path.join(ROOT, 'src', rel), 'utf8');
     stats.inBytes += code.length;
     const r = await core.runJob({
@@ -329,10 +346,10 @@ async function writeObfuscatedSrc(outDir, opts) {
  * 必须在自混淆之后跑——加密的输入就是自混淆的产物，两层叠加（先混淆、再加密）。
  * 顺序反了没有意义：加密后自混淆器看不到明文，没法改写 AST。
  *
- * 受保护集合取自 `worker/gate-policy.js`，与 Worker 侧的匿名 403 判定是**同一份名单**。
- * 为什么要共用：这两个集合必须严格相等，偏大偏小都不报错、只在线上表现为怪现象
- * （见 gate-policy.js 头注释）。这里的失败模式是致命的：若某个受保护模块没被加密却
- * 被 403，浏览器取不到它；若被加密却没被 403，等于把密文与引导层一起公开。
+ * 受保护集合取自 `tools/build/gate-policy.js`——单一事实来源。
+ * 两个集合（谁被加密、谁被下发）必须严格相等，偏大偏小都不报错、只在线上表现为
+ * 怪现象（见 gate-policy.js 头注释）。这里的失败模式是致命的：漏加密的模块会随
+ * 静态资源公开；被加密却不该加密的模块，浏览器取不到它。
  *
  * 公开模块（激活表单的静态依赖）保持明文直出——未激活界面必须能渲染出激活表单。
  *
@@ -418,6 +435,9 @@ function main(argv) {
 
   // 核心默认自混淆后写入；--plain 或 JSLB_BUILD_PLAIN=1 时退回逐字节复制（调试用）
   const plain = argv.includes('--plain') || process.env.JSLB_BUILD_PLAIN === '1';
+  // 云端执行（--cloud 或 JSLB_BUILD_CLOUD=1）：受保护模块与加密层**完全不进 dist**，
+  // 只留公开模块供激活表单使用，混淆全交由服务端的 /api/obfuscate 跑。
+  const cloud = argv.includes('--cloud') || process.env.JSLB_BUILD_CLOUD === '1';
   const obfPreset = process.env.JSLB_BUILD_OBF_PRESET || 'low';
   const obfSeed = Number(process.env.JSLB_BUILD_OBF_SEED || 20260920);
   return (async () => {
@@ -425,10 +445,17 @@ function main(argv) {
     let encl = null;
     if (plain) {
       for (const d of SRC_DIRS) {
-        files += copyDir(path.join(ROOT, d), path.join(outDir, d), (p) => p.endsWith('.js'));
+        files += copyDir(path.join(ROOT, d), path.join(outDir, d), (p) => {
+          if (!p.endsWith('.js')) return false;
+          if (cloud) {
+            const rel = path.relative(path.join(ROOT, 'src'), p).split(path.sep).join('/');
+            if (isGatedModuleId(rel)) return false;
+          }
+          return true;
+        });
       }
     } else {
-      obf = await writeObfuscatedSrc(outDir, { preset: obfPreset, seed: obfSeed });
+      obf = await writeObfuscatedSrc(outDir, { preset: obfPreset, seed: obfSeed, publicOnly: cloud });
       if (obf.failed.length) {
         console.error('自混淆失败 ' + obf.failed.length + ' 个文件，构建中止：');
         for (const f of obf.failed) console.error('  ' + f);
@@ -437,20 +464,26 @@ function main(argv) {
       }
       files += obf.files;
 
-      // 第二层：模块体加密。受保护模块在 dist 里不再有源码文本。
-      // JSLB_BUILD_ENC_KEY 可换成部署方自己的密钥（此时产物不再与默认构建逐字节相同）。
-      encl = writeEncryptedCore(outDir, { seed: obfSeed, keyText: process.env.JSLB_BUILD_ENC_KEY });
-      files += 2; // 引导层 __jslb_core.js + 载荷 __core.pack
+      if (!cloud) {
+        // 第二层：模块体加密。受保护模块在 dist 里不再有源码文本。
+        // JSLB_BUILD_ENC_KEY 可换成部署方自己的密钥（此时产物不再与默认构建逐字节相同）。
+        encl = writeEncryptedCore(outDir, { seed: obfSeed, keyText: process.env.JSLB_BUILD_ENC_KEY });
+        files += 2; // 引导层 __jslb_core.js + 载荷 __core.pack
+      }
     }
     pruneEmptyDirs(outDir);
 
     // 静态页与 API 同源时不需要 CORS；这里只补一个 Pages 用的 404 兜底
     write404(outDir);
 
-    const mods = injectIndex(outDir);
+    const mods = injectIndex(outDir, cloud);
 
     const bytes = dirSize(outDir);
     console.log('已生成 ' + path.relative(ROOT, outDir) + '/：' + files + ' 个文件，' + (bytes / 1024).toFixed(0) + ' KB，v' + VERSION);
+    if (cloud) {
+      console.log('  云端执行构建（--cloud）：受保护模块与加密层未进产物，');
+      console.log('  混淆一律由 /api/obfuscate 在服务端执行，首页已写入 jslabyrinth-cloud 标记。');
+    }
     if (obf) {
       console.log('  核心已自混淆（预设 ' + obfPreset + ' + 运行期优化档，种子 ' + obfSeed + '）：'
         + obf.files + ' 个文件，' + (obf.inBytes / 1024).toFixed(0) + ' KB -> '
@@ -466,12 +499,15 @@ function main(argv) {
         + encl.plain + ' 个公开模块（激活表单依赖）保持明文');
     }
     console.log('  首页已注入 ' + mods + ' 条 modulepreload（原生 ESM 的请求瀑布在构建期拉平）');
-    console.log('  Pages:  npx wrangler pages deploy ' + outName);
-    console.log('  Worker: npx wrangler deploy');
+    if (cloud) {
+      console.log('  Vercel: npx vercel --prod（构建命令与区域见 vercel.json）');
+    } else {
+      console.log('  静态托管：把 dist/ 整个目录发到任意静态托管即可');
+    }
     console.log('');
     console.log('  注意：dist/ 里含 src/license-secret.js 的卡密密钥（对称，随静态资源公开）。');
-    console.log('  对称体系里拿到源码就能造卡——真正的强制在服务端：逐请求校验、KV 赎回登记');
-    console.log('  （一卡一次）与 JSLB_GATE_CORE 门控，见 license-codec.js 的头注释。');
+    console.log('  对称体系里拿到源码就能造卡——真正的强制在服务端：/api/obfuscate 逐请求校验');
+    console.log('  与 KV 赎回登记（一卡一次），见 license-codec.js 的头注释。');
     console.log('  签发密钥：环境变量 JSLB_CODE_KEY 或 .jslb-code-key（gitignore）。');
     console.log('  发卡（缺密钥会明确报错）：');
     console.log('    JSLB_CODE_KEY=<base64 密钥> node tools/issue/keygen.js --plan plus --days 365');

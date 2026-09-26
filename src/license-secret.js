@@ -11,13 +11,13 @@
  * 卡密**——历史上 v4 曾用 Ed25519 避开这一点（公钥验签、私钥签发），v5 应
  * 签发方要求改回对称，安全边界随之降级。真正的强制在服务端：
  *
- *   - Worker /api/obfuscate 逐请求用密钥校验卡密；
- *   - KV 赎回登记实现"一卡一机"（redeem:<编号> → 赎回者机器码）；
- *   - JSLB_GATE_CORE 门控核心模块下载。
+ *   - /api/obfuscate 逐请求用密钥校验卡密；
+ *   - 云存储里的赎回登记实现"一卡一机"（redeem:<编号> → 赎回者机器码）；
+ *   - 云端执行构建（build:web:cloud）根本不下发混淆核心，浏览器拿不到源码。
  *
  * 因此密钥的保密要求只对"离线分发场景"有意义：想换一把不进 git 的密钥，
  * 用 tools/issue/keyrotate.js --write 生成并落盘，然后部署方再用
- * `npx wrangler secret put JSLB_CODE_KEY` 覆盖服务端取值（浏览器端会用
+ * `JSLB_CODE_KEY` 环境变量覆盖服务端取值（浏览器端会用
  * 内置值，两端不一致时服务端说了算）。
  *
  * B64_MACHINE_SALT 不是卡密密钥，只是机器码派生的盐。机器码本身是公开标识
@@ -50,11 +50,11 @@ const B64_MACHINE_SALT = 'SnNMYWJ5cmludGgvTGljZW5zZS92MTo6bWFjaGluZTo6c2FsdDo6Mm
  * node tools/issue/selfdigest.js --write
  */
 const SELF_DIGESTS = [
-  'caf0c8bb4aa5195230a609cf1eeb14ca14f044d1c70d15a9c6367803ca984eb1',
-  '8463b545f98df3aa57d50d1f8896db5254cd3df86159902526686f1a6b4a37bc',
-  'd15bf2180b620b2db4429246478bb26720dbcfdd7e4cfbdc36792762d4761b97',
-  'cbd602a189b8aba74477fc25e10daa39c23446214f2977da81aff039259e16c0',
-  '33e9dad872f4500296b85d555add35976b950cccc339ee64f008818204183d81',
+  '7efc4354314d44e50ac4845dda03edc831e4c0f5167fcbc87f6a478e81dc1a46',
+  'efb557d0c4fca7c3dd8e2e35b731072858ac89fad74f329c2215600b79db2d6f',
+  '2751f082a316a44a34cf97bd955cdddb5c073f711f68e999c722297ce7e438a2',
+  '9b3086403f28e2ea6955343db21805859dc584619af293f8fcef2969e3e67042',
+  '2efec955d792a13d047fabdf6d5b436c2540659611331876acf15678243359ad',
 ];
 
 export default { B64_CODE_KEY, B64_MACHINE_SALT, SELF_DIGESTS };

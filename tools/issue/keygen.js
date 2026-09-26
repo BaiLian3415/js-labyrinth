@@ -40,8 +40,8 @@
  * 方删除 KV 里的 jslb:redeem:<卡号> 键。见 src/license-web.js 的 activate()。
  *
  * 签发与校验用同一把对称密钥（src/license-secret.js 的 B64_CODE_KEY）。它随
- * 源码分发——拿到源码的人能自己签发，真正的强制在服务端（KV 赎回登记 +
- * JSLB_GATE_CORE 门控）。部署方可用环境变量 JSLB_CODE_KEY 覆盖。
+ * 源码分发——拿到源码的人能自己签发，真正的强制在服务端（/api/obfuscate 逐请求
+ * 校验 + 云存储赎回登记）。部署方可用环境变量 JSLB_CODE_KEY 覆盖。
  */
 
 import fs from 'node:fs';

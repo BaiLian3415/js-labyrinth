@@ -186,10 +186,8 @@ const STRINGS = {
     webActivateFailed: '激活失败: {reason}',
     webDeactivated: '已解除激活',
 
-    // 服务端文案（Worker / Pages Functions）。语言按**请求**判定，见 worker/index.js
-    // 的 resolveLang()：显式头 X-JSLB-Lang > Accept-Language > 环境变量/默认。
-    coreGate403: '核心模块仅对已激活设备开放',
-    workerReady: 'JsLabyrinth Worker 已就绪。API 见 /api/health；静态界面需要绑定 assets（见 wrangler.toml）。',
+    // 服务端文案。语言按**请求**判定，见 server/handler.js 的 resolveLang()：
+    // 显式头 X-JSLB-Lang > Accept-Language > 环境变量/默认。
 
     // 网页版：界面
     guiTitle: 'JsLabyrinth 混淆器',
@@ -251,6 +249,22 @@ const STRINGS = {
     guiLimitsNoRuns: '每日不限次数',
     guiLimitsTotal: '总额度 {total} 次',
     guiLimitsContact: '额度请联系作者',
+    // ---- 云端执行（Vercel）----
+    // 这一组只在"云端执行"部署里出现：界面不下载混淆核心，代码上传给服务端跑。
+    guiCloudRun: '云端执行：{host}',
+    guiCloudHint: '本部署在云端执行混淆：代码上传到服务端处理后返回，浏览器不下载核心。',
+    guiCloudNoApi: '云端执行需要可用的服务（探活 /api/health 失败）。请检查服务地址后重试；服务不可用时无法在浏览器内代替执行。',
+    guiCloudDone: '云端完成，用时 {ms} ms{quota}',
+    guiCloudQuota: '，今日已用 {used}/{total} 次',
+    guiCloudUpload: '上传 {size} → 结果 {out}（{ratio}%）',
+    // ---- 宿主包络（免费档）----
+    hostUploadTooBig: '请求体 {size} 超过宿主单次上传硬线 {limit}（当前部署为 {host}）。请拆分或压缩输入。',
+    hostPlanTooBig: '{plan} 档在云端单文件上限为 {limit}：请换更小的文件，或升级档位。',
+    hostPresetCap: '预设 {preset} 在云端的单次上限是 {limit}（该预设约 {ratio}× 膨胀、{cost} 开销）。请换更低预设或拆小输入。',
+    hostOutputTooBig: '混淆结果 {size} 超过云端单次回执上限 {limit}。请降低预设、拆分输入，或在部署侧调高 JSLB_MAX_RESPONSE_BYTES。',
+    hostBudgetExhausted: '云端今日总预算已用尽（免费档每日约 {cpu} 秒 CPU）。明日恢复，或在部署侧调高 JSLB_DAILY_CPU_SECONDS。',
+    hostBudgetHint: '云端今日已用 {used} / {total} 秒 CPU 预算',
+    hostNoStore: '部署未接云存储：授权记录与用量不跨实例持久化，请每次请求带上卡密（见 DEPLOY-VERCEL.md）',
     guiTrialHint: '未激活：{limits}。激活卡密可解锁已购套餐的全部权益与配额。',
     guiThemeDark: '深色',
     guiThemeLight: '浅色',
@@ -481,11 +495,9 @@ const STRINGS = {
     webActivateFailed: 'Activation failed: {reason}',
     webDeactivated: 'Deactivated',
 
-    // Server-side strings (Worker / Pages Functions). The language is decided
-    // per request — see resolveLang() in worker/index.js:
+    // Server-side strings. The language is decided per request — see
+    // resolveLang() in server/handler.js:
     // X-JSLB-Lang > Accept-Language > env/default.
-    coreGate403: 'Core modules are available to activated devices only',
-    workerReady: 'JsLabyrinth Worker is ready. API: /api/health; the static UI needs an assets binding (see wrangler.toml).',
 
     // web: GUI
     guiTitle: 'JsLabyrinth Obfuscator',
@@ -543,6 +555,21 @@ const STRINGS = {
     guiLimitsNoRuns: 'unlimited runs per day',
     guiLimitsTotal: '{total} runs in total',
     guiLimitsContact: 'contact the author for quota',
+    // ---- Cloud execution (Vercel) ----
+    guiCloudRun: 'Cloud execution: {host}',
+    guiCloudHint: 'This deployment obfuscates in the cloud: your code is uploaded to the server and the result comes back. The browser does not download the core.',
+    guiCloudNoApi: 'Cloud execution needs a reachable service (the /api/health probe failed). Check the endpoint and retry; there is no in-browser fallback on this deployment.',
+    guiCloudDone: 'Cloud run finished in {ms} ms{quota}',
+    guiCloudQuota: ', {used}/{total} used today',
+    guiCloudUpload: 'uploaded {size} -> result {out} ({ratio}%)',
+    // ---- Host envelope (free plan) ----
+    hostUploadTooBig: 'The request body ({size}) exceeds this host\'s per-request upload limit {limit} (this deployment runs on {host}). Split or compress the input.',
+    hostPlanTooBig: 'On the cloud, the {plan} plan allows at most {limit} per file: use a smaller file or upgrade the plan.',
+    hostPresetCap: 'The {preset} preset caps cloud runs at {limit} (roughly {ratio}x inflation, {cost} cost). Use a lower preset or split the input.',
+    hostOutputTooBig: 'The obfuscated output ({size}) exceeds the cloud response limit {limit}. Lower the preset, split the input, or raise JSLB_MAX_RESPONSE_BYTES on the deployment.',
+    hostBudgetExhausted: 'The cloud CPU budget for today is exhausted (about {cpu} CPU-seconds per day on the free plan). It resets tomorrow, or raise JSLB_DAILY_CPU_SECONDS on the deployment.',
+    hostBudgetHint: 'Cloud CPU budget used today: {used} / {total} seconds',
+    hostNoStore: 'No cloud store is configured: license records and usage do not survive across instances, so send the license key with every request (see DEPLOY-VERCEL.md)',
     guiTrialHint: 'Not activated: {limits}. Activate a license key for the full entitlements and quotas of your plan.',
     guiThemeDark: 'Dark',
     guiThemeLight: 'Light',

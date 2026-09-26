@@ -1,9 +1,13 @@
 /**
  * JsLabyrinth 网页界面。
  *
- * 混淆**只在浏览器内**执行：直接调用与命令行、Worker 同一份核心（./src/index.js），
- * 用的是访问者自己的 CPU，代码不出本机，也没有服务端 CPU 时限。服务端只负责
- * 授权（/api/license）与下发策略（/api/plans），不接触源码。
+ * 混淆有两种执行模式，由部署决定（见下面的 cloudOnly）：
+ *   - 本地执行（自建 / 本地静态部署）：直接调用与命令行、服务端同一份核心
+ *     （./src/index.js），用访问者的 CPU，代码不出本机；服务端只负责授权
+ *     （/api/license）与下发策略（/api/plans），不接触源码。
+ *   - 云端执行（Vercel 部署，web.cloudOnly）：产物里**没有**混淆核心，
+ *     源码上传到 /api/obfuscate 由服务端跑完流水线再回结果。两条路的服务端
+ *     实现是同一份（server/handler.js），授权与套餐闸门完全一致。
  *
  * 选项界面由 optionsMeta 的元数据渲染，与命令行的选项表同源：新增选项只要
  * 在 src/options-meta.js 里加一行，这里自动出现控件。只有被用户改动过的控件
@@ -15,7 +19,8 @@
 // 混淆核心（index.js → obfuscate/pipeline/html → passes/ast）改成**激活后动态引入**
 // （见下面的 loadCore）。这样那部分模块可以按设备鉴权下发——匿名请求拿到 403，
 // 顺着首页 modulepreload 清单整包爬走的路就断了。代价是首次执行混淆要等模块下载，
-// 所以激活成功后会提前预热一次。详见 DEPLOY.md 4.5。
+// 所以激活成功后会提前预热一次。
+// 云端执行（cloudOnly）构建里根本没有这批模块，loadCore 会直接拒绝，见 cloudBuilt。
 import optionsMeta from './src/options-meta.js';
 import optionsGate from './src/options-gate.js';
 import plan from './src/plan.js';
@@ -32,7 +37,6 @@ const runtimeInfo = {
   runtime: platform.runtime,
   isNode: platform.isNode,
   isBrowser: platform.isBrowser,
-  isWorker: platform.isWorkerd,
   version: VERSION,
 };
 
@@ -56,6 +60,9 @@ function loadCore() {
 }
 
 async function importCore() {
+  // 云端执行：核心不在产物里，动态 import 必然 404。与其让浏览器抛一句
+  // "Failed to fetch dynamically imported module"，不如在这里就给出能指导操作的提示。
+  if (cloudOnly()) throw new Error(t('guiCloudNoApi'));
   let status = 0;
   try {
     return await import('./src/index.js');
@@ -149,6 +156,26 @@ function currentEntitlements() {
  */
 function serverAttested() {
   return !licenseWeb.entitlements() && !!state.serverLicense;
+}
+
+/**
+ * 本产物是否由 `build-web.js --cloud` 构建（dist 里没有混淆核心）。
+ *
+ * 判据是构建期写进 index.html 的 meta 标记，**不依赖服务端**：探活失败时界面也
+ * 必须认得自己是云端产物，否则 run() 会去 import 一个不存在的 ./src/index.js，
+ * 用户看到的是一句浏览器的 404 黑话，而不是"服务不可用"。
+ */
+function cloudBuilt() {
+  return !!document.querySelector('meta[name="jslabyrinth-cloud"]');
+}
+
+/**
+ * 是否云端执行：构建标记（产物里没有核心）或服务端策略（/api/plans 的 cloudOnly）。
+ * 两者取或——Vercel 构建必中第一项；服务端声明时即使标记缺失也必须照办，
+ * 因为那时核心一样按需下发拿不到。默认两项都为假，保持浏览器内执行。
+ */
+function cloudOnly() {
+  return cloudBuilt() || platform.getWebConfig().cloudOnly === true;
 }
 
 // ---------- i18n ----------
@@ -552,6 +579,58 @@ function explicitOptions() {
 }
 
 /**
+ * 云端执行一次：把源码 POST 到 /api/obfuscate，服务端跑完整流水线后回结果。
+ *
+ * 返回形制与本地 runJob 对齐（ok / code / stats / info / warnings /
+ * originalSize / obfuscatedSize），外加服务端的 message 与 quota，
+ * 调用方对两种模式可以共用同一套渲染逻辑。
+ *
+ * 设备码放在 X-JSLB-Device 头里：服务端按它从存储恢复授权（与 /api/license
+ * 同一套语义），所以这里不需要每次带卡密。失败时的 message 是服务端按
+ * X-JSLB-Lang 拼好的完整句子，直接展示即可。
+ *
+ * @param {string} code 源码
+ * @param {object} options 显式选项
+ * @returns {Promise<object>} 与 runJob 同形制的结果
+ */
+async function runCloudJob(code, options) {
+  const base = (state.apiBase || '').replace(/\/+$/, '');
+  const device = await licenseWeb.deviceCode();
+  let res;
+  try {
+    res = await fetch(base + '/api/obfuscate', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'X-JSLB-Device': device,
+        ...langHeader(),
+      },
+      body: JSON.stringify({ code, options, type: state.mode }),
+    });
+  } catch (e) {
+    // 断网 / CORS 拒绝：连不上服务时浏览器里没有备用核心可跑
+    return { ok: false, status: 0, message: t('guiCloudNoApi') };
+  }
+  const data = await res.json().catch(() => null);
+  if (!data) {
+    // 非 JSON 回执（网关 HTML 错误页、函数超时的裸响应）
+    return { ok: false, status: res.status, message: t('guiCloudNoApi') };
+  }
+  return {
+    ok: data.ok === true,
+    status: data.status || res.status,
+    message: data.message || '',
+    code: data.code,
+    stats: data.stats,
+    info: data.info,
+    warnings: data.warnings || [],
+    originalSize: data.originalSize,
+    obfuscatedSize: data.obfuscatedSize,
+    quota: data.quota || null,
+  };
+}
+
+/**
  * 重播一次性 CSS 动画。
  *
  * 同一个 class 连续 add 两次浏览器不会重播，中间必须强制一次样式计算把
@@ -654,9 +733,17 @@ async function run() {
     return;
   }
 
-  // 混淆一律在浏览器内跑：用访问者的 CPU，代码不出本机，也不受服务端 CPU 限额
-  // 约束（免费版 Worker 单请求只有 10 ms，放服务端跑连几 KB 的输入都会超限）。
-  // 服务端只负责授权（/api/license）与下发策略（/api/plans）。
+  // 执行模式：云端（cloudOnly）把源码交给 /api/obfuscate，本地下载核心在浏览器里跑。
+  // 云端模式下浏览器里没有核心可作后备，服务不可用就是硬失败——提前说清楚，
+  // 而不是等一次注定 404 的动态 import。
+  const cloud = cloudOnly();
+  if (cloud) {
+    if (state.apiOnline === null) await probeApi();
+    if (state.apiOnline !== true) {
+      setStatus(t('guiCloudNoApi'), 'err');
+      return;
+    }
+  }
 
   // 配额预检：与命令行一样，额度用尽时不必跑完再报错
   const q = await licenseWeb.quota();
@@ -670,11 +757,17 @@ async function run() {
   const t0 = performance.now();
   let okCount = 0;
   let firstError = '';
+  let cloudQuota = null;
 
   for (const f of state.files) {
     try {
-      const { runJob } = await loadCore();
-      const r = await runJob({ code: f.code, options, type: state.mode, ent });
+      let r;
+      if (cloud) {
+        r = await runCloudJob(f.code, options);
+      } else {
+        const { runJob } = await loadCore();
+        r = await runJob({ code: f.code, options, type: state.mode, ent });
+      }
       if (r.ok) {
         f.out = r.code;
         f.stats = r.stats;
@@ -684,10 +777,18 @@ async function run() {
         f.obfuscatedSize = r.obfuscatedSize;
         f.status = 'ok';
         okCount++;
+        if (cloud) {
+          if (r.quota) cloudQuota = r.quota;
+          // 云端每份文件是一次独立的 /api/obfuscate 请求，服务端逐请求计数；
+          // 本地也逐次记账，用量显示才不会与服务端越走越远。
+          await licenseWeb.consumeRun();
+        }
       } else {
         f.status = 'error';
-        f.error = r.message;
-        if (!firstError) firstError = r.message;
+        // 服务端的 message 是完整句子；本地 runJob 的 message 同样是。
+        // 兜底只防"两边都没给话"的极端情况，别让用户对着空白状态条发愣。
+        f.error = r.message || ('HTTP ' + (r.status || '?'));
+        if (!firstError) firstError = f.error;
       }
     } catch (e) {
       f.status = 'error';
@@ -698,7 +799,9 @@ async function run() {
     }
   }
 
-  if (okCount > 0) {
+  // 本地模式的用量在批次结束时统一记一次；云端模式已在逐文件成功时记过，
+  // 这里再记会翻倍，所以按模式分开。
+  if (!cloud && okCount > 0) {
     const rec = await licenseWeb.consumeRun();
     if (rec && !rec.ok && rec.reason === 'quota') {
       setStatus(optionsGate.quotaExhaustedText(ent, rec.total), 'warn');
@@ -711,6 +814,11 @@ async function run() {
   setBusy(false);
   if (firstError) {
     setStatus(t('guiFailed', { msg: firstError }), 'err');
+  } else if (cloud) {
+    setStatus(t('guiCloudDone', {
+      ms,
+      quota: cloudQuota ? t('guiCloudQuota', cloudQuota) : '',
+    }), 'ok');
   } else {
     setStatus(t('guiDone', { ms }), 'ok');
   }
@@ -724,7 +832,7 @@ async function run() {
  *
  * 服务端文案的语言原本由它自己的环境变量决定，界面切英文后，API 返回的报错与
  * 授权横幅仍是中文（"Activation failed: 激活失败: ..." 这种中英夹杂）。带上这个头，
- * 服务端就按界面语言回（见 worker/index.js 的 resolveLang）。
+ * 服务端就按界面语言回（见 server/handler.js 的 resolveLang）。
  * @returns {object} 请求头片段
  */
 function langHeader() {
@@ -859,7 +967,13 @@ function renderApiState() {
     badge.hidden = false;
     badge.className = 'badge online';
     badge.textContent = t('guiApiOnline');
-    badge.title = t('guiApiOnlineHint');
+    // 云端执行时把宿主名放进 tooltip：这一版的混淆全在对面跑，跑在哪台"机器"上
+    // （Vercel Hobby 等）直接决定上传与回执限额。
+    badge.title = cloudOnly()
+      ? t('guiCloudRun', {
+        host: (state.apiInfo && (state.apiInfo.hostDisplay || state.apiInfo.host)) || '',
+      })
+      : t('guiApiOnlineHint');
   } else {
     badge.hidden = false;
     badge.className = 'badge offline';
@@ -870,7 +984,11 @@ function renderApiState() {
   // 首次渲染（prev 为空）不弹，之后状态跃迁才弹
   if (prev && prev !== next) replay(badge, 'pop');
   if (els.apiHint) {
-    if (state.apiOnline === false) els.apiHint.textContent = t('guiApiOfflineHint');
+    // 云端执行的提示优先：那时"能不能连上"直接决定还能不能干活，
+    // 比"授权由服务端认定"更需要先说。
+    if (cloudOnly() && state.apiOnline === false) els.apiHint.textContent = t('guiCloudNoApi');
+    else if (cloudOnly() && state.apiOnline) els.apiHint.textContent = t('guiCloudHint');
+    else if (state.apiOnline === false) els.apiHint.textContent = t('guiApiOfflineHint');
     else if (state.apiOnline && serverAttested()) els.apiHint.textContent = t('guiServerAttestedHint');
     else if (state.apiOnline) els.apiHint.textContent = t('guiApiOnlineHint');
     else els.apiHint.textContent = '';

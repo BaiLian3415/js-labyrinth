@@ -1,16 +1,13 @@
 /**
  * 平台适配层。核心模块经此访问宿主能力，零 Node 内建依赖，可跑在
- * Node / 浏览器 / Cloudflare Workers 三端。
+ * Node（命令行 / Vercel 函数）与浏览器两端。
  */
 
 const g = globalThis;
 
 export const isNode = typeof process !== 'undefined' && !!process.versions && !!process.versions.node;
-export const isWorkerd = typeof navigator !== 'undefined'
-  && typeof navigator.userAgent === 'string'
-  && /Cloudflare-Workers/i.test(navigator.userAgent);
-export const isBrowser = !isNode && !isWorkerd && typeof window !== 'undefined' && typeof window.document !== 'undefined';
-export const runtime = isNode ? 'node' : (isWorkerd ? 'worker' : (isBrowser ? 'browser' : 'unknown'));
+export const isBrowser = !isNode && typeof window !== 'undefined' && typeof window.document !== 'undefined';
+export const runtime = isNode ? 'node' : (isBrowser ? 'browser' : 'unknown');
 
 let injectedEnv = null;
 
@@ -159,6 +156,11 @@ export const DEFAULT_WEB_CONFIG = {
   trialPreset: 'low',
   trialMaxFileBytes: 524288,
   trialRunsPerDay: 10,
+  // 云端执行：true 时界面不下载混淆核心，一律调 /api/obfuscate 在服务端跑。
+  // Vercel 部署用它（构建时不把核心放进 dist，见 tools/build/build-web.js --cloud）；
+  // 默认 false，浏览器内执行（省服务端 CPU），适合自建或本地静态部署。
+  // 由 /api/plans 下发，界面读回后对齐。
+  cloudOnly: false,
 };
 
 let webConfig = { ...DEFAULT_WEB_CONFIG };
@@ -275,7 +277,6 @@ export function resetGpuCache() {
 export default {
   isNode,
   isBrowser,
-  isWorkerd,
   runtime,
   env,
   setEnv,

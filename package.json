@@ -1,7 +1,7 @@
 {
   "name": "jslabyrinth",
   "version": "0.2Alpha",
-  "description": "JsLabyrinth — 运行在 Cloudflare Workers/Pages 上的 JS 混淆器（含网页 GUI）",
+  "description": "JsLabyrinth — 运行在 Vercel 上的 JS 混淆器（免网页 GUI）",
   "type": "module",
   "main": "./src/index.js",
   "exports": {
@@ -12,16 +12,17 @@
     "./license-codec": "./src/license-codec.js",
     "./license-web": "./src/license-web.js",
     "./platform": "./src/platform.js",
-    "./worker": "./worker/index.js",
+    "./server": "./server/handler.js",
     "./package.json": "./package.json"
   },
   "files": [
     "src",
     "web",
-    "worker",
-    "functions",
+    "server",
+    "api",
+    "vercel",
     "tools",
-    "wrangler.toml",
+    "vercel.json",
     "README.md"
   ],
   "scripts": {
@@ -38,19 +39,19 @@
     "semantics": "node tools/test/semantics.js",
     "test": "node tools/test/selftest.js",
     "build:web": "node tools/build/build-web.js",
+    "build:web:cloud": "node tools/build/build-web.js --cloud",
     "verify:enc": "node tools/build/verify-encryption.js",
     "bench:selfobf": "node tools/build/bench-selfobf.js",
-    "verify": "node tools/build/verify-deploy.js https://jslb.lllm.dpdns.org/",
-    "deploy": "npx wrangler deploy",
-    "pages:deploy": "npm run build:web && npx wrangler pages deploy dist"
+    "verify": "node tools/build/verify-deploy.js",
+    "deploy": "npx vercel --prod"
   },
   "keywords": [
     "obfuscator",
     "obfuscation",
     "javascript",
     "protect",
-    "cloudflare-workers",
-    "cloudflare-pages",
+    "vercel",
+    "serverless",
     "webassembly"
   ],
   "license": "UNLICENSED",

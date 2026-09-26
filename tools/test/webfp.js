@@ -7,8 +7,8 @@
  * 验不出"同一台机器两次算出同一个机器码"这件事。用 playwright-core + 系统
  * Chrome（agent-browser 不支持 Windows）。
  *
- * 本脚本**不打本地服务器**：直接访问已部署的 Cloudflare 站点，跑的就是
- * 线上那份 dist（含 Worker 下发的授权链路）。因此它验证的是"线上真的能算
+ * 本脚本**不打本地服务器**：直接访问已部署的 Vercel 站点，跑的就是
+ * 线上那份 dist（含 /api/* 的授权链路）。因此它验证的是"线上真的能算
  * 出一致的机器码"，而不是"本地构建产物能否算"。
  *
  * 注意 2026-09-25 起机器码改由**服务端签发并与卡密绑定**，设备特征派生只剩
@@ -53,7 +53,7 @@ console.log('线上站点：' + ORIGIN + '（health ' + health.status + '）');
 
 const browser = await chromium.launch({ executablePath: CHROME, headless: true });
 const page = await browser.newPage();
-// 线上是 HTTPS，dist 里的模块由 Cloudflare 静态资源提供，无需任何本地映射。
+// 线上是 HTTPS，dist 里的模块由托管平台的静态资源提供，无需任何本地映射。
 await page.goto(ORIGIN + '/index.html', { waitUntil: 'domcontentloaded' });
 
 const readFp = async (p) => p.evaluate(async () => {

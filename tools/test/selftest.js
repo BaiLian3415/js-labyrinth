@@ -19,12 +19,12 @@
  *   网页链路   runJob 在浏览器侧等价路径上可跑通（授权、限额、记账）
  *   额度包     一次性额度按总额度累计、跨日不重置、用尽即拦
  *   解除激活   服务端按设备码存的那份记录被真正删掉，刷新不再恢复
- *   Worker API health / plans / license / machine / obfuscate 五个路由（进程内，不打网络）
+ *   API 路由   health / plans / license / machine / obfuscate 五个路由（进程内，不打网络）
  *   ZIP        文件头、CRC 与中央目录结构
- *   线上验收   打已部署的 Cloudflare 站点，确认部署与策略真的生效
+ *   线上验收   打已部署的 Vercel 站点，确认部署与策略真的生效
  *
  * ⚠️ 网络依赖：除最末「线上验收」段外，全部离线。该段会打
- *    JSLB_LIVE_ORIGIN（默认 https://jslb.lllm.dpdns.org），
+ *    JSLB_LIVE_ORIGIN（**必须显式给**，例如 https://<你的站点>.vercel.app），
  *    需要无网/CI 环境纯离线跑时设 JSLB_SKIP_LIVE=1。
  *
  * 不写仓库内文件（临时目录用完即删）。
@@ -433,9 +433,9 @@ section('端到端激活（v5 卡密）');
 
 // ------------------------------------------------------------ 自锚定校验
 
-// 服务端（Cloudflare Worker）里没有 navigator / screen / WebGL，machineId() 派生出的
-// 值与浏览器派的永不相等（Worker 实测 4CFS7ZE5899W3R803S439Y2F，浏览器实测
-// 1K9W9H9S065P0C7M834C1XC8）。所以 Worker 侧的网关必须用"自锚定"模式校验：
+// 服务端（Vercel 的 Node 函数）里没有 navigator / screen / WebGL，machineId()
+// 派生出的值与浏览器派的永不相等（服务端实测 4CFS7ZE5899W3R803S439Y2F，浏览器实测
+// 1K9W9H9S065P0C7M834C1XC8）。所以服务端网关必须用"自锚定"模式校验：
 // 锚点取记录自己声称的 machine，再验卡密校验码、令牌与到期时间是否与它自洽。
 //
 // 这一节钉住三件事：自锚定能放行正常记录、严格模式不会因此被放松、伪造仍然过不去。
@@ -892,13 +892,13 @@ section('机器码：服务端签发并与卡密永久绑定');
   licenseWeb.resetRequestState();
 }
 
-// ---------------------------------------------------------------- Worker API
+// ---------------------------------------------------------------- API 路由
 
-section('Cloudflare Worker 路由');
+section('服务端路由（/api/*）');
 {
-  const worker = (await import('../../worker/index.js')).default;
+  const worker = (await import('../../server/handler.js')).default;
   // 注入测试公钥：签卡要用私钥，而真私钥不随源码分发（这正是非对称的意义），
-  // 所以测试自己造一把卡密密钥，通过 JSLB_CODE_KEY 交给 Worker。走的代码路径
+  // 所以测试自己造一把卡密密钥，通过 JSLB_CODE_KEY 交给服务端。走的代码路径
   // 与线上完全一致，只是密钥不同。
   const call = async (pathname, init) => {
     const req = new Request('https://example.com' + pathname, init);
@@ -2520,10 +2520,10 @@ section('其他');
   }
   ok(cf.length === 0, '核心不使用 Buffer', cf.join(', '));
 
-  // 字符串代码生成：Cloudflare Workers 一律拒绝（eval 与 new Function 都在禁用
-  // 名单里），上传时直接报 EvalError: Code generation from strings disallowed，
-  // 整个 Worker 发不出去。判据只看真实的调用形态，放过 AST 访问器里那些名为
-  // Function 的方法定义（形如 `Function(path) {`）。
+  // 字符串代码生成：浏览器的 CSP 与不少函数运行时都禁 eval / new Function，
+  // 一旦核心里出现，产物在那边直接抛 EvalError。核心坚持不用字符串代码生成，
+  // 因此同一份产物在任何宿主上都能跑。判据只看真实的调用形态，放过 AST 访问器
+  // 里那些名为 Function 的方法定义（形如 `Function(path) {`）。
   const codegen = [];
   for (const f of coreFiles) {
     const text = stripLiterals(fs.readFileSync(f, 'utf8'));
@@ -2532,13 +2532,13 @@ section('其他');
       codegen.push(path.relative(ROOT, f));
     }
   }
-  ok(codegen.length === 0, '核心模块图内没有字符串代码生成（Cloudflare 禁用 eval / new Function）',
+  ok(codegen.length === 0, '核心模块图内没有字符串代码生成（eval / new Function）',
     codegen.join(', '));
 
   // shell 引导器原语有两份实现：产物里那份文本（PRIMITIVES_TEXT）与构建期那份
-  // 直接实现。原先靠 (0,eval) 当场求值保证不漂移，eval 被 Cloudflare 禁掉之后
-  // 改成手写，这里逐位比对把"不漂移"重新钉死。eval 只出现在本文件里，而本文件
-  // 不随 Worker 上传。
+  // 直接实现。原先靠 (0,eval) 当场求值保证不漂移，eval 在受限宿主上会被禁掉，
+  // 所以改成手写，这里逐位比对把"不漂移"重新钉死。eval 只出现在本文件里，
+  // 而本文件不随产物上传。
   {
     const shellMod = await import('../../src/passes/shell.js');
     const fromText = (0, eval)('(function(){' + shellMod.PRIMITIVES_TEXT
@@ -2731,19 +2731,25 @@ section('增强保护：横幅 / 碎片化 / Anti-LLM');
 
 // 线上验收（需要网络）
 //
-// 打已部署的 Cloudflare 站点，验证"本地构建的东西真的在线上跑着"。这一段是
+// 打已部署的 Vercel 站点，验证"本地构建的东西真的在线上跑着"。这一段是
 // 唯一会走网络的测试：它验的是部署，不是算法。算法与授权链路的判定在前面的
 // 离线段里已经全部覆盖过了，两者互补。
 //
-//   JSLB_LIVE_ORIGIN   覆盖目标域名（默认 jslb.lllm.dpdns.org）
-//   JSLB_SKIP_LIVE=1   跳过本段（离线跑测试时用）
+//   JSLB_LIVE_ORIGIN   目标站点（**必须显式给**，例如 https://<你的站点>.vercel.app）
+//   JSLB_SKIP_LIVE=1   跳过本段（离线跑测试、或还没部署时用）
+//
+// 没给 JSLB_LIVE_ORIGIN 就直接跳过：旧版本硬编码过一个 Cloudflare 域名，站点迁走
+// 之后那个默认值只会稳定地报"不可达"，把环境问题伪装成部署问题。
 //
 // 注意：本段通过与网络状况有关。它失败时先看是"站点不可达"还是"内容不对"——
 // 前者是环境问题，后者才是部署问题。
 // ---------------------------------------------------------------------------
-const LIVE_ORIGIN = (process.env.JSLB_LIVE_ORIGIN || 'https://jslb.lllm.dpdns.org').replace(/\/+$/, '');
+const LIVE_ORIGIN = (process.env.JSLB_LIVE_ORIGIN || '').replace(/\/+$/, '');
 if (process.env.JSLB_SKIP_LIVE === '1') {
   console.log('\n线上验收（已按 JSLB_SKIP_LIVE=1 跳过）');
+} else if (!LIVE_ORIGIN) {
+  console.log('\n线上验收（未设 JSLB_LIVE_ORIGIN，跳过；'
+    + '部署后用 JSLB_LIVE_ORIGIN=https://<站点> 打开）');
 } else {
   section('线上验收：' + LIVE_ORIGIN);
 
@@ -2773,10 +2779,15 @@ if (process.env.JSLB_SKIP_LIVE === '1') {
     let info = null;
     try { info = JSON.parse(health.text); } catch { /* 下面断言会兜住 */ }
     ok(info && info.ok === true, 'health 返回 ok:true', health.text.slice(0, 120));
-    ok(info && info.runtime === 'worker', 'health 标明 runtime=worker',
+    // Vercel 侧由 vercel/entry.js 覆盖 runtime/engine：handler 自报的是 'node' / 'jslb-api'，
+    // 部署到 Vercel 后必须是 vercel/vercel-functions，否则说明部署的不是本项目。
+    ok(info && info.runtime === 'vercel', 'health 标明 runtime=vercel',
       info ? String(info.runtime) : '');
-    ok(info && info.engine === 'cloudflare-worker', 'health 标明 engine=cloudflare-worker',
+    ok(info && info.engine === 'vercel-functions', 'health 标明 engine=vercel-functions',
       info ? String(info.engine) : '');
+    // 云端执行部署：产物里没有混淆核心，界面只能走 /api/obfuscate。
+    ok(info && info.host === 'vercel-hobby', 'health 标明宿主=vercel-hobby',
+      info ? String(info.host) : '');
 
     const plans = await getLive('/api/plans');
     ok(plans.status === 200, '线上 /api/plans 返回 200', 'status=' + plans.status);
@@ -2786,7 +2797,7 @@ if (process.env.JSLB_SKIP_LIVE === '1') {
       '线上 /api/plans 返回非空套餐表',
       plansBody ? Object.keys(plansBody).join(',') : plans.text.slice(0, 120));
     // 网页版策略要求激活卡密：未激活一律拒绝，这一点必须在线上成立。
-    // 注意策略挂在 body.web 下（不是顶层），见 worker/index.js 的 /api/plans。
+    // 注意策略挂在 body.web 下（不是顶层），见 server/handler.js 的 /api/plans。
     ok(!!(plansBody && plansBody.web && plansBody.web.requireLicense === true),
       '线上策略 web.requireLicense=true（未激活即拒绝）',
       plansBody && plansBody.web ? JSON.stringify(plansBody.web).slice(0, 160) : '');

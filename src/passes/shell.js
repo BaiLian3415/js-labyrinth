@@ -20,9 +20,9 @@ const B64_ALPHA = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz012345678
 //
 // PRIMITIVES 是**产物里那份文本**，逐字进引导器；下面的直接实现是它在构建期的
 // 等价物。原先这里用 (0, eval)(...) 把这段文本当场求值，好处是"同一份文本"
-// 天然不会漂移，但 Cloudflare Workers 禁止一切字符串代码生成——eval 与
-// new Function 一律被拒，上传时直接报 EvalError: Code generation from strings
-// disallowed，整个 Worker 发不出去。改成手写等价实现后，"不漂移"由
+// 天然不会漂移，但浏览器的 CSP 与不少函数运行时禁止一切字符串代码生成——eval 与
+// new Function 一律被拒，跑起来直接报 EvalError: Code generation from strings
+// disallowed。改成手写等价实现后，"不漂移"由
 // tools/test/selftest.js 里那条逐位比对来保证（Node 允许 eval，正好用来当参照）。
 const PRIMITIVES = [
   'function mul32(_0a,_0b){_0a=_0a>>>0;_0b=_0b>>>0;var _0l=_0a&65535,_0h=_0a>>>16;',

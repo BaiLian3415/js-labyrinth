@@ -1,4 +1,4 @@
-/** 跨环境公共入口（Node / 浏览器 / Cloudflare Workers）。Node 专有模块不从此导出。 */
+/** 跨环境公共入口（Node / 浏览器 / Vercel 函数）。Node 专有模块不从此导出。 */
 import obfuscateMod from './obfuscate.js';
 import htmlMod from './html.js';
 import planMod from './plan.js';
@@ -25,7 +25,6 @@ const runtimeInfo = {
   runtime: platform.runtime,
   isNode: platform.isNode,
   isBrowser: platform.isBrowser,
-  isWorker: platform.isWorkerd,
   version: VERSION,
 };
 

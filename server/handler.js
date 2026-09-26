@@ -1,29 +1,28 @@
 /**
- * Cloudflare Worker 入口（同时也被 Pages Functions 复用，见 functions/api/[[path]].js）。
+ * 服务端 JSON API 处理器（Vercel Functions 的实现层，见 vercel/entry.js）。
  *
- * 两条路都提供：
- *   静态资源   绑定 ASSETS 时，非 /api/ 的请求原样交给静态资源（网页界面就在那里）；
- *   JSON API   /api/obfuscate、/api/license、/api/plans、/api/health、/api/machine。
+ * 只提供 /api/* 五个端点：/api/obfuscate、/api/license、/api/plans、/api/health、
+ * /api/machine。**静态界面不经过这里**——dist/ 由托管平台的 CDN 直接发；原先
+ * "把非 /api 请求转给 ASSETS 绑定"那一路属于 Cloudflare 部署，已随之移除。
  *
  * /api/machine 负责发机器码：激活时客户端向它要一个，服务端按**卡密编号**登记
  * 后永久保存，同一张卡此后拿到的永远是同一个值（详见 license-web 的"机器码"一节）。
  *
- * 与浏览器内执行共用同一份核心（src/**），因此相同输入、相同卡密在两端得到
- * 相同结果与相同拦截。区别只在计算位置：Worker 有 CPU 时间上限（免费版 10 ms，
- * 付费版 30 s，可用 limits.cpu_ms 调高），大文件建议走浏览器内执行；
- * 浏览器内跑的是用户自己的 CPU，代码也不出本机。
+ * 与浏览器共用同一份核心（src/**），因此相同输入、相同卡密在两端得到相同结果与
+ * 相同拦截。计算位置由部署决定：Vercel 部署一律云端执行（web.cloudOnly），源码
+ * 上传到 /api/obfuscate，由平台按免费档的请求体/CPU 上限强制（src/host-limits.js）。
  *
- * 授权：卡密经 X-JSLB-Key（或请求体 key）传入，设备码经 X-JSLB-Device 传入。
- * 绑定 KV（变量名 JSLB_KV）后，试用/配额的每日计数跨请求持久化；未绑定时
- * 计数只在单个 isolate 内有效，等于不限次。
+ * 授权：卡密经 X-JSLB-Key（或请求体 key）传入，设备码经 X-JSLB-Device 传入，
+ * 缺失时回落到设备 cookie（/api/license 会种下它）。绑定 KV（变量名 JSLB_KV）
+ * 后，试用/配额的每日计数跨请求持久化；未绑定时计数只在单次执行环境内有效。
  *
- * 卡密是 v5 对称格式（编号 + 加密信息段 + 校验码），Worker 与浏览器共用同一把
+ * 卡密是 v5 对称格式（编号 + 加密信息段 + 校验码），服务端与浏览器共用同一把
  * 卡密密钥（内置，或用 JSLB_CODE_KEY 覆盖）。对称密钥随静态资源公开，拿到源码
- * 的人能自己造卡——真正的强制靠服务端：/api/obfuscate 逐请求校验、KV 赎回登记
- * （一卡一机）与 JSLB_GATE_CORE 门控核心下载。
+ * 的人能自己造卡——真正的强制靠服务端：/api/obfuscate 逐请求校验 + KV 赎回登记
+ * （一卡一机）；混淆核心**根本不在静态产物里**（构建走 build:web:cloud）。
  *
  * 请求示例：
- *   curl -X POST https://<worker>/api/obfuscate \
+ *   curl -X POST https://<host>/api/obfuscate \
  *     -H 'content-type: application/json' \
  *     -H 'X-JSLB-Key: JSLB-...' -H 'X-JSLB-Device: <32 位 hex 设备码>' \
  *     -d '{"code":"console.log(1)","options":{"preset":"medium","seed":42}}'
@@ -34,30 +33,9 @@ import pipeline from '../src/pipeline.js';
 import plan from '../src/plan.js';
 import i18n from '../src/i18n.js';
 import { VERSION } from '../src/version.js';
-import { isGatedPath } from './gate-policy.js';
 
 const { runJob } = pipeline;
 const { t } = i18n;
-
-/**
- * 受保护路径名单在 `worker/gate-policy.js`——与 build:web 共用同一份。
- *
- * 共用的理由很实：dist/src 下受保护模块在构建期被加密（明文 stub + 密文载荷），
- * 而 Worker 要对着**同一个集合**做匿名 403。两处各写一份名单迟早漂移，且两种漂移
- * 方向都不报错：名单偏大 → 未激活界面取不到激活表单依赖的模块（死锁）；名单偏小
- * → 引导层与 stub 被匿名取走，加密层形同虚设。所以单点定义。
- *
- * 2026-09-25 补漏：原先只列六个入口，`/src/utils/` 整个目录敞开，匿名请求能直接下到
- * encode.js（字符串编解码器）、rand.js（PRNG）、hide.js、ws.js、ed25519.js。
- *
- * 只对 Workers 生效——Pages 的静态资源不经过这个函数（functions/ 只匹配 /api/*）。
- */
-
-/** 是否开启核心下载鉴权。默认关，部署方显式开启。 */
-function gateCoreOn(env) {
-  const v = env && env.JSLB_GATE_CORE;
-  return (v === true || v === 'true') && env && env.ASSETS;
-}
 
 /**
  * 设备 cookie。
@@ -105,7 +83,7 @@ function corsHeaders(env) {
 /**
  * 每个请求的环境准备：绑定注入、密钥覆盖、网页版策略、KV、设备码。
  *
- * 一个 isolate 会连续、且可能并发地处理多个互不相干的请求，而 platform 与
+ * 一个函数实例会连续、且可能并发地处理多个互不相干的请求，而 platform 与
  * license-web 的状态都是模块级的。这里逐请求把状态清干净，否则上一请求的
  * 授权（甚至别人的许可证记录）会留给下一请求：
  *
@@ -116,11 +94,11 @@ function corsHeaders(env) {
 function prepareEnv(env, request) {
   platform.setEnv(env || {});
   platform.loadWebConfigFromEnv();
-  // 语言也必须逐请求设定：i18n 的 current 是模块级变量，一个 isolate 会连续处理
+  // 语言也必须逐请求设定：i18n 的 current 是模块级变量，一个实例会连续处理
   // 不同语言的请求（见 resolveLang 的说明）。
   i18n.setLang(resolveLang(request, env));
   licenseWeb.resetRequestState();
-  // 无 KV 时 Worker 是无状态的：许可证与计数不跨请求保留，客户端每次都要带上
+  // 无 KV 时服务端是无状态的：许可证与计数不跨请求保留，客户端每次都要带上
   // 卡密（见 /api/obfuscate）。绑 KV 后按设备码持久化，语义与浏览器侧一致。
   platform.setStorage(platform.newMemoryStorage());
   licenseWeb.loadKeysFromEnv();
@@ -132,7 +110,9 @@ function prepareEnv(env, request) {
     put: (key, value) => kv.put('jslb:' + key, value),
     del: (key) => kv.delete('jslb:' + key),
   } : null);
-  // cookie 兜底：浏览器侧的模块请求带不了自定义头，设备码只能从 cookie 拿
+  // cookie 兜底：脚本调用方（curl、自写客户端）常常不带 X-JSLB-Device，
+  // 而 /api/license 会种下 jslb_dev —— 有 cookie 就别把设备当成"新的"，
+  // 否则同一台设备换个客户端就被当成新设备重新试用。
   const device = request.headers.get('X-JSLB-Device') || cookieDevice(request) || null;
   licenseWeb.setRequestDeviceId(device);
 }
@@ -376,7 +356,7 @@ async function handleApi(request, env) {
       ok: true,
       version: VERSION,
       runtime: platform.runtime,
-      engine: 'cloudflare-worker',
+      engine: 'jslb-api',
       time: new Date().toISOString(),
     }, 200, corsHeaders(env));
   }
@@ -414,7 +394,7 @@ async function handleApi(request, env) {
 export default {
   /**
    * @param {Request} request 请求
-   * @param {object} env 绑定（含可选的 ASSETS、JSLB_KV 与密钥变量）
+   * @param {object} env 绑定（含可选的 JSLB_KV 与密钥变量）
    * @param {object} ctx 执行上下文
    * @returns {Promise<Response>} 响应
    */
@@ -431,41 +411,10 @@ export default {
       }
     }
 
-    // 核心源码只对已激活设备开放。
-    //
-    // 代价要写在前面：每个模块请求都要读一次 KV（一次页面加载 = 五十来次读）。
-    // 免费版 KV 是十万次读/天，够用但不宽裕；真上量了再改成带签名的短期票据
-    // （cookie 里存过期时间戳，命中就跳过 KV）。
-    //
-    // selfAnchored 是**必需**的，不是优化：Worker 里没有 navigator / screen /
-    // WebGL，machineId() 派出的值（实测 4CFS7ZE5899W3R803S439Y2F）与浏览器派的
-    // （1K9W9H9S065P0C7M834C1XC8）永不相等，严格比对会把所有设备判成未授权，
-    // 且补登记也救不回来。详见 license-core.verifyLicenseData。
-    if (gateCoreOn(env) && request.method === 'GET'
-        && isGatedPath(url.pathname)) {
-      const dev = cookieDevice(request);
-      if (dev) licenseWeb.setRequestDeviceId(dev);
-      const ens = await licenseWeb.ensure({ selfAnchored: true });
-      if (!ens.ok) {
-        return new Response('403 Forbidden — ' + t('coreGate403') + '\n', {
-          status: 403,
-          headers: { 'content-type': 'text/plain; charset=utf-8', 'cache-control': 'no-store' },
-        });
-      }
-      const asset = await env.ASSETS.fetch(request);
-      const headers = new Headers(asset.headers);
-      // 必须 no-store：默认缓存会把某个已激活设备取到的源码留给后面的匿名请求
-      headers.set('cache-control', 'private, no-store');
-      return new Response(asset.body, { status: asset.status, headers });
-    }
-
-    // 静态资源：绑定时交给 assets，未绑定则给出提示
-    if (env && env.ASSETS && typeof env.ASSETS.fetch === 'function') {
-      return env.ASSETS.fetch(request);
-    }
-    return new Response(
-      t('workerReady') + '\n',
-      { status: 200, headers: { 'content-type': 'text/plain; charset=utf-8' } },
-    );
+    // 非 /api 一律 404：静态界面由托管平台直接发（本部署是 dist/ 的 CDN），
+    // 不再有"把请求转给 ASSETS 绑定"那一路——那是 Cloudflare 部署的做法，
+    // 随 Cloudflare 部署一起移除了。留在这里是为了让误路由（比如把 /src/xxx.js
+    // 打到函数上）得到一句可读的 404，而不是平台默认的 HTML 错误页。
+    return json({ ok: false, message: 'not found: ' + url.pathname }, 404, corsHeaders(env));
   },
 };

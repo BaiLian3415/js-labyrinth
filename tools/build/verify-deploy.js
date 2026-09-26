@@ -3,28 +3,30 @@
  * 发布后验证。零依赖，直接跑：
  *
  *   node tools/build/verify-deploy.js <站点地址>
- *   node tools/build/verify-deploy.js https://jslb.lllm.dpdns.org/
+ *   node tools/build/verify-deploy.js https://<你的站点>.vercel.app
  *   node tools/build/verify-deploy.js https://x.example --expect-require-license=false
  *
- * 为什么要有这个：2026-09-19 发现线上站点**根本没在强制卡密**——`wrangler.toml`
- * 里 `JSLB_WEB_CONFIG` 写着 `requireLicense: true`，部署输出也把这条列为 binding，
+ * 为什么要有这个：2026-09-19 发现线上站点**根本没在强制卡密**——部署配置里
+ * `JSLB_WEB_CONFIG` 写着 `requireLicense: true`，部署输出也把这条列为环境变量，
  * 但 `/api/plans` 返回的是 `platform.js` 的默认值 `false`，无卡密 POST 直接 200 成功。
  * 也就是说，配置写了、部署没报错，**不等于生效**。
  *
- * 所以每次发布后必须打这几个探针。三项都过才算发布成功：
+ * 所以每次发布后必须打这几个探针。全部过才算发布成功：
  *
- *   1. /api/health 活着，且 runtime 与预期一致
+ *   1. /api/health 活着，且 runtime=vercel / engine=vercel-functions、版本与本地一致
  *   2. /api/plans 的档位数与本地一致，且 web.requireLicense 与预期一致
- *   3. /api/plans 的 web.* 与 wrangler.toml 的 [vars] JSLB_WEB_CONFIG 逐键一致
+ *   3. /api/plans 的 web.* 与 vercel.json 的 env.JSLB_WEB_CONFIG 逐键一致
  *   4. 无卡密 POST /api/obfuscate 被拒（默认期望 402）
  *   5. /api/machine 路由已上线（非法卡密 400、GET 405）——旧构建没有这条路由，
  *      界面会静默退回本机兜底机器码，表现就是"激活之后机器码变了"
+ *   6. 云端执行生效：混淆核心**不在静态产物里**（/src/index.js 必须 404），
+ *      而界面要用的公开模块仍 200——挡多了未激活界面渲染不出激活表单
  *
  * 都不消耗配额：用的是随机设备码，且期望结果是被拒绝。
  *
- * 第 3 项是 2026-09-19 晚上补的。当天改了 `trialRunsPerDay`（0 → 10）并发布，前三项
+ * 第 3 项是 2026-09-19 晚上补的。当天改了 `trialRunsPerDay`（0 → 10）并发布，前几项
  * 全过，但**没有一项校验试用限额**——只能靠手工拉 `/api/plans` 看一眼。web.* 这一组
- * 是唯一来自部署配置（`[vars]`）而不是代码的值，正是"写了不等于生效"的高风险区，
+ * 是唯一来自部署配置（环境变量）而不是代码的值，正是"写了不等于生效"的高风险区，
  * 不自动化等于没验证。
  */
 import { randomBytes } from 'node:crypto';
@@ -49,7 +51,7 @@ for (let i = 0; i < args.length; i++) {
 }
 
 if (!base) {
-  console.error('缺少站点地址。例：node tools/build/verify-deploy.js https://jslb.lllm.dpdns.org/');
+  console.error('缺少站点地址。例：node tools/build/verify-deploy.js https://<你的站点>.vercel.app');
   process.exit(2);
 }
 base = base.replace(/\/+$/, '');
@@ -83,32 +85,29 @@ function report(ok, label, detail) {
 }
 
 /**
- * 读 wrangler.toml 的 [vars] JSLB_WEB_CONFIG（形如 `JSLB_WEB_CONFIG = '{...}'`）。
- * 读不到就返回 null，调用方跳过该探针——Pages 部署的配置来源不是这个文件，
- * 不该因为本地读不到 toml 就判失败。
+ * 读 vercel.json 里 env.JSLB_WEB_CONFIG（JSON 文本）。
+ *
+ * 读不到就返回 null，调用方跳过该探针：环境变量也可以只在 Vercel 控制台配，
+ * 本地读不到 vercel.json 不该因此判失败（真正的判据是"线上 == 配置"，
+ * 而配置来源只有一份，探针只负责比对）。
  */
-function readWebConfigVars() {
+function readWebConfigEnv() {
   try {
-    const toml = readFileSync(new URL('../../wrangler.toml', import.meta.url), 'utf8');
-    const m = toml.match(/^[ \t]*JSLB_WEB_CONFIG[ \t]*=[ \t]*(['"])([\s\S]*?)\1/m);
-    return m ? JSON.parse(m[2]) : null;
+    const json = JSON.parse(readFileSync(new URL('../../vercel.json', import.meta.url), 'utf8'));
+    const raw = json && json.env && json.env.JSLB_WEB_CONFIG;
+    return raw ? JSON.parse(raw) : null;
   } catch (e) {
     return null;
   }
 }
 
-/**
- * 读 wrangler.toml 的 JSLB_GATE_CORE（形如 `JSLB_GATE_CORE = "true"`）。
- * 读不到返回 null，调用方改用线上实测结果当期望依据——Pages 部署的配置来源不是
- * 这个文件，不该因为本地读不到 toml 就判失败。
- */
-function readGateCoreFlag() {
+/** 本地构建默认是不是云端执行（vercel.json 的 buildCommand 走 build:web:cloud）。 */
+function buildIsCloud() {
   try {
-    const toml = readFileSync(new URL('../../wrangler.toml', import.meta.url), 'utf8');
-    const m = toml.match(/^[ \t]*JSLB_GATE_CORE[ \t]*=[ \t]*(['"])([\s\S]*?)\1/m);
-    return m ? m[2] === 'true' : null;
+    const json = JSON.parse(readFileSync(new URL('../../vercel.json', import.meta.url), 'utf8'));
+    return String((json && json.buildCommand) || '').includes('build:web:cloud');
   } catch (e) {
-    return null;
+    return true; // 读不到就按部署形态（Vercel = 云端执行）处理
   }
 }
 
@@ -125,8 +124,12 @@ console.log('1) /api/health');
     let j = null;
     try { j = JSON.parse(r.text); } catch (e) { /* 下面统一报 */ }
     report(!!j && j.ok === true, 'ok=true', j ? 'runtime=' + j.runtime + ' version=' + j.version : '响应不是 JSON');
-    // 静态站点里 runtime 应为 worker（Worker 或 Pages Functions 都是 workerd）
-    if (j) report(j.runtime === 'worker', 'runtime=worker', '实得 ' + j.runtime);
+    // 本部署跑在 Vercel：runtime/engine 由 vercel/entry.js 覆盖上报。
+    // 值对不上说明部署的不是这份代码（比如域名还指着老站点）。
+    if (j) report(j.runtime === 'vercel', 'runtime=vercel', '实得 ' + j.runtime);
+    if (j) report(j.engine === 'vercel-functions', 'engine=vercel-functions', '实得 ' + j.engine);
+    if (j) report(j.host === 'vercel-hobby', 'host=vercel-hobby（宿主包络已上报）',
+      '实得 ' + (j.host ?? '（缺失）'));
     // 版本一致性：线上报的版本必须等于本地 src/version.js（单一真源）。
     // 版本断言从这里读取而不是硬编码，升级版本号时本文件无需改动；
     // 部署了旧构建（改完代码忘了 deploy）时这一项会立刻失败。
@@ -175,17 +178,23 @@ console.log('2) /api/plans');
       report(diff.length === 0, '线上档位表与本地定义逐档一致',
         diff.length ? diff.slice(0, 3).join('；') + (diff.length > 3 ? ' …' : '') + '  ← 部署的不是这份代码' : '');
 
-      // 部署配置类字段（试用限额等）逐键比对 wrangler.toml 的 [vars]。
+      // 部署配置类字段（试用限额等）逐键比对 vercel.json 的 env.JSLB_WEB_CONFIG。
       // 这组值是唯一"来自配置而非代码"的，是部署有没有真的吃进配置的最灵敏指标。
-      const vars = readWebConfigVars();
+      const vars = readWebConfigEnv();
       if (vars) {
         const wd = [];
         for (const k of Object.keys(vars)) {
           const online = j.web ? j.web[k] : undefined;
           if (online !== vars[k]) wd.push(k + ' 线上 ' + JSON.stringify(online) + '≠配置 ' + JSON.stringify(vars[k]));
         }
-        report(wd.length === 0, 'web 策略与 wrangler.toml 的 [vars] 一致',
+        report(wd.length === 0, 'web 策略与 vercel.json 的 env.JSLB_WEB_CONFIG 一致',
           wd.length ? wd.join('；') + '  ← 部署配置没生效' : '');
+      }
+      // cloudOnly 必须为 true：Vercel 产物里没有混淆核心，界面只能走 /api/obfuscate。
+      // 这一项写错的表现是用户点了运行却看到一句 import 404，非常难自查。
+      if (buildIsCloud()) {
+        report(!!(j.web && j.web.cloudOnly === true), 'web.cloudOnly=true（云端执行已下发）',
+          '实得 ' + JSON.stringify(j.web ? j.web.cloudOnly : undefined) + '  ← 界面会去下载不存在的核心');
       }
     }
   }
@@ -230,58 +239,66 @@ console.log('4) POST /api/machine');
   report(g.status === 405, 'GET 返回 405', '实得 ' + (g.status || '连接失败'));
 }
 
-// ---- 5. 核心下载鉴权真的按名单生效 ----
+// ---- 5. 云端执行真的生效：混淆核心不在静态产物里 ----
 //
-// 2026-09-25 补漏时加的：原先只挡六个入口，`/src/utils/` 整个目录敞开，匿名请求能
-// 直接下到 encode.js（字符串编解码器）、rand.js（PRNG）、hide.js、ws.js、ed25519.js,
-// 等于把混淆器的加密核心白送。这条同时守住两个方向，缺一不可：
+// 这一段以前是"核心下载鉴权 JSLB_GATE_CORE"（Cloudflare 部署，核心加密后按设备
+// 鉴权下发）。迁到 Vercel 后整套鉴权下发机制**整体删掉了**，因为不再需要：
+// build:web:cloud 根本不把受保护模块写进 dist。
 //
-//   正向：受保护模块匿名必须 403 —— 挡不住就说明算法能被爬走；
-//   反向：豁免模块（hash / zip）必须 200 —— 挡多了未激活界面渲染不出激活表单，
-//         与第一版全挡 /src/ 那次死锁同类，且只在未激活时暴露，极易漏测。
+// 于是判据反过来——不是"匿名 403"，而是"根本不存在"：
+//   核心模块必须 404（发出去就等于白送源码，且界面也不会去取它）；
+//   公开模块必须 200（授权链路与激活表单的静态依赖，挡多了未激活界面直接死锁）。
 //
-// 只认确定的 200/403，其余（404/500/连接失败）一律判失败。
+// 顺带一提：`/src/__jslb_core.js` 与 `/src/__core.pack` 是模块体加密层的产物，
+// 云端构建同样不产出，404 才是正确结果。
 console.log('');
-console.log('5) 核心下载鉴权 JSLB_GATE_CORE');
+console.log('5) 混淆核心不在静态产物里（云端执行）');
 {
   const GATED = [
+    '/src/index.js',
+    '/src/pipeline.js',
     '/src/passes/stringArray.js',
     '/src/ast/parser.js',
     '/src/utils/encode.js',
-    '/src/utils/rand.js',
-    '/src/utils/hide.js',
     '/src/utils/ed25519.js',
-    // 模块体加密层自身。这两条最要紧：引导层里就是解密密钥，它若公开，
-    // 整个加密层等于没做；载荷虽是密文，也不该被匿名整份拖走。
     '/src/__jslb_core.js',
     '/src/__core.pack',
   ];
-  const EXEMPT = ['/src/utils/hash.js', '/src/utils/zip.js'];
-  const PUBLIC = ['/src/plan.js', '/src/presets.js'];
+  const PUBLIC = [
+    '/src/plan.js',
+    '/src/presets.js',
+    '/src/options-meta.js',
+    // 豁免的两个：hash / zip 在未激活界面的静态 import 链上
+    '/src/utils/hash.js',
+    '/src/utils/zip.js',
+  ];
 
   const status = new Map();
-  for (const p of [...GATED, ...EXEMPT, ...PUBLIC]) {
+  for (const p of [...GATED, ...PUBLIC]) {
     status.set(p, (await probe(p)).status);
   }
   const fmt = (list) => list.map((p) => status.get(p) + ' ' + p).join(' | ');
-  const gateLocal = readGateCoreFlag();
 
-  if (gateLocal === false) {
-    // 配置明写关闭：核心本就该公开。线上却 403 说明部署的不是这份配置
-    const blocked = GATED.filter((p) => status.get(p) === 403);
-    report(blocked.length === 0, 'JSLB_GATE_CORE=false，核心应公开',
-      blocked.length ? '线上却 403：' + fmt(blocked) : '线上与配置一致');
-  } else {
-    const leaked = GATED.filter((p) => status.get(p) !== 403);
-    report(leaked.length === 0, '受保护模块匿名一律 403（' + GATED.length + '/' + GATED.length + '）',
-      leaked.length ? '未挡住：' + fmt(leaked) : '');
-    const overBlocked = EXEMPT.filter((p) => status.get(p) !== 200);
-    report(overBlocked.length === 0, '豁免模块必须 200（激活表单静态依赖）',
-      overBlocked.length ? '挡多了会死锁在激活：' + fmt(overBlocked) : '');
-    const publicBad = PUBLIC.filter((p) => status.get(p) !== 200);
-    report(publicBad.length === 0, '授权链路模块必须 200',
-      publicBad.length ? '异常：' + fmt(publicBad) : '');
-  }
+  // 公开模块漏了 200 是致命问题：未激活用户连激活表单都渲染不出来。
+  const publicBad = PUBLIC.filter((p) => status.get(p) !== 200);
+  report(publicBad.length === 0, '公开模块必须 200（激活表单静态依赖）',
+    publicBad.length ? '取不到：' + fmt(publicBad) : '');
+
+  // 核心若 200，等于把混淆器源码公开在静态资源里。
+  const leaked = GATED.filter((p) => status.get(p) === 200);
+  report(leaked.length === 0, '混淆核心一律 404（源码不得进静态产物）',
+    leaked.length ? '竟可公开下载：' + fmt(leaked) + '  ← 构建没用 build:web:cloud？' : '');
+
+  // 首页也必须带云端标记：没有它界面会误以为自己是浏览器内执行的构建。
+  const home = await probe('/');
+  report(home.status === 200 && /jslabyrinth-cloud/.test(home.text),
+    '首页带 jslabyrinth-cloud 标记',
+    home.status === 200 ? (htmlHasCloud(home.text) ? '' : '  ← 界面会去 import 不存在的核心') : '实得 ' + (home.status || '连接失败'));
+}
+
+/** 首页 HTML 里有没有云端执行标记。 */
+function htmlHasCloud(html) {
+  return /name=["']jslabyrinth-cloud["']/.test(html);
 }
 
 console.log('');
@@ -289,8 +306,8 @@ if (failures === 0) {
   console.log('✅ ' + checks + ' 项全过，发布可用。');
 } else {
   console.log('❌ ' + failures + '/' + checks + ' 项失败——**先别对外公布**。');
-  console.log('   最可能的原因：wrangler.toml 的 [vars] 没生效，或部署到了别的 Worker/Pages 项目。');
-  console.log('   排查顺序：① 确认域名指向的是哪个 Worker（wrangler deployments list）');
+  console.log('   最可能的原因：vercel.json 的 env 没生效，或部署到了别的项目/别的分支。');
+  console.log('   排查顺序：① 确认域名指向的是哪个 Vercel 项目（npx vercel ls / 项目设置里的域名）');
   console.log('   ② 改一个醒目的值（如 trialRunsPerDay: 7）重新发布，看 /api/plans 会不会跟着变');
   console.log('   ③ 若不变，说明发布的不是同一个服务');
 }

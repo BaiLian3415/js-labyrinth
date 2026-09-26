@@ -1,6 +1,7 @@
 import PLANS from './plans.js';
 import PRESETS from './presets.js';
 import i18n from './i18n.js';
+import hostLimits from './host-limits.js';
 
 /** 套餐权益：卡密套餐标识 → 可用选项范围 + 配额上限。
  *  唯一事实来源是 src/plans.js；本模块只负责解读与判定。
@@ -55,6 +56,10 @@ function describe(name) {
     note: p.note || '',
     limits: p.limits,
     gates: p.gates,
+    // 该档在云端（服务端执行）单文件能上传到多少字节：预设的成本决定它，通常
+    // **小于** limits.maxFileBytes 之外还会再被压一次。界面用它做预检提示，
+    // 免得用户按 limits 的数字选好文件、点下去才收到 413。
+    cloudCapBytes: hostLimits.presetInputCap(p.preset),
   };
 }
 
@@ -201,6 +206,14 @@ function assertConsistent() {
         problems.push(`套餐 ${name} 的闸门 ${key}=${JSON.stringify(p.gates[key])} 拦下了自带预设 ${p.preset} 的取值 ${JSON.stringify(presetValue)}`);
       }
     }
+    // 宿主包络：单文件上限的天花板由"预设成本 + 免费档请求体硬线"决定（见
+    // src/host-limits.js）。写超了不会报错，只会在线上表现为"某些文件必然 413 或
+    // 跑不完"，所以在这里拦住——改配额时必须同时确认包络跟得上。
+    const cap = hostLimits.presetInputCap(p.preset);
+    if (p.limits.maxFileBytes > cap) {
+      problems.push(`套餐 ${name} 的 maxFileBytes(${p.limits.maxFileBytes}) 超过预设 ${p.preset} 的云端单文件上限 ${cap}`
+        + '（见 src/host-limits.js；要放宽得先升宿主套餐，再用 JSLB_MAX_UPLOAD_BYTES / JSLB_PER_RUN_CPU_SECONDS 调整）');
+    }
   }
   for (const ladder of [SUB_NAMES, PACK_NAMES]) {
     for (let i = 0; i + 1 < ladder.length; i++) {
@@ -262,4 +275,6 @@ export default {
   quotaLimit,
   isCumulative,
   humanBytes,
+  // 宿主包络（免费档的请求体/CPU 预算）也一并从这里取，免得各处各引一份
+  hostLimits,
 };
