@@ -623,6 +623,31 @@ function compileFunction(fn, ctx) {
   // WASM 解释器内核档的动作体在模块里、按既有指令集硬编码，该档关闭本项。
   const macroOps = !!opts.vmMacroOps && !ctx.__vmWasmShared;
 
+  // 动态操作码（vmDynOpcodes）。分发字到语义动作的对应关系不再是全函数唯一的一张表：
+  // 存进字节码的编号是「规范编号 − 本条指令字下标的轮换量」，取指之后由解释器用取指
+  // 游标把轮换量算回来再加回去，得到规范编号，再分桶、比对、查表。
+  // 于是**同一个分发字在不同位置指向不同动作**：静态 dump 出解密后的字节码，看到的
+  // 只是一串与位置耦合的编号，要把分发字与语义对齐，必须先把每条指令的字下标与轮换
+  // 公式算清楚（而公式里的两个常数逐函数随机），不能再拿一张「字 → 语义」表直接读。
+  // 与逐调用轮换的关系：掩码与链值在每次调用入口整体重写 B，那层管"字长什么样"；
+  // 本项管"字还原成哪个编号"，两者叠在同一条取指路径上，互不依赖。
+  // 为什么用位置而不是段/寄存器状态：动作体按**操作码种类**生成，一个种类的体要给
+  // 该种类全部指令共用，承载不了"按指令"的字面量；而取指游标是每条指令天然自带、
+  // 且在任何进入路径（顺序、跳转、回边）上都唯一确定的状态，所以位置轮换不需要额外
+  // 指令、不需要入口初始化，也不会在"某处既是跳转目标又是顺序后继"的边界上失配。
+  // 代价：取指后多一次 imul、异或与掩码；字空间必须是 2 的幂（还原用 &(N-1)），
+  // 开启时把槽位数上取整、多出的槽位并进干扰项。WASM 内核档的分发在模块里，忽略本项。
+  const dynOps = !!opts.vmDynOpcodes && !ctx.__vmWasmShared;
+  // 位置轮换的两个常数。这里**必须用 randInt 而不是 krand**：krand 是与编译期密钥
+  // 绑定的确定性流，而运行期要让"密钥取回"重跑一遍派生（rtKeyStmts 里的那张清单）
+  // 才能对上构建期的掩码、链种子与分发常数。那份清单按固定顺序列举派生项，中途插进
+  // 两个新的 krand 抽取会让清单与构建期错位——构建期派生的掩码与运行期重跑出来的
+  // 掩码不一致，密钥正确也会解成垃圾（实测表现是产物静默算出 undefined 而不报错）。
+  // 这两个常数只在解释器里当字面量用、运行期不参与派生，所以走种子流即可：同种子
+  // 依旧可复现，产物仍随编译期密钥变化（其余派生项仍在密钥流上）。
+  const DYN_P = dynOps ? (randInt(0x10001, 0x7ffffffe) | 1) : 0;
+  const DYN_Q = dynOps ? randInt(0x1000, 0x7ffffff) : 0;
+
   // 运行时密钥取值（vmRuntimeKeyGetter）。与编译期密钥**配对**使用：产物在每个 VM
   // 函数开头求值用户给的表达式，用取回的值重跑一遍上面这套派生，把结果当初始掩码、
   // 位置散列常数、轮换函数与链种子。取回的值不等于编译期密钥 → 派生出另一套掩码 →
@@ -1319,7 +1344,10 @@ function compileFunction(fn, ctx) {
   // 区分真假，指令集还原只能逐条求值全部 N 个分支。
   const decoyTarget = Math.max(0,
     (ctx.options.vmDecoyOps !== undefined ? ctx.options.vmDecoyOps | 0 : 1024) - opKinds.length);
-  const totalSlots = opKinds.length + decoyTarget;
+  let totalSlots = opKinds.length + decoyTarget;
+  // 动态操作码的还原式是 &(N-1)，要求字空间是 2 的幂；把槽位数上取整，多出来的槽位
+  // 自然成为干扰项（它们不进字节码流，与既有干扰项待遇一致）
+  if (dynOps) { let p2 = 1; while (p2 < totalSlots) p2 <<= 1; totalSlots = p2; }
   const slotOrder = shuffle(Array.from({ length: totalSlots }, (_, i) => i));
   let decoys = slotOrder.slice(opKinds.length);
   if (ctx.__vmWasmShared) {
@@ -1341,6 +1369,12 @@ function compileFunction(fn, ctx) {
   } else {
     opKinds.forEach((k, i) => opNums.set(k, slotOrder[i]));
   }
+  // 位置轮换量：rotAt(z) = ((z * DYN_P) ^ DYN_Q) & (N-1)。编译期按 opcode 字的字下标算，
+  // 运行期用同一个式子从取指游标还原（npc 取指后等于字下标 + 1）。两侧必须逐位一致，
+  // 所以两边都走 Math.imul 语义（运行期那侧由 rtlib.mulCall 落到原生 imul 等价实现）。
+  const rotMask = totalSlots - 1;
+  const rotAt = (z) => ((Math.imul(z, DYN_P) ^ DYN_Q) & rotMask);
+  if (dynOps && ctx.__vmDyn) { ctx.__vmDyn.applied = true; ctx.__vmDyn.space = totalSlots; }
   // 桶数随指令集规模扩展，桶内大致保持 24 项线性比对；无干扰项时沿用原公式。
   // P3 随机化补强：基数乘一个 1.0~1.4 的随机因子，桶数公式本身逐构建漂移，
   // 「桶内 24 项」这条可被脚本化的结构规律因此不成立。桶数最终仍取 2 的幂。
@@ -1375,7 +1409,13 @@ function compileFunction(fn, ctx) {
     const isJump = JUMP_KINDS.has(e.op);
     const w = opWordWidth(e);
     for (let s = 0; s < w; s++) owner.push({ instr: i, slot: s });
-    words.push(opNums.get(e.op));
+    // 动态操作码：存进字节码的是「规范编号 − 本条指令 opcode 字下标的位置轮换量」，
+    // 运行期取指后按同一式子把轮换量加回来得到规范编号。所以同一个编号在不同位置
+    // 有不同的存储值，同一个存储值在不同位置指向不同动作——静态一张「字 → 语义」表
+    // 不再成立。pos[i] 就是本条指令 opcode 字的字下标。
+    words.push(dynOps
+      ? (opNums.get(e.op) - rotAt(pos[i])) & rotMask
+      : opNums.get(e.op));
     if (MACRO_KINDS.has(e.op)) {
       // 宏指令：n 个打包操作数逐字落流。宏的动作体自己按顺序取走它们，
       // 取指顺序与原来逐条执行时完全一致。
@@ -2520,7 +2560,19 @@ function compileFunction(fn, ctx) {
       t.blockStatement([t.throwStatement(t.newExpression(
         t.identifier('Error'), [t.stringLiteral(msg('vmKeyMismatch'))]))]))] : []),
     t.variableDeclaration('var', [
-      t.variableDeclarator(t.identifier(_dispT), bAt()),
+      // 动态操作码：取指之后按本条指令 opcode 字的字下标算回位置轮换量并加回去，
+      // 还原成规范编号。桶映射、比对常数、直接寻址表下标全部按规范编号算，所以下面
+      // 五种分发形态一个字都不用改。取指后 npc = 字下标 + 1，减一就是字下标。
+      t.variableDeclarator(t.identifier(_dispT), dynOps
+        ? t.binaryExpression('&',
+            t.binaryExpression('+', bAt(),
+              t.binaryExpression('^',
+                rtlib.mulCall(ctx,
+                  t.binaryExpression('-', t.identifier(npc), t.numericLiteral(1)),
+                  t.numericLiteral(DYN_P)),
+                t.numericLiteral(DYN_Q))),
+            t.numericLiteral(rotMask))
+        : bAt()),
     ]),
     // 桶号每指令求值一次（三形态共用；此前在表扫描条件/体内与 if 链中
     // 逐次重算，一条指令要重复求值桶映射 2~2×桶数次）
@@ -2989,6 +3041,8 @@ function vm(ast, options, ctx) {
   // vmMacroOps 的融合计数。放在 ctx 上共享：片段里嵌套的函数由 compileInnerFns
   // 递归编译，计数从那里并回来才不会漏（见 compileFunction 的融合段）
   ctx.__vmMacro = { fused: 0, saved: 0 };
+  // vmDynOpcodes 的计数：同样放 ctx 上，片段里嵌套编译的函数也要算进来
+  ctx.__vmDyn = { applied: false, space: 0 };
   const rtNames = ctx.rtNames || new Set();
   // 分发形态计数（A=0/B=1/C=2/D=3/E=4）。形态 D 的验收用例据此断言「D 真的出现了」，
   // 也用于观察 vmDispatchEnc 与 vmCompactDispatcher 开关下的形态分布。
@@ -3043,6 +3097,8 @@ function vm(ast, options, ctx) {
     ops: { real: opsReal, decoy: opsDecoy, total: opsReal + opsDecoy },
     // vmMacroOps：融合出的宏指令条数，与因此少掉的指令条数（字流相应变短）
     macros: { fused: ctx.__vmMacro.fused, saved: ctx.__vmMacro.saved },
+    // vmDynOpcodes：是否真的生效，以及取整后的字空间大小（0 表示本项没生效）
+    dyn: { applied: ctx.__vmDyn.applied, space: ctx.__vmDyn.space },
     forms: formCount,
     models: modelCount,
   };
