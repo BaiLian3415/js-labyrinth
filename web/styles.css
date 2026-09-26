@@ -2,13 +2,15 @@
 
 :root {
   color-scheme: dark;
-  /* 设计语言对齐 Claude / Anthropic 官网。色值取自其公开品牌规范：
-     主强调 terracotta #d97757（小字用更深的 #a8502f 才过 AA）、
-     近黑 #141413、暖白 #faf9f5、暖银 #b0aea5、深面 #30302e、
-     边框暖灰 #e8e6dc / #f0eee6、次强调 slate 蓝 #6a9bcc。
-     其"温度"来源：整套中性色都带黄红相（不用冷灰/纯灰），卡片只比底色
-     亮一档、边框极浅、投影近乎不可见（whisper），层次靠暖色而非高对比；
-     标题走衬线（Anthropic Serif → Georgia），功能文字走无衬线。
+  /* 设计语言对齐 Anthropic 官网首页。它的三条硬特征（截图实测）：
+     ① 整页只铺一层暖米，导航与页脚**不设独立底板**，只留发丝分隔线；
+     ② 字标是大写粗体无衬线，大标题也是粗体无衬线，衬线只给正文段落；
+     ③ 唯一的实心按钮是近黑底白字，彩色仅作点缀。
+     色值取公开品牌规范：近黑 #141413、暖白 #faf9f5、暖银 #b0aea5、
+     深面 #30302e、次强调 slate 蓝 #6a9bcc。
+     terracotta #d97757 已退为点缀色（焦点环 / 激活态 / 图表系列），不再做
+     按钮底色——官网的实心按钮是近黑。深色是同一套语言的暗面：把"近黑实心"
+     反相成"暖白实心 + 近黑字"。
      逐条对齐到下面这些变量，组件规则里不再出现任何裸色值。
 
      纯色基色。**不能删**：它们是主题切换过渡的载体。
@@ -21,7 +23,7 @@
      而 background-color 的过渡仍然可见（渐变多为半透明感的低对比层）。
      纯色值取对应渐变复合到所在底色上的中间调。 */
   --bg: #262624;
-  --bg-soft: #1f1e1d;
+  --bg-soft: #262624;
   --bg-pane: #30302e;
   --line: #3d3d3a;
   --line-soft: #363632;
@@ -29,71 +31,75 @@
   --fg-dim: #b0aea5;
   --accent: #d97757;
   --accent-dim: #4a2e24;
-  /* 语义色也留在暖色族里：鼠尾草绿 / 暖金 / 暖红，与 terracotta 同温 */
+  /* 语义色也留在暖色族里：鼠尾草绿 / 暖金 / 暖红 */
   --ok: #8fa86b;
   --warn: #d6a84a;
   --err: #e06c75;
   --mono: "SFMono-Regular", "SF Mono", ui-monospace, "Cascadia Mono", "JetBrains Mono", Consolas, "Courier New", monospace;
   /* Inter 放最前是渐进增强：用户装了就用，没装走后备，不引入任何下载 */
   --ui: Inter, system-ui, -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
-  /* 衬线用于标题/品牌：Anthropic Serif 未公开分发，Georgia 是官方后备；
-     中文补宋体系，避免中英混排时半句变宋半句变黑 */
+  /* 衬线只给正文段落（对齐官网：标题是粗体无衬线，正文才是衬线）。
+     Anthropic Serif 未公开分发，Georgia 是官方后备；中文补宋体系，
+     避免中英混排时半句变宋半句变黑 */
   --serif: "Anthropic Serif", "Tiempos Text", Georgia, "Noto Serif SC", "Source Han Serif SC", "Songti SC", "SimSun", serif;
   --radius: 8px;
   --radius-lg: 12px;
-  /* 主按钮的过渡载体色 = 其渐变两端复合到卡片底上的中间值（#a85333 附近） */
-  --grad-accent-solid: #a85333;
-  --btn-line: rgba(217,119,87,.45);
-  /* Claude 的 whisper 投影：大模糊、极低不透明度，只暗示浮起，不画可见阴影 */
-  --shadow-pane: 0 4px 24px rgba(0,0,0,.42);
+  /* 主按钮：深色下反相成暖白实心，文字色随之反相 */
+  --btn-fg: #141413;
+  --grad-accent-solid: #f0efe7;
+  --btn-line: transparent;
+  /* 官网的卡片几乎不投影，只留一丝贴地感 */
+  --shadow-pane: 0 1px 2px rgba(0,0,0,.30);
 
   /* 渐变层。六条按用途分层（页面 / 横条 / 面板 / 凹槽 / 强调 / 小片），
      不是按颜色分——这样调某类区域时知道该动哪一条。
-     页面那条的第一个 radial 是右上角 terracotta 辉光，对应其官网 hero 的氛围光。
+     官网首页没有彩色辉光，页面那条只留一层极淡的中性提亮，不再有 terracotta 光晕。
 
      ⚠️ 这些渐变的色值**必须带 alpha**（rgba 而不是 #rrggbb）。
      主题过渡实际由下层 background-color 承担，渐变若完全不透明就会
      把它整块盖住，切主题又变回硬跳。
      实测过：全不透明的 6 位色值下，切主题时像素从 [13,16,22] 直接跳到
-     [241,244,249]，中间零帧；改成半透明后才有连续过渡。 */
-  --grad-page: radial-gradient(1100px 520px at 78% -10%, rgba(217,119,87,.11) 0%, rgba(217,119,87,0) 62%), linear-gradient(180deg, rgba(122,92,72,.10) 0%, rgba(38,38,36,0) 46%);
-  --grad-bar: linear-gradient(90deg, rgba(74,70,64,.42) 0%, rgba(46,44,40,.20) 50%, rgba(62,58,52,.36) 100%);
+     [241,244,249]，中间零帧；改成半透明后才有连续过渡。
+     主按钮那条同样守这条规矩（.78 alpha）——实心色块若写成不透明，
+     深浅切换会整块硬跳。 */
+  --grad-page: radial-gradient(1100px 520px at 78% -10%, rgba(150,143,128,.10) 0%, rgba(150,143,128,0) 62%), linear-gradient(180deg, rgba(122,110,96,.06) 0%, rgba(38,38,36,0) 46%);
+  --grad-bar: linear-gradient(90deg, rgba(66,64,58,.28) 0%, rgba(46,44,40,.14) 50%, rgba(58,56,50,.24) 100%);
   --grad-pane: linear-gradient(165deg, rgba(78,73,66,.34) 0%, rgba(50,48,43,.14) 55%, rgba(44,42,38,.18) 100%);
   --grad-well: linear-gradient(180deg, rgba(18,18,17,.50) 0%, rgba(26,26,24,.30) 100%);
-  --grad-accent: linear-gradient(135deg, rgba(176,86,47,.95) 0%, rgba(150,68,39,.95) 100%);
+  --grad-accent: linear-gradient(135deg, rgba(250,249,245,.78) 0%, rgba(235,233,224,.78) 100%);
   --grad-chip: linear-gradient(135deg, rgba(84,78,70,.45) 0%, rgba(56,53,48,.30) 100%);
 }
 
 html.light {
   color-scheme: light;
-  /* 浅色就是 Claude 官网那套"纸感"：底 Parchment #f5f4ed、卡片 Ivory #faf9f5
-     ——两者几乎同色，只差一档形成极轻的层；边框暖灰，正文近黑 #141413。
-     小字强调色比品牌 terracotta 更深（#a8502f）：品牌色在米底上只有 3.4:1，
-     达不到正文 AA，只留给按钮底与图表这类非文字用途。 */
-  --bg: #f5f4ed;
-  --bg-soft: #f0eee6;
-  --bg-pane: #faf9f5;
-  --line: #e8e6dc;
-  --line-soft: #efece3;
+  /* 浅色就是截图那一版：整页一层暖米（约 #f0efe7），导航与页脚与页面同色、
+     不设独立底板，只有发丝线；面板比页面亮一档，是唯一有实体感的面。
+     正文近黑 #141413。terracotta 只留给焦点环 / 激活态这类点缀。 */
+  --bg: #f0efe7;
+  --bg-soft: #f0efe7;
+  --bg-pane: #f8f7f1;
+  --line: #e2e0d4;
+  --line-soft: #e9e7dc;
   --fg: #141413;
-  --fg-dim: #5e5d59;
+  --fg-dim: #6b6a62;
   --accent: #a8502f;
   --accent-dim: #f3e4dc;
   --ok: #4f6b3a;
   --warn: #8a6d1f;
   --err: #b53333;
-  --grad-accent-solid: #a85333;
-  --btn-line: rgba(168,80,47,.45);
-  --shadow-pane: 0 4px 24px rgba(20,20,19,.06);
+  /* 浅色的主按钮就是官网那颗近黑实心：白字压 #1c1c1a 约 16:1 */
+  --btn-fg: #faf9f5;
+  --grad-accent-solid: #1c1c1a;
+  --btn-line: transparent;
+  --shadow-pane: 0 1px 2px rgba(20,20,19,.05);
 
-  /* 浅色把同一套暖色语言压到高明度底上：辉光更淡，其余渐变更实一点
-     （浅底上太透会显脏）。主按钮沿用与深色完全相同的一段深 terracotta——
-     品牌色 #d97757 压白字只有 3.9:1，过不了 AA，所以按钮底统一压深。 */
-  --grad-page: radial-gradient(1100px 520px at 78% -10%, rgba(217,119,87,.14) 0%, rgba(217,119,87,0) 62%), linear-gradient(180deg, rgba(255,255,255,.70) 0%, rgba(245,244,237,0) 46%);
-  --grad-bar: linear-gradient(90deg, rgba(255,255,255,.85) 0%, rgba(240,238,230,.55) 50%, rgba(245,244,237,.75) 100%);
-  --grad-pane: linear-gradient(165deg, rgba(255,255,255,.92) 0%, rgba(250,249,245,.55) 55%, rgba(245,244,237,.65) 100%);
-  --grad-well: linear-gradient(180deg, rgba(236,233,224,.90) 0%, rgba(245,244,237,.55) 100%);
-  --grad-accent: linear-gradient(135deg, rgba(176,86,47,.95) 0%, rgba(150,68,39,.95) 100%);
+  /* 浅色把同一套语言压到高明度底上：提亮更淡、凹槽更浅（浅底上太透会显脏）。
+     主按钮同样带 .78 alpha——纯色块切主题会硬跳，留一层薄的才过渡得起来。 */
+  --grad-page: radial-gradient(1100px 520px at 78% -10%, rgba(255,255,255,.55) 0%, rgba(255,255,255,0) 62%), linear-gradient(180deg, rgba(255,255,255,.32) 0%, rgba(240,239,231,0) 46%);
+  --grad-bar: linear-gradient(90deg, rgba(255,255,255,.40) 0%, rgba(234,232,222,.22) 50%, rgba(255,255,255,.34) 100%);
+  --grad-pane: linear-gradient(165deg, rgba(255,255,255,.85) 0%, rgba(250,249,245,.45) 55%, rgba(245,244,237,.50) 100%);
+  --grad-well: linear-gradient(180deg, rgba(233,231,220,.85) 0%, rgba(240,239,231,.45) 100%);
+  --grad-accent: linear-gradient(135deg, rgba(28,28,26,.78) 0%, rgba(20,20,19,.78) 100%);
   --grad-chip: linear-gradient(135deg, rgba(255,255,255,.95) 0%, rgba(240,238,230,.62) 100%);
 }
 
@@ -155,17 +161,16 @@ body {
 /* ---------- 顶部条（替代原侧栏，2026-09-23）---------- */
 
 /* 顶部条：左品牌 + 右语言/主题。
-   用同一张浅渐变卡与底部 1px 分隔线，与面板群呼应——它读起来仍是"工具的起点"，只是
-   不再独占一整列。强度预设 chips 已移除（2026-09-23）：预设选择走选项抽屉
-   「基础」组的「混淆强度预设」下拉，页面顶部不再重复一份。 */
+   对齐官网导航：**不设独立底板**（透明，直接坐在页面那层暖米上）、无分隔线，
+   只靠留白把它与主区分开。强度预设 chips 已移除（2026-09-23）：预设选择走选项
+   抽屉「基础」组的「混淆强度预设」下拉，页面顶部不再重复一份。 */
 .topbar {
   display: flex;
   align-items: center;
   gap: 12px;
-  padding: 12px 14px;
-  background-color: var(--bg-soft);
-  background-image: var(--grad-pane);
-  border-bottom: 1px solid var(--line);
+  padding: 14px 20px;
+  background: transparent;
+  border-bottom: 0;
   flex: 0 0 auto;
   min-width: 0;
 }
@@ -180,24 +185,27 @@ body {
   min-width: 0;
   flex: 0 0 auto;
 }
-/* 品牌标记：Claude 式星芒（terracotta 描边），替换原来的彩色 emoji——
-   彩色 emoji 不随主题变色，在暖色纸感底上会整块跳色。 */
+/* 品牌标记：星芒形状，单色描边（与字标同色）。
+   官网导航是纯单色的（黑字标、无彩色），所以标记也不上色；favicon 仍保留
+   terracotta——浏览器标签页不在截图的参考范围内，那里留一点品牌色更认得出来。 */
 .topbar .brand .logo {
   width: 28px;
   height: 28px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  color: var(--accent);
+  color: var(--fg);
 }
 .topbar .brand .logo svg { width: 21px; height: 21px; display: block; }
-/* 品牌名走衬线（Claude 的标题字体族），字重取 500 而非 700 */
+/* 字标对齐官网的「ANTHROPIC」：大写 + 粗体 + 无衬线 + 收紧字距。
+   text-transform 不影响中文，中英混排时中文原样保留。 */
 .topbar .brand h1 {
-  font-family: var(--serif);
-  font-size: 17px;
-  font-weight: 500;
+  font-family: var(--ui);
+  font-size: 15px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: .02em;
   margin: 0;
-  letter-spacing: .01em;
   white-space: nowrap;
 }
 .topbar .brand .ver { color: var(--fg-dim); font-size: 11.5px; }
@@ -269,26 +277,23 @@ button.mini:hover, select.mini:hover { border-color: var(--accent); }
 button.mini:active { transform: translateY(1px); }
 
 button.primary {
-  /* 实心 terracotta 主按钮，对齐 Claude 的 Brand CTA：
-     暖橙渐变 + 同色描边 + 极轻的上下内阴影（斜面高光）。
-     白字必须过 AA，所以按钮底统一压深到 #b0562f → #964427 一段。
-     实测（文字是奶油白 #faf9f5，不是纯白）：渐变最亮端 4.73:1、中点 5.38:1、
-     暗端 6.23:1，14px/600 过 AA。品牌色 #d97757 压白字只有 3.9:1，
-     只留给描边、强调与图表，不做按钮底。
-     圆角 8px 对应该站 CTA 的 comfortably rounded 一档，不做药丸。 */
+  /* 实心主按钮，对齐官网那颗近黑 CTA：浅色是近黑底 + 暖白字（约 16:1），
+     深色反相成暖白底 + 近黑字（约 17:1）——两种主题都远在 AA 之上，所以不必像
+     上一版那样为了白字达标把品牌色压深。
+     观感上就是一块平的色：无描边、无内阴影、无光泽斜面。
+     下面那条 background-image 不是装饰，是主题过渡的载体（.78 alpha，见文首
+     渐变层的说明）——删掉它深浅切换会硬跳。圆角 8px。 */
   background-color: var(--grad-accent-solid);
   background-image: var(--grad-accent);
-  color: #faf9f5;
+  color: var(--btn-fg);
   border: 1px solid var(--btn-line);
   border-radius: 8px;
   padding: 5px 16px;
   font: inherit;
   font-weight: 600;
   cursor: pointer;
-  box-shadow: inset 0 1px 0 rgba(255,255,255,.22), inset 0 -1px 0 rgba(0,0,0,.18);
 }
 
-button.primary:hover { filter: brightness(1.08); }
 button.primary:disabled, button.mini:disabled { opacity: .5; cursor: not-allowed; }
 
 input.text {
@@ -328,8 +333,8 @@ input.text:focus, select.mini:focus, button:focus-visible, textarea:focus {
   background-color: var(--bg-pane);
   background-image: var(--grad-pane);
   border: 1px solid var(--line);
-  /* Claude 的卡片只有 1px 浅边 + whisper 投影，层次靠暖色而非阴影；
-     圆角收到 12px（其 generously rounded 一档），不做重投影。 */
+  /* 官网的卡片几乎不投影，只有 1px 浅边 + 一丝贴地感；圆角 12px。
+     面板是页面里唯一有实体感的面（面板色比页面亮一档），其余区域都是平的。 */
   border-radius: var(--radius-lg);
   box-shadow: var(--shadow-pane);
   overflow: hidden;
@@ -564,10 +569,10 @@ input.text:focus, select.mini:focus, button:focus-visible, textarea:focus {
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 6px 14px;
-  border-top: 1px solid var(--line);
-  background-color: var(--bg-soft);
-  background-image: var(--grad-bar);
+  padding: 6px 20px;
+  /* 与顶条同一套语言：没有底板，只用一条发丝线把它与主区分开 */
+  border-top: 1px solid var(--line-soft);
+  background: transparent;
   font-size: 12px;
   min-height: 30px;
 }
@@ -673,12 +678,14 @@ button.mini, button.primary {
     background-color var(--dur-mid) var(--ease-out),
     background-image var(--dur-mid) var(--ease-out),
     color var(--dur-mid) var(--ease-out),
-    filter var(--dur-fast) var(--ease-out);
+    opacity var(--dur-fast) var(--ease-out);
 }
 
-/* 主按钮 hover 用亮度而非改背景色：改背景色会与主题过渡的那条规则打架，
-   亮度是 filter，走合成层，不参与颜色过渡。 */
-button.primary:hover:not(:disabled) { filter: brightness(1.1); }
+/* 主按钮 hover 用透明度，而不是上一版那种"提亮度 + 改背景色"：
+   现在是近黑/暖白的实心块，提亮对它几乎没有作用（近黑乘 1.1 只差 3 个色阶），
+   而底色又被上层渐变盖着、改 background-color 也看不出变化。
+   opacity 走合成层，不参与主题切换的颜色过渡，两种主题下都看得出反馈。 */
+button.primary:hover:not(:disabled) { opacity: .88; }
 
 /* ---------- 面板入场 ---------- */
 
@@ -913,7 +920,7 @@ button.primary:hover:not(:disabled) { filter: brightness(1.1); }
      品牌居左，语言/主题靠右（#lang 的 margin-left:auto 在基础规则里）。
      强度预设 chips 已移除，预设选择在选项抽屉「基础」组里。 */
   .shell { grid-template-columns: 1fr; grid-template-rows: auto 1fr; }
-  .topbar { flex-wrap: wrap; padding: 8px 10px; gap: 8px; border-bottom: 1px solid var(--line); }
+  .topbar { flex-wrap: wrap; padding: 8px 10px; gap: 8px; }
   .topbar .brand { flex: 1 1 auto; min-width: 0; }
   .topbar #lang,
   .topbar #themeBtn { flex: 0 0 auto; }
@@ -958,7 +965,7 @@ button.primary:hover:not(:disabled) { filter: brightness(1.1); }
 @media (hover: none) {
   .files button:hover { transform: none; }
   button.mini:hover, select.mini:hover { border-color: var(--line); }
-  button.primary:hover:not(:disabled) { filter: none; }
+  button.primary:hover:not(:disabled) { opacity: 1; }
   .stats summary:hover { color: var(--fg-dim); }
 }
 
@@ -1052,10 +1059,12 @@ html.light .compare-backdrop { background: rgba(20,20,19,.30); }
 }
 
 .compare-head { display: flex; align-items: center; gap: 12px; }
-.compare-head h2 { font-family: var(--serif); font-size: 17px; margin: 0; font-weight: 500; letter-spacing: 0; }
+.compare-head h2 { font-size: 15px; margin: 0; font-weight: 700; letter-spacing: -.01em; }
 .compare-head #compareClose { margin-left: auto; width: 32px; padding: 0; }
 
-.compare-note { color: var(--fg-dim); font-size: 12.5px; margin: 8px 0 14px; }
+/* 衬线只给真正的成段说明文字（官网的正文段落是衬线，这是它最明显的排版特征），
+   不给按钮标签、徽章、导航这类 UI 文字 */
+.compare-note { font-family: var(--serif); color: var(--fg-dim); font-size: 13px; line-height: 1.6; margin: 8px 0 14px; }
 
 .compare-legend { display: flex; flex-wrap: wrap; gap: 18px; margin-bottom: 8px; font-size: 12.5px; color: var(--fg-dim); }
 .lg-item { display: flex; align-items: center; gap: 7px; }
