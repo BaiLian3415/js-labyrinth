@@ -1270,6 +1270,35 @@ section('多态与可复现');
   ok(outs[0] !== outs[3], '滚动重键改变了产物结构（同 seed 下开与关不同）');
 }
 
+// ---------------------------------------------------------------- 控制流扁平化的语句规模
+
+section('控制流扁平化：大函数体');
+{
+  // 回归：flatten 原先是"先递归算剩余列表"的尾递归（flatten(list.slice(1), next)），
+  // 递归深度等于语句条数——一个几千条语句的函数体（打包产物的 IIFE、代码生成器的
+  // 输出）就会 "Maximum call stack size exceeded"，且每层复制数组是 O(n²)。
+  // 改成从尾到头倒序迭代后，条数只受内存限制。12000 条在改动前必爆，用它守住。
+  const parts = ['function big(){'];
+  for (let i = 0; i < 12000; i++) parts.push('var v' + i + ' = ' + i + ' + String(' + i + ').length;');
+  parts.push('var s = 0;');
+  parts.push('for (var k = 0; k < 20; k++) { if (k % 3 === 0) { s += k; } else { s += v0 + v11999; } }');
+  parts.push('return [v0, v11999, s].join("|");');
+  parts.push('}');
+  parts.push('console.log(big());');
+  const bigSrc = parts.join('\n');
+  const want = runNode(bigSrc, 'cf-big-plain.js').trim();
+
+  let code = '';
+  let err = '';
+  try {
+    code = obfuscate(bigSrc, { preset: 'low', seed: 20260920 }).code;
+  } catch (e) {
+    err = (e && e.message) || String(e);
+  }
+  ok(!err, '12000 条语句的函数体不触发栈溢出（原实现必爆）', err);
+  ok(!!code && runNode(code, 'cf-big-obf.js').trim() === want, '大函数体产物语义与原源码一致');
+}
+
 // ---------------------------------------------------------------- 自防御：篡改检出
 
 section('自防御：篡改检出');

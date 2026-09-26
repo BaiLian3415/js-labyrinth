@@ -402,68 +402,83 @@ function doFlatten(path, stmts, rng, loopFlatten, rolling) {
     return afterUpd;
   }
 
-  // flatten(list, next) 返回 list 的入口状态，next 是执行完 list 后进入的状态
+  // flatten(list, next) 返回 list 的入口状态，next 是执行完 list 后进入的状态。
+  //
+  // 原来是 `flatten(list.slice(1), next)` 的尾递归：递归深度等于剩余语句条数，
+  // 一个几千条语句的函数体（打包产物里的 IIFE、代码生成器的输出都很常见）
+  // 就能把调用栈打爆（浏览器里更低），且每一层都要复制一遍剩余数组，是 O(n²)。
+  // 改成从尾到头倒序遍历：深度恒为 O(1)。倒序与原实现的求值顺序一致（原式先递归
+  // 算出 restEntry 再处理当前条），所以状态分配、掩码与会话内随机数的消耗顺序
+  // 都不变，产物逐字节相同。分支里的嵌套调用保持递归——那层深度只等于 if 的
+  // 嵌套层数，与语句条数无关。
   function flatten(list, next) {
     if (!list || list.length === 0) return next;
-    const restEntry = flatten(list.slice(1), next);
-    const first = list[0];
+    let restEntry = next;
+    for (let i = list.length - 1; i >= 0; i--) {
+      const first = list[i];
 
-    // 裸 break/continue 转成状态跳转，只在编译循环体时可达，l 缺失时兜底到 restEntry
-    if (t.isBreakStatement(first) || t.isContinueStatement(first)) {
-      const l = loopStack[loopStack.length - 1];
-      const target = l ? (t.isBreakStatement(first) ? l.brk : l.cont) : restEntry;
-      const entry = allocState();
-      const c = caseOf(entry);
-      c.consequent = [assignState(target), t.breakStatement()];
-      cases.push(c);
-      return entry;
-    }
-
-    // 循环编译，while、do-while、for 都转状态机
-    if (loopFlatten &&
-        (t.isWhileStatement(first) || t.isDoWhileStatement(first) || t.isForStatement(first)) &&
-        loopCompilable(first)) {
-      return flattenLoop(first, restEntry);
-    }
-
-    // if/else 拆分
-    if (t.isIfStatement(first)) {
-      const thenList = t.isBlockStatement(first.consequent) ? first.consequent.body : [first.consequent];
-      const inLoop = loopStack.length > 0;
-      const canSplit = isSimpleBranch(thenList, inLoop) &&
-        (!first.alternate || isSimpleBranch(t.isBlockStatement(first.alternate) ? first.alternate.body : [first.alternate], inLoop));
-
-      if (canSplit) {
-        const thenEntry = flatten(thenList, restEntry);
-        const elseEntry = first.alternate
-          ? flatten(t.isBlockStatement(first.alternate) ? first.alternate.body : [first.alternate], restEntry)
-          : restEntry;
-
-        const jumpIf = t.ifStatement(
-          first.test,
-          t.blockStatement([assignState(thenEntry)]),
-          first.alternate ? t.blockStatement([assignState(elseEntry)]) : t.blockStatement([assignState(restEntry)])
-        );
+      // 裸 break/continue 转成状态跳转，只在编译循环体时可达，l 缺失时兜底到 restEntry
+      if (t.isBreakStatement(first) || t.isContinueStatement(first)) {
+        const l = loopStack[loopStack.length - 1];
+        const target = l ? (t.isBreakStatement(first) ? l.brk : l.cont) : restEntry;
         const entry = allocState();
         const c = caseOf(entry);
-        c.consequent = [jumpIf, t.breakStatement()];
+        c.consequent = [assignState(target), t.breakStatement()];
         cases.push(c);
-        return entry;
+        restEntry = entry;
+        continue;
       }
-      // 不能拆分时整体保留为一个 case
-      const entry = allocState();
-      const c2 = caseOf(entry);
-      c2.consequent = [first, assignState(restEntry), t.breakStatement()];
-      cases.push(c2);
-      return entry;
-    }
 
-    // 普通语句
-    const entry = allocState();
-    const c3 = caseOf(entry);
-    c3.consequent = [first, assignState(restEntry), t.breakStatement()];
-    cases.push(c3);
-    return entry;
+      // 循环编译，while、do-while、for 都转状态机
+      if (loopFlatten &&
+          (t.isWhileStatement(first) || t.isDoWhileStatement(first) || t.isForStatement(first)) &&
+          loopCompilable(first)) {
+        restEntry = flattenLoop(first, restEntry);
+        continue;
+      }
+
+      // if/else 拆分
+      if (t.isIfStatement(first)) {
+        const thenList = t.isBlockStatement(first.consequent) ? first.consequent.body : [first.consequent];
+        const inLoop = loopStack.length > 0;
+        const canSplit = isSimpleBranch(thenList, inLoop) &&
+          (!first.alternate || isSimpleBranch(t.isBlockStatement(first.alternate) ? first.alternate.body : [first.alternate], inLoop));
+
+        if (canSplit) {
+          const thenEntry = flatten(thenList, restEntry);
+          const elseEntry = first.alternate
+            ? flatten(t.isBlockStatement(first.alternate) ? first.alternate.body : [first.alternate], restEntry)
+            : restEntry;
+
+          const jumpIf = t.ifStatement(
+            first.test,
+            t.blockStatement([assignState(thenEntry)]),
+            first.alternate ? t.blockStatement([assignState(elseEntry)]) : t.blockStatement([assignState(restEntry)])
+          );
+          const entry = allocState();
+          const c = caseOf(entry);
+          c.consequent = [jumpIf, t.breakStatement()];
+          cases.push(c);
+          restEntry = entry;
+          continue;
+        }
+        // 不能拆分时整体保留为一个 case
+        const entry = allocState();
+        const c2 = caseOf(entry);
+        c2.consequent = [first, assignState(restEntry), t.breakStatement()];
+        cases.push(c2);
+        restEntry = entry;
+        continue;
+      }
+
+      // 普通语句
+      const entry = allocState();
+      const c3 = caseOf(entry);
+      c3.consequent = [first, assignState(restEntry), t.breakStatement()];
+      cases.push(c3);
+      restEntry = entry;
+    }
+    return restEntry;
   }
 
   const exitState = allocState();
