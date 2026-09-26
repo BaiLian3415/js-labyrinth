@@ -73,6 +73,17 @@ export default {
   // 通过——这是这一层的边界，不是漏洞。代价是每次压栈/出栈多一次函数调用。
   // WASM 内核档的栈在模块里，该档自动关闭本项。
   "vmStackEncoding": false,
+  // 顶层初始化包装。VMP 原本只覆盖函数体，顶层语句（引导、注册、初始化调用）
+  // 完全不受保护。开启后整个顶层序列搬进一个合成函数体，走同一套编译流程，产物里
+  // 这段代码由 VM 解释器执行，顶层控制流与常量同样从静态视图里消失。
+  // 三条跳过条件与 functionWrapper 同源（都是"顶层搬进函数体会改语义"的情形）：
+  // 含 import/export 的 ESM、顶层 this（顶层箭头函数里的也算）、自由引用
+  // require/module/exports 的 CommonJS。此外整段顶层必须通过区域判定，含
+  // try/switch/标签/with 与带 break/continue 的循环、不到 vmThreshold 的都保持原样
+  // （统计里 reason 记 uncompilable / not-compiled）。
+  // 代价：顶层 var/function/let/const 声明随之变成包装函数的局部绑定，不再泄漏到
+  // 全局——与 functionWrapper 的取舍相同。需要 vmProtection；WASM 内核档忽略本项。
+  "vmWrapTopLevel": false,
   // P4：多态寄存器模型。逐函数从 M0 纯栈 / M1 寄存器优先 / M2 双栈分立 中随机抽一种。
   "vmPolymorph": false,
   // P4：字节码按块自解密。块边界逐构建随机，块密钥运行期派生，任一时刻内存里

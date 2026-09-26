@@ -517,6 +517,22 @@ function toFunctionExpression(decl) {
   return t.functionExpression(decl.id, decl.params, decl.body, decl.generator, decl.async);
 }
 
+/**
+ * 函数体自身的指令序言还原成语句。Directive.value 有两种形态：解析器产出的是
+ * DirectiveLiteral 节点（值挂在 .value 上），手工构造的可能是裸字符串，两种都要
+ * 取出字符串本体。字面量标 __noPool：指令靠"函数体第一条语句"这个位置生效，
+ * 被字符串池收走就成了一次普通解码调用，严格模式随之丢掉。
+ */
+function directiveStmts(directives) {
+  return (directives || []).map((d) => {
+    const v = d.value;
+    const s = typeof v === 'string' ? v : (v && typeof v.value === 'string' ? v.value : '');
+    const lit = t.stringLiteral(s);
+    lit.__noPool = true;
+    return t.expressionStatement(lit);
+  });
+}
+
 const JUMP_KINDS = new Set(['JMP', 'JPF', 'JPT', 'JANDK', 'JORK', 'JNULK']);
 const ARG1_KINDS = new Set(['LDC', 'LOD', 'STR', 'GET', 'SET', 'FRAG', 'EXEC', 'MKS']);
 const ARG2_KINDS = new Set(['JANDK', 'JORK', 'JNULK']);
@@ -1361,10 +1377,7 @@ function compileFunction(fn, ctx) {
     }
     if (paramOrder.length > 64) throw new Error(msg('vmWasmTooManyParams'));
     const argslots = paramOrder.map((nm) => (slotOf.has(nm) ? slotOf.get(nm) : -1));
-    const dirStmtsW = (origDirectives || []).map((d) => {
-      const v = d.value && d.value.type === 'StringLiteral' ? d.value.value : d.value;
-      return t.expressionStatement(t.stringLiteral(v));
-    });
+    const dirStmtsW = directiveStmts(origDirectives);
     fn.__wasmVmMeta = {
       fIdx, flat, MASK_K1, MASK_K2, MASK_M0, CHAIN_SEED,
       nSlots: slotOf.size, segLen: flat.length, argslots,
@@ -2386,10 +2399,7 @@ function compileFunction(fn, ctx) {
     : t.whileStatement(t.booleanLiteral(true), interpBody);
 
   // 组装新函数体，依次放入指令序、参数拷贝、捕获名的 var 声明与解释器
-  const dirStmts = (origDirectives || []).map((d) => {
-    const v = d.value && d.value.type === 'StringLiteral' ? d.value.value : d.value;
-    return t.expressionStatement(t.stringLiteral(v));
-  });
+  const dirStmts = directiveStmts(origDirectives);
   const runtimeDecl = t.variableDeclaration('var', shuffle([
     t.variableDeclarator(V, t.arrayExpression([])),
     t.variableDeclarator(G, t.arrayExpression(getterNodes)),
@@ -2684,6 +2694,79 @@ function hasStringLiteral(root) {
   return found;
 }
 
+// 顶层初始化包装（vmWrapTopLevel）。VMP 原本只覆盖函数体，顶层语句（引导、注册、
+// 初始化调用）完全不受保护。本项把整个顶层语句序列搬进一个合成函数体，让它走同一套
+// 编译流程，产物里这段代码由 VM 解释器执行，顶层控制流与常量同样从静态视图里消失。
+
+/** 路径是否位于程序顶层：不在任何函数体内。箭头函数不绑定 this，判定要穿透它。 */
+function atTopLevel(path) {
+  let p = path.parentPath;
+  while (p) {
+    const ty = p.node ? p.node.type : null;
+    if (ty === 'Program') return true;
+    if (ty === 'ArrowFunctionExpression') { p = p.parentPath; continue; }
+    if (ty === 'ClassDeclaration' || ty === 'ClassExpression' || ty === 'ClassBody' ||
+        ty === 'ClassProperty' || ty === 'StaticBlock' ||
+        ty === 'FunctionDeclaration' || ty === 'FunctionExpression' ||
+        ty === 'ClassMethod' || ty === 'ObjectMethod') return false;
+    p = p.parentPath;
+  }
+  return true;
+}
+
+/**
+ * 顶层包装的适用性判定，入参是"用户顶层语句"构成的 Program（不含 rtlib 内核）。
+ * 返回 null 表示可以包装，否则返回跳过原因。
+ * 三条排除与 functionWrapper 同源：这三种情形下"顶层代码搬进函数体"会改语义。
+ */
+function topWrapBlocked(prog, ctx) {
+  let esm = false;
+  let topThis = false;
+  let cjs = false;
+  ctx.traverse(prog, {
+    ImportDeclaration() { esm = true; },
+    ExportNamedDeclaration() { esm = true; },
+    ExportDefaultDeclaration() { esm = true; },
+    ExportAllDeclaration() { esm = true; },
+    ThisExpression(path) {
+      if (!topThis && atTopLevel(path)) topThis = true;
+    },
+    Identifier(path) {
+      if (cjs) return;
+      const name = path.node.name;
+      if (name !== 'module' && name !== 'exports' && name !== 'require') return;
+      if (!atTopLevel(path)) return;
+      // 局部同名变量只是遮蔽，不构成 CommonJS 标记
+      if (path.scope && path.scope.getBinding(name)) return;
+      const par = path.parentPath;
+      const pt = par && par.node ? par.node.type : null;
+      if (name === 'require' && pt === 'CallExpression' && par.node.callee === path.node) cjs = true;
+      else if ((name === 'module' || name === 'exports') && pt === 'MemberExpression' &&
+               par.node.object === path.node) cjs = true;
+    },
+  });
+  if (esm) return 'esm';
+  if (topThis) return 'top-level-this';
+  if (cjs) return 'commonjs';
+  return null;
+}
+
+/**
+ * 合成顶层包装体。只收用户顶层语句，整段必须整体通过区域判定，任何一条不通过就
+ * 返回 null、源码保持原样（try/switch/标签/with、带 break/continue 的循环都会命中）。
+ * 阈值不在这里判：判定统一留给下面的候选循环，没编译成由调用方回滚结构。
+ * 指令序言留在顶层不动，同时克隆一份进包装体，严格模式因此不丢。
+ */
+function makeTopWrapper(stmts, directives) {
+  if (!stmts.length) return null;
+  const fn = t.functionExpression(null, [], t.blockStatement(
+    stmts,
+    (directives || []).map((d) => t.cloneNode(d, true)),
+  ));
+  if (!canCompile(fn)) return null;
+  return fn;
+}
+
 // Pass 入口
 
 /**
@@ -2718,6 +2801,41 @@ function vm(ast, options, ctx) {
   const vmpComments = (ast && Array.isArray(ast.comments))
     ? ast.comments.filter((c) => JSVMP_RE.test(c.text || ''))
     : [];
+
+  // 顶层初始化包装：先判定适用性，再把用户顶层语句搬进合成包装体，让下面的候选
+  // 遍历把它当普通函数编译。搬完先不动——没编译成的话结构要回滚。
+  // rtlib 注入的内核（ctx.rtKernelStmts）不是保护对象：解释器靠词法引用它，编译它
+  // 会造成循环依赖，所以既不搬进包装体，也不参与语义判定
+  let topWrap = null;
+  let topWrapReason = null;
+  if (options.vmWrapTopLevel) {
+    const prog = ast && ast.type === 'File' ? ast.program : ast;
+    const kernel = new Set(ctx.rtKernelStmts || []);
+    const userStmts = prog && prog.body ? prog.body.filter((s) => !kernel.has(s)) : [];
+    const userProg = {
+      type: 'Program',
+      body: userStmts,
+      directives: (prog && prog.directives) || [],
+      sourceType: prog && prog.sourceType,
+    };
+    if (ctx.__vmWasmShared) topWrapReason = 'wasm';
+    else if (!userStmts.length) topWrapReason = 'empty';
+    else {
+      topWrapReason = topWrapBlocked(userProg, ctx);
+      if (!topWrapReason) {
+        const wfn = makeTopWrapper(userStmts, userProg.directives);
+        if (wfn) {
+          // 包装调用落在内核之后、用户语句原来的位置
+          const call = t.expressionStatement(t.callExpression(wfn, []));
+          const last = prog.body.reduce((acc, s, i) => (kernel.has(s) ? i : acc), -1);
+          const next = prog.body.filter((s) => kernel.has(s));
+          next.splice(last + 1, 0, call);
+          topWrap = { fn: wfn, saved: prog.body };
+          prog.body = next;
+        } else topWrapReason = 'uncompilable';
+      }
+    }
+  }
 
   const fns = [];
   ctx.traverse(ast, {
@@ -2764,11 +2882,25 @@ function vm(ast, options, ctx) {
       if (platform.env('DSH_VM_DEBUG')) console.error('[vm] 编译失败（降级）:', e && e.stack ? e.stack : e);
     }
   }
+  // 包装体没进 VM（阈值或形态筛选挡下）就把顶层结构还原：产物里不能留下
+  // "搬了家却没受保护"的顶层代码
+  let topWrapped = false;
+  if (topWrap) {
+    if (compiledSet.has(topWrap.fn)) topWrapped = true;
+    else {
+      const prog = ast && ast.type === 'File' ? ast.program : ast;
+      prog.body = topWrap.saved;
+      topWrapReason = 'not-compiled';
+    }
+  }
   return {
     compiled,
     considered: fns.length,
     failed,
     mode,
+    topLevel: options.vmWrapTopLevel
+      ? { wrapped: topWrapped, reason: topWrapped ? 'ok' : topWrapReason }
+      : { wrapped: false, reason: 'off' },
     // 指令集规模。每个编译函数的分发器要枚举 real+decoy 个分发字，干扰项通常不少于 1000
     ops: { real: opsReal, decoy: opsDecoy, total: opsReal + opsDecoy },
     forms: formCount,
