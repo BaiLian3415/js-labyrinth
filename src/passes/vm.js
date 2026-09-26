@@ -536,6 +536,24 @@ function directiveStmts(directives) {
 const JUMP_KINDS = new Set(['JMP', 'JPF', 'JPT', 'JANDK', 'JORK', 'JNULK']);
 const ARG1_KINDS = new Set(['LDC', 'LOD', 'STR', 'GET', 'SET', 'FRAG', 'EXEC', 'MKS']);
 const ARG2_KINDS = new Set(['JANDK', 'JORK', 'JNULK']);
+// 宏指令的操作数个数。MPKn 把 n 条连续的操作数装载指令压成一条，
+// 操作数是 n 个打包字「(下标 << 2) | 源位」。源位两位，取值与 caseBody 的
+// MACRO_SRC 表一一对应：0 常量池 K、1 槽位面 V、2 外层名 getter G、3 常量池闭包 K()。
+// 打包让任意源组合共用同一个宏种类，不必按组合展开种类；两条指令原本可能一个取
+// 常量池、一个取槽位面，融进同一条宏之后仍然各取各的。
+const MACRO_KINDS = new Map([['MPK2', 2], ['MPK3', 3], ['MPK4', 4]]);
+// 可作为宏成员的装载类指令。共同点是动作体只做「取一个值压栈」，没有别的副作用，
+// 所以按原顺序拼接就是等价展开。MKS 的体是还原循环、EXEC 的结果要丢弃，都不在列。
+const MACRO_MEMBER_KINDS = new Set(['LDC', 'LOD', 'GET', 'FRAG']);
+// 源位编码表，取值即编译期打包字低两位与 caseBody 里 macroSrc() 表的下标。
+const MACRO_SRC_CODE = { LDC: 0, LOD: 1, GET: 2, FRAG: 3 };
+/** 一条字节码条目占多少个字（opcode 一字，操作数若干），字下标与跳转回填都靠它。 */
+function opWordWidth(e) {
+  const m = MACRO_KINDS.get(e.op);
+  if (m !== undefined) return 1 + m;
+  const isJump = JUMP_KINDS.has(e.op);
+  return 1 + (ARG2_KINDS.has(e.op) ? 2 + (isJump ? 1 : 0) : isJump ? 2 : ARG1_KINDS.has(e.op) ? 1 : 0);
+}
 
 // 编译器
 
@@ -596,6 +614,14 @@ function compileFunction(fn, ctx) {
   const nSE = stackEnc ? uniqueName(ctx.usedNames, '_0x') : null; // 编码函数名
   const nSEK = stackEnc ? uniqueName(ctx.usedNames, '_0x') : null; // 逐函数密钥
   const nSEV = stackEnc ? uniqueName(ctx.usedNames, '_0x') : null; // 编码函数的形参名
+
+  // 宏指令（vmMacroOps）。把连续的操作数装载指令合并成一条 MPKn：原本「n 条指令
+  // 各自取指 + 各自分发」变成「一条指令取指一次 + 分发一次」，n 个操作数打包成
+  // n 个「(下标 << 1) | 源位」的字跟在后面。宏的动作体由被合并的那 n 条指令的动作
+  // 体按原顺序拼接而成，所以语义等价是构造性的，不需要逐模式证明。
+  // 只在同一个函数内做，且跳转目标不落在被合并的区间内（跳转靠指令下标定位）。
+  // WASM 解释器内核档的动作体在模块里、按既有指令集硬编码，该档关闭本项。
+  const macroOps = !!opts.vmMacroOps && !ctx.__vmWasmShared;
 
   // 运行时密钥取值（vmRuntimeKeyGetter）。与编译期密钥**配对**使用：产物在每个 VM
   // 函数开头求值用户给的表达式，用取回的值重跑一遍上面这套派生，把结果当初始掩码、
@@ -1218,6 +1244,63 @@ function compileFunction(fn, ctx) {
   }
   emit('END');
 
+  // 宏指令融合（vmMacroOps）。在整条指令流发完之后做，因为「跳转目标落在哪」要
+  // 等所有跳转回填完才知道：跳转靠**指令下标**定位（pos[e.a]、targetChainOf 用
+  // opZ.get(code[o.instr].a)），被合并掉的指令如果还是某个跳转的目标，定位就断了。
+  // 所以规则是：只把连续的操作数装载指令（LDC / LOD）并成一条 MPKn，n 取 2..4；
+  // 目标指令本身绝不并入前一条——它是段的起点，段可以从它开始，但不能跨过它。
+  // 每段的操作数按「(下标 << 1) | 源位」打包，源位在被合并指令的原操作数里解码，
+  // 所以段的字流长度正好是 1 + n，与 opWordWidth 一致。
+  let macroFused = 0;  // 本函数生成的宏指令条数（统计用）
+  let macroSaved = 0;  // 因融合而减少的指令条数（统计用）
+  if (macroOps) {
+    const targets = new Set();
+    for (const e of code) if (JUMP_KINDS.has(e.op)) targets.add(e.a);
+    const fused = [];
+    // 指令下标重映射表。跳转目标记的是**指令下标**（pos[e.a] 与 targetChainOf 的
+    // opZ.get(code[o.instr].a) 都按它取字下标），融合会改变下标，所以融完必须整体
+    // 改写跳转操作数，否则跳转落到错误的指令上——循环会因此死循环。
+    const remap = new Array(code.length);
+    for (let i = 0; i < code.length; i++) {
+      const e = code[i];
+      if (!MACRO_MEMBER_KINDS.has(e.op)) { remap[i] = fused.length; fused.push(e); continue; }
+      // 段的右端：连续的同族装载，且下一个位置不是任何跳转的目标
+      let j = i;
+      while (j + 1 < code.length
+        && MACRO_MEMBER_KINDS.has(code[j + 1].op)
+        && !targets.has(j + 1)) j++;
+      let at = i;
+      while (at <= j) {
+        // 每段最多 4 条：再长的收益递减，而打包字要保持小整数便于逐字加密
+        const n = Math.min(4, j - at + 1);
+        if (n < 2) { remap[at] = fused.length; fused.push(code[at]); at++; continue; }
+        const args = [];
+        for (let k = 0; k < n; k++) {
+          const src = code[at + k];
+          args.push((src.a << 2) | MACRO_SRC_CODE[src.op]);
+        }
+        // 段内每条指令的下标都指到这条宏上：段内不可能是跳转目标（上面已保证），
+        // 只有段首可能被跳转指到，它必须映射正确
+        for (let k = 0; k < n; k++) remap[at + k] = fused.length;
+        fused.push({ op: 'MPK' + n, a: 0, n: 0, args });
+        macroFused++;
+        macroSaved += n - 1;
+        at += n;
+      }
+      i = j;
+    }
+    code.length = 0;
+    for (const e of fused) code.push(e);
+    for (const e of code) if (JUMP_KINDS.has(e.op)) e.a = remap[e.a];
+    // 指令集清单按融合后的实际指令流重建：被完全并掉的 LDC / LOD 不再占分发编号，
+    // 新出现的 MPKn 才有动作体要生成。顺序取自指令流，保证同种子可复现。
+    usedOps.clear();
+    for (const e of code) usedOps.add(e.op);
+    // 统计并入 ctx：片段里嵌套的函数走 compileInnerFns 递归编译，那条路的返回值
+    // 没人接，所以计数必须落在共享的累加器上才不会漏报
+    if (ctx.__vmMacro) { ctx.__vmMacro.fused += macroFused; ctx.__vmMacro.saved += macroSaved; }
+  }
+
   // 操作码随机编号后展平，跳转目标用绝对索引
   const opKinds = [...usedOps];
   const opNums = new Map();
@@ -1275,10 +1358,8 @@ function compileFunction(fn, ctx) {
   const pos = new Array(code.length);
   let acc = 0;
   for (let i = 0; i < code.length; i++) {
-    const e = code[i];
     pos[i] = acc;
-    const isJump = JUMP_KINDS.has(e.op);
-    acc += 1 + (ARG2_KINDS.has(e.op) ? 2 + (isJump ? 1 : 0) : isJump ? 2 : ARG1_KINDS.has(e.op) ? 1 : 0);
+    acc += opWordWidth(code[i]);
   }
   // 链式加密布局。
   // 链值取前一字的明文，字 -1 的链值是 CHAIN_SEED。密文 flat[z] 等于
@@ -1292,10 +1373,14 @@ function compileFunction(fn, ctx) {
   for (let i = 0; i < code.length; i++) {
     const e = code[i];
     const isJump = JUMP_KINDS.has(e.op);
-    const w = 1 + (ARG2_KINDS.has(e.op) ? 2 + (isJump ? 1 : 0) : isJump ? 2 : ARG1_KINDS.has(e.op) ? 1 : 0);
+    const w = opWordWidth(e);
     for (let s = 0; s < w; s++) owner.push({ instr: i, slot: s });
     words.push(opNums.get(e.op));
-    if (ARG2_KINDS.has(e.op)) {
+    if (MACRO_KINDS.has(e.op)) {
+      // 宏指令：n 个打包操作数逐字落流。宏的动作体自己按顺序取走它们，
+      // 取指顺序与原来逐条执行时完全一致。
+      for (const v of e.args) words.push(v);
+    } else if (ARG2_KINDS.has(e.op)) {
       words.push(jumpEnc ? pos[e.a] - pos[i] : pos[e.a]); words.push(e.n);
       if (isJump) words.push(null);
     } else if (isJump) {
@@ -1495,6 +1580,29 @@ function compileFunction(fn, ctx) {
   const N_F = uniqueName(ctx.usedNames, '_0x');
   const N_K = uniqueName(ctx.usedNames, '_0x');
   const N_O = uniqueName(ctx.usedNames, '_0x');
+  // 宏指令的操作数暂存名。每个打包字取指一次、解码两次（选源位与下标位），
+  // 所以要绑到临时名上；上限 4 与 MACRO_KINDS 的最长段长一致。
+  // 关闭本项时**不占名**：uniqueName 会推进随机名字流，白占四个名会让同种子下的
+  // 其余名字整体错位，产物与改造前不再逐字节一致。
+  const macroArgNames = macroOps
+    ? Array.from({ length: 4 }, () => uniqueName(ctx.usedNames, '_0x'))
+    : [];
+  // 宏操作数的取源表达式表，下标即打包字的低两位（见 MACRO_SRC_CODE）：
+  //   0 常量池 K        —— 与 LDC 的动作体同义
+  //   1 槽位面 V        —— 与 LOD 的动作体同义
+  //   2 外层名 getter G —— 与 GET 的动作体同义
+  //   3 常量池闭包调用  —— 与 FRAG 的动作体同义
+  // 四种都只做「取一个值」，所以能串成一棵条件表达式树，宏体不必用分支语句；
+  // 打包字高位的下标要左移还原（打包时左移了两位）。
+  const macroSrc = (w) => {
+    const idx = () => t.binaryExpression('>>', idn(w), t.numericLiteral(2));
+    return [
+      t.memberExpression(K, idx(), true),
+      t.memberExpression(V, idx(), true),
+      t.callExpression(t.memberExpression(G, idx(), true), []),
+      t.callExpression(t.memberExpression(K, idx(), true), []),
+    ];
+  };
   // 形参名按下标缓存，同一条指令内的多个参数共用一个池，彼此不冲突
   const argNameCache = [];
   const argNames = (count) => {
@@ -1744,6 +1852,33 @@ function compileFunction(fn, ctx) {
         ...args.slice().reverse().map((nm) => declConst(nm, popR())),
         ...pushR(t.arrayExpression(args.map(idn))),
       ];
+    }
+    // 宏指令 MPKn：把 n 条被合并的装载指令的动作体按原顺序展开。
+    // 每个操作数是一个打包字：低两位选源（见 macroSrc 表），高位是下标。
+    // 取指与 LDC / LOD / GET / FRAG 走同一条 bAt()，所以链式解密、掩码轮换、位置分量
+    // 全部沿用，字流长度也正好是 1 + n。压栈沿用 pushR，寄存器窗口与栈编码的行为不变。
+    // 之所以能直接拼接：被合并的每条指令原本只做「取一个字 → 按源取一个值 → 压栈」，
+    // 三者互不依赖，顺序执行与逐条执行恒等；源位在运行期用条件表达式选，等价于原来
+    // 由分发字选动作体，少了一次分发。
+    if (kind.startsWith('MPK')) {
+      const n = +kind.slice(3);
+      const out = [];
+      for (let k = 0; k < n; k++) {
+        const w = macroArgNames[k];
+        out.push(declConst(w, bAt()));
+        const src = macroSrc(w);
+        // 低位为 0 取常量池、为 1 取槽位面……依次串成条件表达式链
+        let val = src[3];
+        for (let s = 2; s >= 0; s--) {
+          val = t.conditionalExpression(
+            t.binaryExpression('===',
+              t.binaryExpression('&', idn(w), t.numericLiteral(3)),
+              t.numericLiteral(s)),
+            src[s], val);
+        }
+        out.push(...pushR(val));
+      }
+      return out;
     }
     throw new Error(msg('vmUnknownOpcode', { kind }));
   }
@@ -2851,6 +2986,9 @@ function vm(ast, options, ctx) {
   let failed = 0;
   let opsReal = 0;
   let opsDecoy = 0;
+  // vmMacroOps 的融合计数。放在 ctx 上共享：片段里嵌套的函数由 compileInnerFns
+  // 递归编译，计数从那里并回来才不会漏（见 compileFunction 的融合段）
+  ctx.__vmMacro = { fused: 0, saved: 0 };
   const rtNames = ctx.rtNames || new Set();
   // 分发形态计数（A=0/B=1/C=2/D=3/E=4）。形态 D 的验收用例据此断言「D 真的出现了」，
   // 也用于观察 vmDispatchEnc 与 vmCompactDispatcher 开关下的形态分布。
@@ -2903,6 +3041,8 @@ function vm(ast, options, ctx) {
       : { wrapped: false, reason: 'off' },
     // 指令集规模。每个编译函数的分发器要枚举 real+decoy 个分发字，干扰项通常不少于 1000
     ops: { real: opsReal, decoy: opsDecoy, total: opsReal + opsDecoy },
+    // vmMacroOps：融合出的宏指令条数，与因此少掉的指令条数（字流相应变短）
+    macros: { fused: ctx.__vmMacro.fused, saved: ctx.__vmMacro.saved },
     forms: formCount,
     models: modelCount,
   };
