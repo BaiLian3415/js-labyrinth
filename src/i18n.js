@@ -265,6 +265,11 @@ const STRINGS = {
     hostBudgetExhausted: '云端今日总预算已用尽（免费档每日约 {cpu} 秒 CPU）。明日恢复，或在部署侧调高 JSLB_DAILY_CPU_SECONDS。',
     hostBudgetHint: '云端今日已用 {used} / {total} 秒 CPU 预算',
     hostNoStore: '部署未接云存储：授权记录与用量不跨实例持久化，请每次请求带上卡密（见 DEPLOY-VERCEL.md）',
+    // 「还没激活」是常态，不是失败。原先 init 把 ensure() 的 reason:'missing'
+    // 套进 webActivateFailed，播成「激活失败: 未找到许可证文件」——用户刚打开页面、
+    // 还没输过卡密，却看到一句"失败"，而面板同时显示着服务端的套餐，两行自相矛盾。
+    // 这个键只用于"尚未激活"的引导，激活失败仍走 webActivateFailed。
+    guiNeedActivate: '尚未激活：在下方填入卡密并点「激活」；激活成功后即可在云端执行混淆。',
     guiTrialHint: '未激活：{limits}。激活卡密可解锁已购套餐的全部权益与配额。',
     guiThemeDark: '深色',
     guiThemeLight: '浅色',
@@ -570,6 +575,7 @@ const STRINGS = {
     hostBudgetExhausted: 'The cloud CPU budget for today is exhausted (about {cpu} CPU-seconds per day on the free plan). It resets tomorrow, or raise JSLB_DAILY_CPU_SECONDS on the deployment.',
     hostBudgetHint: 'Cloud CPU budget used today: {used} / {total} seconds',
     hostNoStore: 'No cloud store is configured: license records and usage do not survive across instances, so send the license key with every request (see DEPLOY-VERCEL.md)',
+    guiNeedActivate: 'Not activated yet: enter a license key below and click Activate; once activated, obfuscation runs in the cloud.',
     guiTrialHint: 'Not activated: {limits}. Activate a license key for the full entitlements and quotas of your plan.',
     guiThemeDark: 'Dark',
     guiThemeLight: 'Light',

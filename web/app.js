@@ -1114,11 +1114,17 @@ async function refreshLicensePanel() {
  * 抽成函数是为了切语言时也能重刷：这些句子是 t() 拼出来的，语言一变就必须重算，
  * 否则英文界面下会一直留着初始化时写下的中文（"试用模式（未激活）…"）。
  * init 与语言切换共用这一处，避免两份逻辑漂移。
+ *
+ * ⚠️ 「没有许可证」不等于「激活失败」。requireLicense=true 时 ensure() 在本机
+ * 没有记录就返回 {ok:false, reason:'missing'}，那是**每个新浏览器的常态**；原先
+ * 一律套上 webActivateFailed 播成「激活失败: 未找到许可证文件」，用户刚打开页面、
+ * 还没输过卡密就先看到一句失败，而授权面板同时显示着服务端的套餐（serverLicense），
+ * 两行自相矛盾、极难自查。现在这里只给中性引导，**真正的激活失败仍由 activate() 播报**。
  */
 async function refreshStatusFromLicense() {
   const ens = await licenseWeb.ensure();
   if (!ens.ok) {
-    setStatus(t('webActivateFailed', { reason: t('licReason_' + (ens.reason || 'missing')) }), 'err');
+    setStatus(t('guiNeedActivate'), 'warn');
   } else if (ens.trial) {
     setStatus(t('webTrialBanner', { machine: await licenseWeb.machineId() }), 'warn');
   } else {
