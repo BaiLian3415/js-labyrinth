@@ -984,14 +984,19 @@ function renderApiState() {
   // 首次渲染（prev 为空）不弹，之后状态跃迁才弹
   if (prev && prev !== next) replay(badge, 'pop');
   if (els.apiHint) {
-    // 云端执行的提示优先：那时"能不能连上"直接决定还能不能干活，
-    // 比"授权由服务端认定"更需要先说。
+    // 提示优先级：能不能连上 > 部署有没有云存储 > 执行模式 > 其它。
+    //
+    // "没接云存储"排在执行模式之前是刻意的：store=memory 时授权记录只活在单个
+    // 函数实例里，实例一换就"刚激活又提示未激活"、每日次数按实例重置——这是**部署
+    // 缺陷**，比"云端执行"这种设计选择更需要先说，否则用户只会看到一句莫名其妙的
+    // 激活失败，完全想不到根因在存储。判据来自 /api/health 的 store 字段。
+    const noStore = !!(state.apiOnline && state.apiInfo && state.apiInfo.store === 'memory');
     if (cloudOnly() && state.apiOnline === false) els.apiHint.textContent = t('guiCloudNoApi');
-    else if (cloudOnly() && state.apiOnline) els.apiHint.textContent = t('guiCloudHint');
     else if (state.apiOnline === false) els.apiHint.textContent = t('guiApiOfflineHint');
-    else if (state.apiOnline && serverAttested()) els.apiHint.textContent = t('guiServerAttestedHint');
-    else if (state.apiOnline) els.apiHint.textContent = t('guiApiOnlineHint');
-    else els.apiHint.textContent = '';
+    else if (noStore) els.apiHint.textContent = t('hostNoStore');
+    else if (cloudOnly()) els.apiHint.textContent = t('guiCloudHint');
+    else if (serverAttested()) els.apiHint.textContent = t('guiServerAttestedHint');
+    else els.apiHint.textContent = t('guiApiOnlineHint');
   }
 }
 

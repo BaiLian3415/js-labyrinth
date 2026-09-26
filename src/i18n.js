@@ -264,7 +264,10 @@ const STRINGS = {
     hostOutputTooBig: '混淆结果 {size} 超过云端单次回执上限 {limit}。请降低预设、拆分输入，或在部署侧调高 JSLB_MAX_RESPONSE_BYTES。',
     hostBudgetExhausted: '云端今日总预算已用尽（免费档每日约 {cpu} 秒 CPU）。明日恢复，或在部署侧调高 JSLB_DAILY_CPU_SECONDS。',
     hostBudgetHint: '云端今日已用 {used} / {total} 秒 CPU 预算',
-    hostNoStore: '部署未接云存储：授权记录与用量不跨实例持久化，请每次请求带上卡密（见 DEPLOY-VERCEL.md）',
+    // store=memory 时界面必须自己说清楚：授权记录与用量只活在单个函数实例的内存里，
+    // 实例一换就"刚激活又提示未激活"、每日次数按实例重置。这条以前定义了却没人用，
+    // 于是用户只看到一句莫名其妙的激活失败，完全想不到是部署缺存储。
+    hostNoStore: '部署未接云存储：授权记录与用量不跨实例持久化（实例一换就需要重新激活、每日次数会重置）。请在 Vercel 项目里安装 Upstash Redis（见 DEPLOY.md 第 3 节）。',
     // 「还没激活」是常态，不是失败。原先 init 把 ensure() 的 reason:'missing'
     // 套进 webActivateFailed，播成「激活失败: 未找到许可证文件」——用户刚打开页面、
     // 还没输过卡密，却看到一句"失败"，而面板同时显示着服务端的套餐，两行自相矛盾。
@@ -574,7 +577,7 @@ const STRINGS = {
     hostOutputTooBig: 'The obfuscated output ({size}) exceeds the cloud response limit {limit}. Lower the preset, split the input, or raise JSLB_MAX_RESPONSE_BYTES on the deployment.',
     hostBudgetExhausted: 'The cloud CPU budget for today is exhausted (about {cpu} CPU-seconds per day on the free plan). It resets tomorrow, or raise JSLB_DAILY_CPU_SECONDS on the deployment.',
     hostBudgetHint: 'Cloud CPU budget used today: {used} / {total} seconds',
-    hostNoStore: 'No cloud store is configured: license records and usage do not survive across instances, so send the license key with every request (see DEPLOY-VERCEL.md)',
+    hostNoStore: 'This deployment has no cloud store: license records and usage do not survive across instances (switching instance means re-activating, and the daily count restarts). Install Upstash Redis on the Vercel project (see section 3 of DEPLOY.md).',
     guiNeedActivate: 'Not activated yet: enter a license key below and click Activate; once activated, obfuscation runs in the cloud.',
     guiTrialHint: 'Not activated: {limits}. Activate a license key for the full entitlements and quotas of your plan.',
     guiThemeDark: 'Dark',
