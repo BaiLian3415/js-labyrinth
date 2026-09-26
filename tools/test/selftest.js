@@ -2811,14 +2811,27 @@ if (process.env.JSLB_SKIP_LIVE === '1') {
     ok(unauth.status !== 200,
       '线上未授权混淆被拒（不是 200）', 'status=' + unauth.status);
 
-    // 核心源码闸门：未激活请求 /src/index.js 必须 403，不能白拿实现。
+    // 混淆核心必须**根本不存在**。这一条以前是"未激活请求 /src/index.js 返回 403"
+    //（Cloudflare 时代的核心下载鉴权门控）；云端执行下那套机制已整体删除，
+    // 构建走 build:web:cloud 就不产出受保护模块，所以正确结果是 404 而不是 403。
+    // 拿到 200 才是事故——那等于把混淆器源码挂在公开静态资源上。
     const gated = await getLive('/src/index.js');
-    ok(gated.status === 403, '线上 /src/index.js 对未激活设备返回 403',
+    ok(gated.status === 404, '线上 /src/index.js 不存在（核心不进静态产物）',
       'status=' + gated.status);
 
-    // 静态外壳必须能拿到，否则页面根本打不开。
+    // 反向：界面渲染激活表单依赖的公开模块必须还在（挡多了未激活界面直接死锁）。
+    for (const p of ['/src/plan.js', '/src/utils/hash.js']) {
+      const pub = await getLive(p);
+      ok(pub.status === 200, '线上公开模块 200 ' + p, 'status=' + pub.status);
+    }
+
+    // 静态外壳必须能拿到，否则页面根本打不开；且必须带云端执行标记，
+    // 缺了它界面会误以为自己是浏览器内执行的构建，去 import 不存在的核心。
     const shell = await getLive('/index.html');
     ok(shell.status === 200, '线上 /index.html 可访问', 'status=' + shell.status);
+    ok(shell.status === 200 && /name=["']jslabyrinth-cloud["']/.test(shell.text),
+      '线上首页带 jslabyrinth-cloud 标记（界面据此走云端执行）',
+      shell.status === 200 ? shell.text.slice(0, 80) : 'status=' + shell.status);
 
     console.log('  线上段依赖网络：失败时先区分"站点不可达"与"内容不符"。');
   }
