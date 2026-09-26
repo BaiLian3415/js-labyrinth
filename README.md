@@ -138,10 +138,6 @@ Pages 侧的函数在 `functions/api/[[path]].js`，与 Worker 共用同一份�
 - **免费版 CPU 预算只有 10 ms**，稍大的输入会直接超时（错误 1102）。这条只约束
   `/api/obfuscate`：界面把混淆放在浏览器内（用户自己的 CPU，代码不出本机），不受
   影响。要放开 API 的预算，改用付费版并把 `limits.cpu_ms` 调高。
-- **不能即时编译 Wasm**。workerd 出于安全只允许静态导入 `.wasm`，而混淆管线在构建期
-  会用真实 wasm 引擎跑一遍 `wasm` 档的自检。自检因此改成了能力探测：宿主不支持就跳过，
-  产物照常产出（`src/passes/wasm.js` 的 `wasmCompilable()`）。跳过只影响自检，产物字节
-  与支持编译的宿主完全一致，`medium`/`high`/`max` 三个开了 `wasm` 的预设都能在 Worker 上跑。
 - **核心模块图里不能有字符串代码生成**。Cloudflare 禁用 `eval` 与 `new Function`，
   上传时直接报 `EvalError: Code generation from strings disallowed`，整个 Worker 发不出去。
   `src/passes/shell.js` 原先用 `(0, eval)(PRIMITIVES)` 保证"产物文本与构建期实现不漂移"，
@@ -210,20 +206,20 @@ curl -s -X POST https://<host>/api/obfuscate \
 | 类别 | 承担者 | 要点 |
 | --- | --- | --- |
 | 多态混淆 | 全局 PRNG（`utils/rand.js`）+ `controlFlow` 滚动重键 + `stringArray` 运行期演化 | 固定 seed 逐字节复现，换 seed 后标识符集合与结构都变；扁平化状态机的状态值每次分派滚动异或重键（`--no-control-flow-rolling-key` 可关），字符串池槽位按会话熵演化，同一份产物每次运行的密文快照不同 |
-| 代码变换 | `vm` / `wasm` / `controlFlow` / `objectKeys` / `templateToConcat` / `numberObf` / `logicalExpr` / `conditionObf` / `deadCode` / `opaquePredicates` / `functionWrapper` / `callProxy` / `mangle` | `numberObf` 把整数字面量改写成取值恒等的算术/位运算表达式（`--number-obfuscation-threshold` 控制命中率） |
+| 代码变换 | `vm` / `controlFlow` / `objectKeys` / `templateToConcat` / `numberObf` / `logicalExpr` / `conditionObf` / `deadCode` / `opaquePredicates` / `functionWrapper` / `callProxy` / `mangle` | `numberObf` 把整数字面量改写成取值恒等的算术/位运算表达式（`--number-obfuscation-threshold` 控制命中率） |
 | 反调试 | `debugProtection` + `envFingerprint` | 三类检测：环境侧信号（尺寸/时差/栈形态）、内建函数"原生文本"、内建函数"对象身份"（Function、defineProperty、getOwnPropertyDescriptor、call、eval 在头部快照后运行期比对），外加描述符 canary；命中走隐蔽断点 → 有界拖慢 → 确认投毒三级响应 |
 | Anti-CDP | `antiCDP` | Chrome DevTools Protocol / 自动化框架（Puppeteer、Playwright、ChromeDriver、Selenium）检测：console 序列化探针（Runtime.enable 下 log 触发 1 次访问器、debug 触发 2 次，累计 ≥2 即硬证据）、`navigator.webdriver`、驱动注入属性精确比对与 `$cdc_*` 子串扫描；V2/V3 由定时器周期复查，命中与反调试共链投毒。原生 console 引用在反调试失效化之前捕获，consoleStub 不影响探针。用自动化做端到端测试的构建请关闭本项 |
 | 域名锁定 | `domainLock` | 产物只允许在指定域名（及可选端口）上运行。白名单逐构建随机盐散列成数值表内嵌（产物里没有任何域名明文），匹配结果与字符串池解密密钥耦合：授权主机给健康载体补 +Q 归零偏移、字符串正常；非授权主机整池静默乱码，没有可 NOP 的检测分支。详见下文「域名锁定」 |
 | 自防御 | `stringArray` 自检 + `integrityCheck` | 装配期全池校验和 fail-closed，访问期再按抽样门重算旋转后的校验和（动态 xor 组查"密文与明文等长"不变式）；`integrityCheck` 对根级函数声明做 64 位双通道哈希，失配只置毒药标志 |
-| 运行时保护 | `integrityCheck` / `vm` / `wasm` / `shell` / `shellForm` / `rtlib` | 装载时的原生性探针（内建成员被换钩子即投毒）、入口交叉校验带一次性闩锁、外壳算术依赖式防篡改、`shellForm: 'jsfuck'` 把密钥流与校验核心编成六字符 JSFuck 表达式（见下文「外壳形态」）、原生调用收敛进 RT 内核 |
+| 运行时保护 | `integrityCheck` / `vm` / `shell` / `shellForm` / `rtlib` | 装载时的原生性探针（内建成员被换钩子即投毒）、入口交叉校验带一次性闩锁、外壳算术依赖式防篡改、`shellForm: 'jsfuck'` 把密钥流与校验核心编成六字符 JSFuck 表达式（见下文「外壳形态」）、原生调用收敛进 RT 内核 |
 
 `integrityCheck` 的校验面分两批走：根级**函数声明**进头部校验循环（装载最早期，那时
 只有函数声明已提升）；字符串池**访问器**走延迟校验——单独一块插在最后一条访问器
 声明之后，那时函数已就位。改一处解码器文本即失配投毒，实测往解码器函数体里插一条
 无害的 `0;` 就会被抓到。
 
-限制：访问器声明若被 vm / wasm 搬进嵌套函数体（高档预设常见），这一处就放弃覆盖——
-那种体往往还被 wasm 的特征匹配依赖，硬插进去会失配。宁可少覆盖一处，也不拿假失配
+限制：访问器声明若被 vm 搬进嵌套函数体（高档预设常见），这一处就放弃覆盖——
+那种体是 VM 解释执行的结构，硬插进去会失配。宁可少覆盖一处，也不拿假失配
 投毒去换覆盖率。
 
 ### 域名锁定（`domainLock`）
@@ -301,46 +297,16 @@ terser 的表达式级优化（内联、序列化、丢空 `if`）本工具不�
 Plus 及以上可切 `short`；`simplify` 同样 plus+ 可开。混淆档不建议切短名——随机长名
 是给"防指纹"用的，切短等于把混族命名这层设计丢掉。
 
-## 增强保护系统（内核档 / 自定义 RT / 横幅 / 碎片化 / Anti-LLM）
+## 增强保护系统（横幅 / 碎片化 / Anti-LLM）
 
 2026-09-24 加入的一层，全部由选项驱动，默认只在 `max` 预设上打开（Plus 及以上
 可以显式开启其中大部分）：
 
 | 能力 | 选项 | 默认开启 | 要点 |
 | --- | --- | --- | --- |
-| WASM 解释器内核 | `wasmInterpreter` | 仅 `max`（Team/Business/额度包） | 解释循环整体编译进 WASM，JS 侧只剩桥接 |
-| 自定义运行时 | `rtDepth` | 全档（`low`=1 … `max`=4） | 加载链层数，逐次重建 |
 | 字符串碎片化 | `stringScatter` | 仅 `max`；Plus 可显式开 | 池内容拆成多个载体分散声明 |
 | Anti-LLM | `antiLLM` | 仅 `max`；Plus 可显式开 | 误导注记 + 伪业务分支 |
 | 文件头横幅 | `bannerText` | 全档生效（Free 只能留空） | 默认写混淆器信息与作者 Heling |
-
-### WASM 解释器内核档（`wasmInterpreter`）
-
-与既有 `wasm` 档的区别：`wasm` 档只把字节码数据与取指/分桶/轮换等**原语**搬进
-WASM，解释循环仍在 JS；本档把**解释器本体**（取指、链式解密、分发、值栈、槽位、
-控制流）整体编译进一个共享 WASM 模块，JS 侧每个已编译函数只剩一句桥接调用。
-值语义（属性读写、调用、构造、二元/一元运算）经随机命名的宿主导入函数回调，
-值以 i32 句柄表示，句柄表与引用计数都由 JavaScript 侧持有，`pc`、链值、掩码、
-值栈与槽位**只存在于 WASM 内**，堆快照与调试器看不到解释器状态。
-
-模块自身的加固：分发字全程序共享并逐次随机置换，干扰字经 `SEMTAB` 落默认桶直接
-置毒陷阱；字节码落盘时剥掉掩码、叠加模块层位置散列，**每次调用**在帧内重新掩码
-（内存里的字节码与源码字面量不同）；表层参数表加密，`ini()` 校验探针后解密；
-导入/导出名、函数顺序、诱饵函数、不透明假分支、常数拆分形、自定义 name 段假符号
-逐构建漂移。构建期自检（`WebAssembly.validate` + 实例化冒烟 + 锚定字/探针比对）
-在宿主支持时必跑，不通过直接构建失败。
-
-限制：产物**需要宿主支持 WebAssembly**（现代浏览器、Node、Worker 均可）；
-模块编译走同步路径，不引入异步就绪门控——因此本档在大体积主线程场景下若宿主
-拒绝同步编译会直接抛错，而不是静默降级。
-
-### 自定义运行时（`rtDepth`）
-
-内核档的宿主运行时（值表、句柄释放、帧表栈、二十个导函数、加载链）逐次重建：
-base64 段数、段序置换、段内掺入的填充字符、解码后滚动散列、常数拆分形、名字与
-语句顺序都不一样；`WebAssembly` 句柄经 `rtDepth` 层随机化的"获取器链"逐层做
-原生性检查后才取得（层数 = `rtDepth` + 随机 0~2），任何一层检查不过即置毒。
-`rtDepth` 是 1~8 的整数，低档预设取下界，`max` 取 4。
 
 ### 文件头横幅（`bannerText`）
 
@@ -398,8 +364,7 @@ ESM 载荷与显式 `shell:false` —— 没有外壳可互锁，改为毒化字
 ### 与既有产物字节的关系
 
 `max` 预设与全档横幅会改变产物字节（新能力 + 文件头注释），这属于本节的既定
-变更；`low`/`medium`/`high` 在不开新选项时只是多了文件头横幅。`wasmInterpreter`
-与 `wasm` 互斥：内核档开启时由它接管全部已编译函数，旧档不再介入。
+变更；`low`/`medium`/`high` 在不开新选项时只是多了文件头横幅。
 
 ## 授权
 
@@ -426,10 +391,10 @@ ESM 载荷与显式 `shell:false` —— 没有外壳可互锁，改为毒化字
 额度包的能力跟随 Business（`max` 预设、无闸门），买的是次数而不是能力：适合不想
 续费、只需要跑一批的场景。用尽后不会恢复，需要再买一张。
 
-另有参与闸门的新选项：Free 只能留空横幅（ 仅允许 ``）、外壳形态锁在 `classic`、
-命名策略锁在 `random`、关掉碎片化与 Anti-LLM；Plus 可以自定义横幅、把外壳形态切成
-`jsfuck`、把命名策略切成 `short`、开碎片化与 Anti-LLM，但 WASM 解释器内核档（）与
-更深的运行时链（ > 4）留给 Team/Business。
+另有参与闸门的新选项：Free 只能留空横幅、外壳形态锁在 `classic`、命名策略锁在
+`random`、关掉碎片化与 Anti-LLM；Plus 可以自定义横幅、把外壳形态切成 `jsfuck`、
+把命名策略切成 `short`、开碎片化与 Anti-LLM；碎片化与 Anti-LLM 之外的更高强度
+组合留给 Team/Business。
 
 Plus 的预设上限是 `high`，闸门正好卡在 `high` 预设的取值上（能用整套 high，但不能把
 单项往上调），只关掉 `consoleStub` 一个开关；Free 则关掉十二个。Team 与 Business 同为
@@ -443,7 +408,7 @@ Plus 的预设上限是 `high`，闸门正好卡在 `high` 预设的取值上（
 逐项写 `false`；且**套餐自带的预设必须满足自己的每一条闸门**——`src/plan.js` 的
 `assertConsistent()` 在模块加载时就会拦下不合规的定义，所以数值闸门不能比自带预设
 更紧。**升预设上限时尤其注意**：闸门必须放行该预设的每一个取值，没有中间地带
-（例如把上限提到 `medium`，就必须同时放行 `wasm`、`debugProtection`、`selfDefending`、
+（例如把上限提到 `medium`，就必须同时放行 `debugProtection`、`selfDefending`、
 `integrityCheck`、`shell`、`stringArrayMixedEncoding` 这些 medium 用到的开关）。
 2026-09-22 把 Plus 提到 `high` 时就踩过一次：`high` 会打开 `envFingerprint`，而旧的
 Plus 闸门把它显式关着，改上限却忘了动那一条，加载期直接被 `assertConsistent()` 拦下——
@@ -659,8 +624,8 @@ src/                跨环境核心：浏览器与 Worker 共用同一份，零�
   license-core.js   许可证校验（三端共用）  license-codec.js  卡密与令牌编解码
   license-secret.js 签发公钥与自身摘要表（**只有公钥**，私钥在库外）
   license-web.js    网页/Worker 授权（服务端签发机器码、localStorage/KV、试用）
-  ast/              解析器、生成器、遍历、类型、WASM 二进制发射器
-  passes/           二十个 pass（vm、wasm、stringArray、controlFlow……）
+  ast/              解析器、生成器、遍历、类型
+  passes/           各 pass（vm、stringArray、controlFlow……）
   utils/            hash（纯 JS SHA-256/512、HMAC、base64）、ed25519（纯 JS 签名/验签）、
                     encode、rand、hide、ws、zip
 
@@ -697,12 +662,12 @@ Web 标准代码。构建只复制 `src/` 与 `web/`，所以不需要任何排�
 行为等价是硬要求：`low`/`medium`/`high`/`max` 四个预设在固定 seed 下的产物与改动前**逐字节相同**
 （用同一份输入、同一个 seed 对比过），目录模式、HTML 模式、套餐闸门与配额语义也都保持原样。
 
-> **例外（2026-09-19）**：`src/passes/wasm.js` 的 junk 段偏移修了一个单位错用
-> （字下标当字节地址用，压在参数表上随机改掉 K1/K2，使 `nx` 自检以约四分之一的
-> 概率失败）。该修复**改变了产物字节**，因此上面这条不变量对开了 `wasm` 的预设
-> （`medium`/`high`/`max`）不再成立。变化是语义中性的——junk 段只是诱饵数据，
-> 从无代码读取——已用"产物运行结果与原始源码逐字符一致"验证过。未开 `wasm` 的
-> `low` 预设不受影响。同类改动请一并跑一遍多 seed 的 medium/high 产物执行比对。
+> **例外（2026-09-26）**：WASM 相关档位已整体移除——`wasm`、`wasmInterpreter`、
+> `wasmThreshold`、`rtDepth` 四个选项，以及 `src/passes/wasm.js`、
+> `src/passes/wasmvm.js`、`src/passes/rtgen.js`、`src/ast/wasm.js` 四个模块。
+> `medium`/`high`/`max` 此前默认开着 `wasm` 档，产物字节因此改变（少一层 WASM 化
+> 与配套运行时）；`low` 此前本就关闭该档，产物不变。同类"删功能"改动请一并跑一遍
+> 多 seed 的 medium/high 产物执行比对。
 
 为了跨环境，以下几点必须改动：
 
@@ -719,7 +684,7 @@ Web 标准代码。构建只复制 `src/` 与 `web/`，所以不需要任何排�
    `tools/issue/selfdigest.js` 已同步。
    （后续 2026-09-21 转向纯云端时，Node 侧那份 `host/license-node.js` 已删除，
    摘要表相应从 6 项缩到 5 项。）
-5. **`Buffer` 与 `process` 出核心**。`Buffer.from(mod).toString('base64')`（wasm 档）与
+5. **`Buffer` 与 `process` 出核心**。`Buffer.from(...).toString('base64')` 与
    `process.env.DSH_*` 改成通用实现，`Buffer.byteLength` 改成 `platform.byteLength`。
 6. **新增**：`src/platform.js`、`src/pipeline.js`、`src/options-meta.js`、`src/options-gate.js`、
    `src/index.js`、`src/utils/zip.js`、`src/version.js`、`functions/`、`web/`、
@@ -824,10 +789,9 @@ node tools/test/semantics.js -p medium -s 8 -f 逻辑
 ## 已知问题
 
 - 网页端授权只能在客户端校验，静态部署下可被绕过（见上文"授权"一节的说明）。
-- `src/passes/wasm.js` 的 junk 段与 `src/passes/logicalExpr.js` 的交换条件都在
-  2026-09-19 修过（前者随机触发自检失败，后者静默改值）。两处都补了回归测试：
-  前者是构建期内存布局不变式，后者是 4 例 × 10 seed 的取值语义比对。
-  这两类缺陷的共同点是**不报错**，所以宁可让测试慢几秒也要留着。
+- `src/passes/logicalExpr.js` 的交换条件在 2026-09-19 修过（静默改值），补了
+  4 例 × 10 seed 的取值语义比对回归。这类缺陷的共同点是**不报错**，所以宁可让
+  测试慢几秒也要留着。
 
 ### 已修：逻辑表达式交换改值（2026-09-19）
 

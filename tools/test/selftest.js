@@ -289,7 +289,7 @@ section('套餐闸门与提示');
   // 能跑到这一行就说明阶梯成立。
 
   const businessEnt = plan.describe('business');
-  ok(gate.checkOptions({ preset: 'max', wasm: true, shellDepth: 4 }, businessEnt).ok, '顶档全部放行');
+  ok(gate.checkOptions({ preset: 'max', shellForm: 'jsfuck', shellDepth: 4 }, businessEnt).ok, '顶档全部放行');
 
   const trial = licenseWeb.trialEntitlements();
   const r = gate.checkOptions({ preset: 'high' }, trial);
@@ -297,7 +297,7 @@ section('套餐闸门与提示');
   ok(gate.checkOptions({ preset: trial.preset }, trial).ok, '试用模式自带预设可跑通');
   ok(typeof gate.presetBlockedText(r, trial) === 'string'
     && gate.presetBlockedText(r, trial).length > 0, '预设越界有本地化提示');
-  const v = gate.checkOptions({ wasm: true }, trial);
+  const v = gate.checkOptions({ debugProtection: true }, trial);
   ok(!v.ok && typeof gate.violationText(v.hits[0], trial) === 'string', '逐项闸门有本地化提示');
 }
 
@@ -1250,7 +1250,7 @@ section('多态与可复现');
 
   // 运行期滚动重键：开关两态都得跑得对，且产物不同
   const base = {
-    preset: 'medium', vmProtection: false, wasm: false, stringArray: false,
+    preset: 'medium', vmProtection: false, stringArray: false,
     debugProtection: false, envFingerprint: false, integrityCheck: false,
     shell: false, mangle: false, controlFlowFlattening: true,
     controlFlowDepth: 2, controlFlowThreshold: 1, controlFlowProbability: 1,
@@ -1603,7 +1603,7 @@ section('VM 保护与用户标识符冲突');
   const runNode = (code, name) => {
     const file = path.join(TMP, name + '.js');
     fs.writeFileSync(file, code);
-    // max 预设的 VM+WASM 产物在较慢宿主上单次执行实测 25~31s，30s 超时是边界值，
+    // max 预设的 VM 产物在较慢宿主上单次执行实测 25~31s，30s 超时是边界值，
     // 会以 ETIMEDOUT 形式偶发误报（每次漂移到不同 case/seed，放宽后结果全对）。
     // 这里放到 90s 只影响夹具判定，不改变被判定产物的语义。
     return runSync(process.execPath, [file], { encoding: 'utf8', timeout: 90000 }).trim();
@@ -1740,13 +1740,13 @@ section('P3：分发表密文化（vmDispatchEnc）');
   const rb = obfuscate(src1, { preset: 'high', shell: false, vmDispatchEnc: true, seed: 424242 }).code;
   ok(ra === rb, 'vmDispatchEnc 开启下固定 seed 可复现');
 
-  // P3-8 不影响 WASM 解释器内核档：max 预设（wasmInterpreter）语义不变
+  // P3-8 max 预设（含全部 VM 选项）语义不变
   let maxBad = 0;
   for (let seed = 1; seed <= 2; seed++) {
     const got = runNode(obfuscate(src1, { preset: 'max', seed }).code, 'p3-max-' + seed).trim();
     if (got !== want) maxBad++;
   }
-  ok(maxBad === 0, 'max 预设（WASM 解释器内核）语义不变（2 seed）');
+  ok(maxBad === 0, 'max 预设语义不变（2 seed）');
 }
 
 // ---------------------------------------------------------------- P4：多态模型与分块自解密
@@ -1769,8 +1769,7 @@ section('P4：多态寄存器模型与字节码分块自解密');
     return s && s.result ? s.result : null;
   };
 
-  // P4-1 多态模型真的出现多种：4 函数样例 × 6 seed（wasmInterpreter 必须关，
-  // 否则 __vmWasmShared 强制 M0）
+  // P4-1 多态模型真的出现多种：4 函数样例 × 6 seed
   const polySrc = 'function f1(n){var s=0;for(var i=0;i<n;i++)s+=i;return s;}'
     + 'function f2(a,b){return a>b?a-b:a+b;}'
     + 'function f3(o){return o.k?o.k.length:0;}'
@@ -1822,27 +1821,24 @@ section('P4：多态寄存器模型与字节码分块自解密');
   }
   ok(polyBad === 0, 'vmPolymorph 开与关的输出一致（2 seed）');
 
-  // P4-5/P4-6 分块自解密：开与关、JS 档与旧 WASM 档，跳转密集样例全部正确
+  // P4-5/P4-6 分块自解密：开与关，跳转密集样例全部正确
   let blkBad = 0;
   let blkFirst = '';
   for (const blk of [false, true]) {
-    for (const tier of [['js', { wasm: false }], ['wasmtier', {}]]) {
-      for (let seed = 1; seed <= 2; seed++) {
-        const code = obfuscate(jumpSrc, {
-          preset: 'high', shell: false, vmBlockDecrypt: blk, integrityCheck: false,
-          ...tier[1], seed,
-        }).code;
-        let got;
-        try { got = runNode(code, 'p4-blk-' + blk + '-' + tier[0] + '-' + seed).trim(); } catch (e) { got = 'THREW'; }
-        if (got !== want) { blkBad++; if (!blkFirst) blkFirst = 'blk=' + blk + ' ' + tier[0] + ' seed=' + seed + ' → ' + got.slice(0, 40); }
-      }
+    for (let seed = 1; seed <= 2; seed++) {
+      const code = obfuscate(jumpSrc, {
+        preset: 'high', shell: false, vmBlockDecrypt: blk, integrityCheck: false, seed,
+      }).code;
+      let got;
+      try { got = runNode(code, 'p4-blk-' + blk + '-' + seed).trim(); } catch (e) { got = 'THREW'; }
+      if (got !== want) { blkBad++; if (!blkFirst) blkFirst = 'blk=' + blk + ' seed=' + seed + ' → ' + got.slice(0, 40); }
     }
   }
-  ok(blkBad === 0, 'vmBlockDecrypt 开与关 × JS/WASM 档输出一致（2 seed）', blkFirst);
+  ok(blkBad === 0, 'vmBlockDecrypt 开与关输出一致（2 seed）', blkFirst);
 
   // P4-8 篡改块移位字面量即被检出：块号派生是取指式的一部分，改一位解密即错
   {
-    const r = obfuscate(jumpSrc, { preset: 'high', shell: false, vmBlockDecrypt: true, integrityCheck: false, wasm: false, seed: 3 });
+    const r = obfuscate(jumpSrc, { preset: 'high', shell: false, vmBlockDecrypt: true, integrityCheck: false, seed: 3 });
     let hit = 0;
     const patched = r.code.replace(/>>>\s*([456])(?![\d.])/g, (m, d) => {
       hit++;
@@ -2627,9 +2623,9 @@ section('JSFuck 壳形式（shellForm）');
 }
 
 // ---------------------------------------------------------------------------
-// ------------------------------------------------- 增强保护（内核档 / 横幅 / 碎片化 / Anti-LLM）
+// ------------------------------------------------- 增强保护（横幅 / 碎片化 / Anti-LLM）
 
-section('增强保护：WASM 解释器内核 / 横幅 / 碎片化 / Anti-LLM');
+section('增强保护：横幅 / 碎片化 / Anti-LLM');
 {
   const src = 'function calc(a, b) { var t = a * 2 + b; if (t > 10) { t -= 3; } return t; }\n'
     + 'function label(n) { return n > 5 ? "big" : "small"; }\n'
@@ -2640,21 +2636,17 @@ section('增强保护：WASM 解释器内核 / 横幅 / 碎片化 / Anti-LLM');
   const st = {};
   for (const s of r.stats || []) st[s.pass] = s.result;
 
-  // 内核档：解释循环整体在 WASM 内，构建期自检（锚定字/探针/表层解密）必须通过
-  ok(st.wasmvm && st.wasmvm.fns > 0, 'max 预设启用 WASM 解释器内核档', JSON.stringify(st.wasmvm));
-  ok(st.wasmvm && st.wasmvm.smoke === 'ok', '内核模块构建期自检通过（锚定字/探针/解密）');
-  ok(st.wasmvm && st.wasmvm.rtLayers >= 2, '自定义运行时层数生效', String(st.wasmvm && st.wasmvm.rtLayers));
-  ok(st.wasmvm && st.wasmvm.moduleBytes > 1000, 'WASM 模块非空');
+  // 语义：max 预设（全部 VM 选项）产物语义不变
   ok(runNode(r.code, 'enh-max.js').trim() === want,
-    '内核档产物语义不变（max 预设）');
+    'max 预设产物语义不变');
 
-  // 语义等价：内核档多 seed
+  // 语义等价：max 预设多 seed
   let vmBad = 0;
   for (const seed of [1, 2, 3]) {
     const c = obfuscate(src, { preset: 'max', seed }).code;
     if (runNode(c, 'enh-max-' + seed + '.js').trim() !== want) vmBad++;
   }
-  ok(vmBad === 0, '内核档跨 seed 语义一致（3 个 seed）');
+  ok(vmBad === 0, 'max 预设跨 seed 语义一致（3 个 seed）');
 
   // 字符串碎片化：多载体计数 + 与关闭时结构不同
   ok(st.stringArray && st.stringArray.scatterCarriers >= 2, '字符串碎片化多载体生效',

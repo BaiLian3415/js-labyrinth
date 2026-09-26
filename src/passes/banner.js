@@ -162,7 +162,7 @@ function guardSource(saltVar, bannerComment, ctx, opts) {
   // 位置很关键：自检引导是整份产物里最早执行的代码（外壳与载荷都在它之后），
   // 因此这是唯一能保证"任何字符串池访问之前健康载体已有有效值"的落点。此前
   // 把健康值交给 integrityCheck 的引导块写，就出过顺序问题——有些构建里
-  // WASM 载入器同步成功、debugProtection 的哨兵在引导块之前就跑了，池读到
+  // debugProtection 的哨兵在引导块之前就跑了，池读到
   // "尚未写入"（undefined）算出偏移 -OK，干净产物自己变乱码。
   //
   // 校验器此后只做**增量**：每次校验把「重算哈希 ^ 期望哈希」累加上去，未被

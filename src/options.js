@@ -42,7 +42,6 @@ export default {
   // 运行时密钥取值（vmRuntimeKeyGetter）失效——没有掩码可守门。
   // 编译期密钥**不失效**：它仍照常派生字符串表散列与分发仿射常数，所以产物仍随
   // 密钥变化（防指纹那层还在），只是不再有"取错密钥就崩"的门禁。
-  // WASM 内核档的取指按加密布局硬编码，该档强制保持编码，本项对它无效。
   "vmBytecodeEncoding": true,
   "vmMode": "global",
   "vmThreshold": 1,
@@ -64,14 +63,12 @@ export default {
   // 字节码也只能看到一串相对位移，要还原控制流图必须先确定每条指令的字跨度
   // （JMP/条件跳转为 3 个字、JANDK 系为 4 个字）。
   // 注意：字流本身仍是逐字加密的，这一层是叠加在它之上的第二层，不是替代。
-  // WASM 内核档的解释器在模块内、按绝对下标硬编码，该档自动关闭本项。
   "vmJumpsEncoding": false,
   // 栈编码。操作数栈上装的是任意 JS 值，XOR 只对数字成立，所以编码函数对非数字透明：
   // 值 v 是 32 位整数且非 -0 时栈上存 v ^ K，否则原样存。K 逐函数随机（并入 vmCompileKey
   // 的密钥流）。编解码是同一个幂等函数：压栈时编码、出栈时解码。
   // 于是内存里 dump 操作数栈看到的不再是真实操作数；浮点、大整数、字符串、对象一律明文
   // 通过——这是这一层的边界，不是漏洞。代价是每次压栈/出栈多一次函数调用。
-  // WASM 内核档的栈在模块里，该档自动关闭本项。
   "vmStackEncoding": false,
   // 顶层初始化包装。VMP 原本只覆盖函数体，顶层语句（引导、注册、初始化调用）
   // 完全不受保护。开启后整个顶层序列搬进一个合成函数体，走同一套编译流程，产物里
@@ -82,7 +79,7 @@ export default {
   // try/switch/标签/with 与带 break/continue 的循环、不到 vmThreshold 的都保持原样
   // （统计里 reason 记 uncompilable / not-compiled）。
   // 代价：顶层 var/function/let/const 声明随之变成包装函数的局部绑定，不再泄漏到
-  // 全局——与 functionWrapper 的取舍相同。需要 vmProtection；WASM 内核档忽略本项。
+  // 全局——与 functionWrapper 的取舍相同。需要 vmProtection。
   "vmWrapTopLevel": false,
   // 宏指令（vmMacroOps）。把连续的操作数装载指令合并成一条 MPKn（n 取 2~4）：
   // 原本 n 条各自取指、各自分发的指令，变成一条指令一次取指、一次分发，n 个操作数
@@ -94,7 +91,6 @@ export default {
   // 收益在运行期与静态面：指令条数、取指次数、分发次数同时下降，字节码字流更短，
   // 且"哪条指令"这一步多了一层只有运行期才知道的源位解码。代价是每种段长多一个
   // 分发条目（最多三条），动作体比单条装载指令长——函数里融合段很少时净体积会变大。
-  // WASM 解释器内核档的动作体在模块里硬编码，忽略本项。
   "vmMacroOps": false,
   // 动态操作码（vmDynOpcodes）。分发字到语义的对应关系不再是全函数唯一的一张表：
   // 存进字节码的编号是「规范编号 − 本条指令 opcode 字下标的位置轮换量」，取指之后由
@@ -105,7 +101,7 @@ export default {
   // 与逐调用轮换的关系：掩码与链值在每次调用入口整体重写 B，那层管"字长什么样"，
   // 本项管"字还原成哪个编号"，两层叠在同一条取指路径上，互不依赖。
   // 代价：取指后多一次乘法、异或与掩码；还原用 &(N-1)，字空间必须是 2 的幂，开启时把
-  // 槽位数上取整、多出的槽位并进干扰项。WASM 内核档的分发在模块里，忽略本项。
+  // 槽位数上取整、多出的槽位并进干扰项。
   "vmDynOpcodes": false,
   // 寄存器式虚拟机（Register-Based VM）。默认关。开启后函数体不再编译成栈机字节码，
   // 而是编译成**寄存器机**字节码：每条指令的操作数都是显式寄存器号，运行期从一个
@@ -122,7 +118,7 @@ export default {
   // 而不是「按序压入」的栈。
   // 与其它选项的关系：这是一套**独立的代码生成后端**。开启时下面几项对该函数不生效——
   // 栈编码（没有操作数栈可编码）、多态寄存器模型（本身就是寄存器机，不再抽栈/寄存器
-  // 混合结构）、WASM 解释器内核（模块内的解释器按栈机硬编码）。宏指令融合在寄存器后端
+  // 混合结构）。宏指令融合在寄存器后端
   // 仍然生效：连续的操作数装载指令合并成一条 RMPKn，n 个
   // 「(下标 << 6) | (目标寄存器 << 2) | 源位」打包字跟在后面。
   // 其余选项（字节码编码、跳转编码、分发形态、动态操作码、干扰项、编译期密钥、
@@ -145,7 +141,6 @@ export default {
   //     EXEC 片段、以及非 async 的嵌套函数。命中这类位置的函数整函数保持原样不编译
   //     （保守降级），绝不产出语法错误的产物。
   //   · async 生成器（async function*）与 `for await` 一律不编译。
-  //   · WASM 解释器内核档的解释器在模块里、没有 await 能力，该档忽略本项。
   // 代价：async 函数本身每次调用多一层 Promise（这是 async 语义的开销，不是本项引入的），
   // 解释器每条 AWAIT 多一次 microtask 往返。
   "vmAsyncExecutor": false,
@@ -169,10 +164,7 @@ export default {
   // 字节码字解出来是垃圾，函数随即崩掉——这才构成门禁。
   // **必须与 vmCompileKey 同时设置**，缺编译期密钥时 pass 入口直接报错。
   // 代价：运行契约变了——产物只有在宿主提供该密钥时才能跑；每个函数多带约 1~2 KB。
-  // WASM 解释器内核档的取指在 WASM 模块里，改不了，该档自动忽略本项。
   "vmRuntimeKeyGetter": "",
-  "wasm": true,
-  "wasmThreshold": 1,
   "objectKeyEncoding": true,
   "numberObfuscation": true,
   "numberObfuscationThreshold": 0.6,
@@ -223,8 +215,6 @@ export default {
   // 不收费门控）。
   "reservedNames": [],
   "reservedStrings": [],
-  "wasmInterpreter": false,
-  "rtDepth": 2,
   "stringScatter": false,
   "antiLLM": false,
   "bannerText": ""

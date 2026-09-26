@@ -190,7 +190,7 @@ function renderThemeBtn() {
  * 某个选项在当前预设下的取值。
  *
  * 界面显示的是"现在真正生效的值"，因此取预设里的字段，预设没有的字段才回退到
- * DEFAULTS。原先一律显示 DEFAULTS，会让选了 low 的用户看到 VM/WASM 都打着勾，
+ * DEFAULTS。原先一律显示 DEFAULTS，会让选了 low 的用户看到 VM 各项都打着勾，
  * 与实际产物不符。用户显式改过的项优先显示用户值。
  */
 function presetValue(key) {
@@ -256,14 +256,6 @@ function svgIcon(d) {
   return svg;
 }
 
-/** 徽章节点。文案跟徽章语义走，不随语言变（与图中的英文标签一致）。 */
-function badgeNode(kind) {
-  const b = document.createElement('span');
-  b.className = 'obadge obadge-' + kind;
-  b.textContent = kind === 'recommended' ? 'RECOMMENDED' : 'EXPERIMENTAL';
-  return b;
-}
-
 /**
  * ⓘ 说明按钮。提示文本放 data-tip，由 CSS 的 ::after 显示，不需要额外脚本状态。
  * 必须拦掉点击：这一行是 <label>，按钮在 label 里会被转成对控件的激活（开关就是翻转）。
@@ -281,7 +273,7 @@ function infoBtn(tip) {
 
 /**
  * 单个选项的控件。
- * 开关项渲染成 [开关] 名称 [徽章] [ⓘ]（与图一致）；字符串项的输入框折到第二行整行宽，
+ * 开关项渲染成 [开关] 名称 [ⓘ]（与图一致）；字符串项的输入框折到第二行整行宽，
  * 枚举与数值项的控件留在行尾。
  */
 function renderOption(opt) {
@@ -303,13 +295,11 @@ function renderOption(opt) {
     cb.checked = state.touched.has(opt.key) ? !!state.touched.get(opt.key) : !!presetValue(opt.key);
     cb.addEventListener('change', () => mark(opt.key, cb.checked, cb));
     row.append(cb, name);
-    if (opt.badge) row.appendChild(badgeNode(opt.badge));
     row.appendChild(infoBtn(tip));
     return row;
   }
 
   row.appendChild(name);
-  if (opt.badge) row.appendChild(badgeNode(opt.badge));
   row.appendChild(infoBtn(tip));
 
   let ctl;

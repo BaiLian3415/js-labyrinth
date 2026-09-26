@@ -611,20 +611,6 @@ input.text:focus, select.mini:focus, button:focus-visible, textarea:focus {
   background: var(--btn-fg);
 }
 
-/* 徽章。文案固定英文（与参考图一致），颜色取语义色，安全项偏暖金、推荐项偏绿。 */
-.obadge {
-  flex: 0 0 auto;
-  padding: 1px 6px;
-  border: 1px solid currentColor;
-  border-radius: 999px;
-  font-size: 9.5px;
-  font-weight: 700;
-  letter-spacing: .06em;
-  white-space: nowrap;
-}
-.obadge-experimental { color: var(--warn); }
-.obadge-recommended { color: var(--ok); }
-
 /* ⓘ 说明按钮。提示气泡用 data-tip + ::after 画，不引第三方库、也不占脚本状态。 */
 .opt-row .info {
   position: relative;

@@ -120,11 +120,10 @@ export default function integrityCheck(ast, options, ctx) {
   // 机制层（字符串池访问器）走**延迟校验**：头部循环插在装载最早期，那时
   // `var accessor = ...` 还没执行，引用到的是 undefined，哈希必然假失配。
   // 于是单独生成一块校验，插到最后一条访问器声明之后——那时函数已就位，
-  // 且仍在用户代码之前。可见性按**语句节点身份**判定：vm / wasm 会把部分根级
-  // 语句搬进嵌套函数，搬走之后语句就不在 rootBody 里了，此时放弃，不留悬空引用。
-  // 可见性过滤：只收声明**仍在 rootBody 里**的访问器。vm / wasm 会把部分根级
-  // 语句搬进嵌套函数体，那种情况下硬插校验块会失配（搬进的体往往还被 wasm 的
-  // 特征匹配依赖），宁可放弃这一处的覆盖，也不要拿假失配投毒去换覆盖率。
+  // 且仍在用户代码之前。
+  // 可见性过滤：只收声明**仍在 rootBody 里**的访问器。vm（含 vmWrapTopLevel）会把
+  // 部分根级语句搬进嵌套函数体，搬走之后语句就不在 rootBody 里了，硬插校验块会失配，
+  // 宁可放弃这一处的覆盖，也不要拿假失配投毒去换覆盖率。
   const deferred = [];
   for (const t of (program.__saAccessors || [])) {
     if (rootBody.indexOf(t.stmt) >= 0) deferred.push({ ref: t.name, node: t.node, stmt: t.stmt });
@@ -333,7 +332,7 @@ export default function integrityCheck(ast, options, ctx) {
   // 这里先判缺失就投毒，保持数据坏但流程不崩的响应语义。
   verifierLines.push('var ' + nEnt + '=' + nTab + '[' + nK + '];' +
     'if(!' + nEnt + '){' + setPoisonSrc() + 'return;}');
-  // 掩码以字面量内联，校验器经 wasm 布局后可能先于任何根级 var 赋值被调用，
+  // 掩码以字面量内联，校验器在 vm 编译后可能先于任何根级 var 赋值被调用，
   // 读外部 var 会拿到 undefined 而假失配投毒。两条通道掩码不同，求出单一偏移
   // 无法同时还原
   const maskLitA = '0x' + (hashMaskA >>> 0).toString(16);
@@ -404,8 +403,8 @@ export default function integrityCheck(ast, options, ctx) {
   // 机制层延迟校验。改一处解码器文本即失配投毒：还原者最先动的就是解码器，
   // 而它过去完全不在校验面内。
   //
-  // 访问器声明不一定还在 rootBody —— vm / wasm 会把部分根级语句搬进嵌套函数，
-  // 所以按**语句节点**找回它实际所在的语句块，就地插一个一次性校验块（挂在
+  // 访问器声明不一定还在 rootBody —— vm（含 vmWrapTopLevel）会把部分根级语句搬进
+  // 嵌套函数，所以按**语句节点**找回它实际所在的语句块，就地插一个一次性校验块（挂在
   // 闩锁表上，即便落在热函数里也只跑一次）。落在 VM 已编译函数体内的跳过：
   // 那里的代码是按字节码步执行的，插进去既不会被正常执行也破坏匹配。
   let deferredInjected = 0;
@@ -420,7 +419,7 @@ export default function integrityCheck(ast, options, ctx) {
       const nDi = uniqueName(ctx.usedNames, '_0x');
       const pairs = deferred.map((d) => '[' + d.ref + ',' + keyOf.get(d.node) + ']');
       // 不加闩锁守卫：块就在根体里、随装载跑一次；而闩锁表是校验器块里的
-      // var，wasm 布局会把根级语句重排，延迟块有可能排到它前面，那时读到的是
+      // var，vm 的顶层搬移会把根级语句重排，延迟块有可能排到它前面，那时读到的是
       // undefined
       const block = parse(
         '(function(){var ' + nDf + '=[' + pairs.join(',') + '];' +

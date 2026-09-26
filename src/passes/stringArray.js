@@ -577,7 +577,7 @@ function buildIifeSource({ listVar, encodedItems, encoding, key, rotation, mask,
   const cRef = couple ? gref + "[\"" + couple.name + "\"]" : null;
   const OK_LIT = couple ? "0x" + (couple.ok >>> 0).toString(16) : null;
   // 每次访问重算偏移，不做"首次定值 + 缓存"：池访问器可能在装载早期就被调用
-  // （例如 WASM 载入器同步成功时 debugProtection 的哨兵会立刻跑），那时校验器
+  // （例如 debugProtection 的哨兵在装载早期就立刻跑），那时校验器
   // 还没写健康值，缓存下来的 -OK 会把正常产物自己打成乱码。每次读一个属性、
   // 做一次减法，成本可忽略；好处是横幅的偏移、各校验点累加的偏移在任何时刻
   // 到达都能立刻生效，不存在"先解出的明文留着好数据"的窗口。

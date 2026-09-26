@@ -142,8 +142,6 @@ const STRINGS = {
     vmRuntimeKeyNeedsCompileKey: 'vm: 运行时密钥取值（vmRuntimeKeyGetter）必须与编译期密钥（vmCompileKey）同时设置——没有编译期密钥就没有要比对的目标值，门禁不成立',
     vmRuntimeKeyGetterParseFailed: 'vm: 运行时密钥取值表达式解析失败: {msg}',
     vmKeyMismatch: 'vm: 字节码校验失败（运行期取到的密钥与编译期密钥不一致）',
-    vmWasmTableFull: 'vm: 共享分发字空间不足（函数指令集过大）',
-    vmWasmTooManyParams: 'vm: 形参超过 64 个，无法进入 WASM 解释器内核档',
     badBannerText: '自定义文件头注释非法：不得包含 "*/"，长度不得为 0 或以空白开头（收到 {p}）',
     bannerTooLong: '自定义文件头注释过长（上限 {max} 字符，收到 {n}）',
     jsfuckTooBig: 'JSFuck 壳形式的核心表达式超限：实际 {n} KB，上限 {max} KB'
@@ -216,7 +214,7 @@ const STRINGS = {
     guiOptions: '选项',
     guiPreset: '混淆强度预设',
     /* 侧栏预设导航的第二行说明。一句话讲清"更快还是更硬"，用户不必逐个试。
-       文案与 presets.js 的实际强度对应：low 不启用 vm/wasm/反调试，medium 启用，
+       文案与 presets.js 的实际强度对应：low 不启用 vm/反调试，medium 启用，
        high 把各项阈值拉满并开脸环境指纹，max 再加弦池逐次演化与更深的外壳。 */
     presetDescLow: '最快 · 体积最小',
     presetDescMedium: '均衡 · 推荐',
@@ -281,7 +279,7 @@ const STRINGS = {
     // 混淆强度对比（十维雷达，max 档 vs obfuscator.io Pro VM）
     cmpOpen: '对比 obfuscator.io',
     cmpTitle: '混淆强度对比 · JsLabyrinth vs obfuscator.io',
-    cmpNote: '双方最强档：JsLabyrinth 用 max 预设，obfuscator.io 用 Pro VM。十维 0–10 分，按公开能力面逐项对照——obfuscator.io 在标识符/属性重命名与成熟度（实战检验、边界用例覆盖）上更优，JsLabyrinth 在调试保护、防篡改、反自动化与 VM/WASM 内核上更强；代码压缩一项自 2026-09-25 起可用 simplify（含无用声明消除）+ nameStyle=short 达到真正 minifier 量级：同一输入实测产物为 terser 的 1.18~1.58×，同口径下 obfuscator.io（compact+simplify）为 1.49~1.89×，含死代码的模块化 bundle 上差距更大（3.5 KB 对 13.6 KB）。评分为能力覆盖度，不等于实测破解耗时。',
+    cmpNote: '双方最强档：JsLabyrinth 用 max 预设，obfuscator.io 用 Pro VM。十维 0–10 分，按公开能力面逐项对照——obfuscator.io 在标识符/属性重命名与成熟度（实战检验、边界用例覆盖）上更优，JsLabyrinth 在调试保护、防篡改、反自动化与 VM 内核上更强；代码压缩一项自 2026-09-25 起可用 simplify（含无用声明消除）+ nameStyle=short 达到真正 minifier 量级：同一输入实测产物为 terser 的 1.18~1.58×，同口径下 obfuscator.io（compact+simplify）为 1.49~1.89×，含死代码的模块化 bundle 上差距更大（3.5 KB 对 13.6 KB）。评分为能力覆盖度，不等于实测破解耗时。',
     cmpLegendJs: 'JsLabyrinth（max）',
     cmpLegendObf: 'obfuscator.io（Pro VM）',
     cmpDim1: '标识符重命名',
@@ -439,8 +437,6 @@ const STRINGS = {
     vmRuntimeKeyNeedsCompileKey: 'vm: vmRuntimeKeyGetter requires vmCompileKey — without a compile-time key there is no reference value to compare against, so the gate cannot hold',
     vmRuntimeKeyGetterParseFailed: 'vm: failed to parse the vmRuntimeKeyGetter expression: {msg}',
     vmKeyMismatch: 'vm: bytecode validation failed (the runtime key does not match the compile-time key)',
-    vmWasmTableFull: 'vm: shared dispatch-word space exhausted (function instruction set too large)',
-    vmWasmTooManyParams: 'vm: more than 64 parameters, cannot use the WASM interpreter core tier',
     badBannerText: 'invalid custom banner: must not contain "*/", must not be empty or start with whitespace (got {p})',
     bannerTooLong: 'custom banner too long (limit {max} chars, got {n})',
     jsfuckTooBig: 'JSFuck shell core expression too large: got {n} KB, limit {max} KB'
@@ -575,7 +571,7 @@ const STRINGS = {
     // obfuscation strength comparison (ten-dimension radar, max tier vs obfuscator.io Pro VM)
     cmpOpen: 'vs obfuscator.io',
     cmpTitle: 'Obfuscation strength · JsLabyrinth vs obfuscator.io',
-    cmpNote: 'Both at their maximum tier: JsLabyrinth "max" preset vs obfuscator.io Pro VM. Ten dimensions scored 0–10 against public capabilities — obfuscator.io leads in identifier/property renaming and battle-tested maturity (edge-case coverage); JsLabyrinth leads in debug protection, tamper resistance, anti-automation and its VM/WASM core. On compression, since 2026-09-25 simplify (now with unused-declaration elimination) + nameStyle=short reach real-minifier territory: measured 1.18–1.58× terser on the same inputs, where obfuscator.io (compact+simplify) measures 1.49–1.89×; on a module bundle with dead code the gap widens (3.5 KB vs 13.6 KB). Scores reflect capability coverage, not measured cracking time.',
+    cmpNote: 'Both at their maximum tier: JsLabyrinth "max" preset vs obfuscator.io Pro VM. Ten dimensions scored 0–10 against public capabilities — obfuscator.io leads in identifier/property renaming and battle-tested maturity (edge-case coverage); JsLabyrinth leads in debug protection, tamper resistance, anti-automation and its VM core. On compression, since 2026-09-25 simplify (now with unused-declaration elimination) + nameStyle=short reach real-minifier territory: measured 1.18–1.58× terser on the same inputs, where obfuscator.io (compact+simplify) measures 1.49–1.89×; on a module bundle with dead code the gap widens (3.5 KB vs 13.6 KB). Scores reflect capability coverage, not measured cracking time.',
     cmpLegendJs: 'JsLabyrinth (max)',
     cmpLegendObf: 'obfuscator.io (Pro VM)',
     cmpDim1: 'Identifiers',
