@@ -22,6 +22,7 @@
  * 不宜再被状态机包裹；B/K 内的数字与字符串随后仍由 stringArray 正常混淆。
  */
 import t from '../ast/types.js';
+import parser from '../ast/parser.js';
 import rtlib from './rtlib.js';
 import rand from '../utils/rand.js';
 const { shuffle, uniqueName, randInt } = rand;
@@ -526,6 +527,78 @@ function compileFunction(fn, ctx) {
   const opts = ctx.options;
   const threshold = opts.vmThreshold !== undefined ? opts.vmThreshold : 3;
 
+  // 编译期密钥（vmCompileKey）。给了密钥时，本函数的密钥材料不再取自 randInt，
+  // 而由「密钥 + 本函数序号」哈希派生出的确定性流给出：
+  //   - 同一密钥每次构建得到同一套密钥材料，产物可复现；
+  //   - 没有密钥就复现不出掩码与位置散列，字节码字的解密式也就凑不出来。
+  // 没给密钥时 krand 直接转发 randInt，产物与改动前**逐字节一致**（自测基线不动）。
+  // 注意只切换「密钥材料」这一组取值；干扰字、分发形态、寄存器模型等仍走 randInt，
+  // 所以形态多态性不受影响。
+  const keyText = opts.vmCompileKey ? String(opts.vmCompileKey) : '';
+  const keyed = !!keyText;
+  let keySeq = 0;
+  let keyState = 0;
+  if (keyed) {
+    // 函数序号：同一份源码里的每个函数拿到不同的密钥材料，同时又是运行期重建
+    // 派生所需的同一个编号（产物里以字面量出现，不是秘密——秘密是密钥本身）。
+    keySeq = (ctx.__vmKeySeq = (ctx.__vmKeySeq || 0) + 1);
+    let h = 0x811c9dc5; // FNV-1a
+    const tag = keyText + '#' + keySeq;
+    for (let i = 0; i < tag.length; i++) h = Math.imul(h ^ tag.charCodeAt(i), 0x01000193) >>> 0;
+    keyState = h >>> 0;
+    if (keyState === 0) keyState = 0x9e3779b9; // 0 是 xorshift32 的不动点，避开
+  }
+  // xorshift32 推进后取模落进 [lo, hi]，与 randInt 的返回区间一致
+  const krand = (lo, hi) => {
+    if (!keyed) return randInt(lo, hi);
+    keyState ^= keyState << 13; keyState >>>= 0;
+    keyState ^= keyState >>> 17;
+    keyState ^= keyState << 5;  keyState >>>= 0;
+    return lo + (keyState % (hi - lo + 1));
+  };
+
+  // 字节码编码（vmBytecodeEncoding）。关闭时字节码以明文整数数组存在：取指退化成
+  // 一次普通数组读取，入口也不再重写 B 数组——这是排查问题用的弱档，不是安全档。
+  // WASM 解释器内核档的取指在模块里、按加密布局硬编码，所以该档强制保持编码，
+  // 本项对它无效。
+  const enc = (opts.vmBytecodeEncoding !== false) || !!ctx.__vmWasmShared;
+
+  // 跳转编码（vmJumpsEncoding）。开启后跳转操作数不存目标的绝对字下标，改存
+  // 「目标字下标 − 本指令字下标」的差值，运行期用取指游标把本指令的字下标还原回来
+  // 再加回去。差值脱离所在位置就没有意义，所以即使 dump 出解密后的字节码，看到的
+  // 也只是一串相对位移，还原控制流图还得先确定每条指令的字跨度。
+  // WASM 内核档的解释器在模块里、按绝对下标硬编码，该档自动关闭本项。
+  const jumpEnc = !!opts.vmJumpsEncoding && !ctx.__vmWasmShared;
+
+  // 运行时密钥取值（vmRuntimeKeyGetter）。与编译期密钥**配对**使用：产物在每个 VM
+  // 函数开头求值用户给的表达式，用取回的值重跑一遍上面这套派生，把结果当初始掩码、
+  // 位置散列常数、轮换函数与链种子。取回的值不等于编译期密钥 → 派生出另一套掩码 →
+  // 字节码字解出来是垃圾 → 函数随即崩掉，门禁由此成立。
+  // 两个前提：取指在 WASM 模块里的那一档改不了，自动忽略本项；没有编译期密钥就
+  // 没有"正确值"可比，门禁不成立，在 pass 入口直接报错（见 vm()）。
+  const rtGetterText = (!ctx.__vmWasmShared && opts.vmRuntimeKeyGetter)
+    ? String(opts.vmRuntimeKeyGetter) : '';
+  // 编码关闭时没有掩码可派生，运行期密钥取值跟着失效（守门守的正是那套掩码）
+  const useRtKey = !!rtGetterText && keyed && enc;
+  // 运行期派生要用的名字。分块那三个只在 useBlock 时才落进语句，先占名无副作用。
+  const rt = useRtKey ? {
+    ks: uniqueName(ctx.usedNames, '_0x'), // 派生状态
+    ri: uniqueName(ctx.usedNames, '_0x'), // 哈希游标
+    rs: uniqueName(ctx.usedNames, '_0x'), // 密钥串
+    K1: uniqueName(ctx.usedNames, '_0x'),
+    K2: uniqueName(ctx.usedNames, '_0x'),
+    M0: uniqueName(ctx.usedNames, '_0x'),
+    RA: uniqueName(ctx.usedNames, '_0x'),
+    RB: uniqueName(ctx.usedNames, '_0x'),
+    BS: uniqueName(ctx.usedNames, '_0x'),
+    BA: uniqueName(ctx.usedNames, '_0x'),
+    BB: uniqueName(ctx.usedNames, '_0x'),
+    CS: uniqueName(ctx.usedNames, '_0x'),
+  } : null;
+  // 取指 / 轮换 / 链种子：开了运行期派生就改成标识符引用，否则保持构建期字面量，
+  // 与改动前逐字节一致
+  const kLit = (value, name) => (name ? t.identifier(name) : t.numericLiteral(value));
+
   // P4 多态寄存器模型：逐函数随机抽一种执行结构不同的模型。
   //   M0 纯栈式     —— 只有值栈 S，push/pop 直连，产物里没有寄存器变量
   //   M1 寄存器优先 —— 环形寄存器窗口，值优先落寄存器
@@ -561,11 +634,11 @@ function compileFunction(fn, ctx) {
   // posMask 走 Math.imul 位置散列，让每个字的密文依赖自己的位置，整体异或式还原因此失效。
   // 每次调用入口，解释器用 imul 轮换函数推进掩码并原位重写整个 B 数组，调用期间内存中的
   // 字节码与源码字面量不同，不同调用轮次的密文也不同。
-  const MASK_K1 = randInt(0x10001, 0x7ffffffe) | 1;   // 位置散列乘数，取奇数
-  const MASK_K2 = randInt(0x1000, 0xffffff);          // 位置散列异或分量
-  const MASK_M0 = randInt(0x1000, 0x3fffffff);        // 构建期初始掩码，正 31 位
-  const ROT_A = randInt(0x10001, 0x7ffffffe) | 1;     // 轮换函数乘数，取奇数，imul 上可逆
-  const ROT_B = randInt(0x1000, 0xffffff);            // 轮换函数异或分量
+  const MASK_K1 = krand(0x10001, 0x7ffffffe) | 1;   // 位置散列乘数，取奇数
+  const MASK_K2 = krand(0x1000, 0xffffff);          // 位置散列异或分量
+  const MASK_M0 = krand(0x1000, 0x3fffffff);        // 构建期初始掩码，正 31 位
+  const ROT_A = krand(0x10001, 0x7ffffffe) | 1;     // 轮换函数乘数，取奇数，imul 上可逆
+  const ROT_B = krand(0x1000, 0xffffff);            // 轮换函数异或分量
   const posMask = (i) => (Math.imul(i, MASK_K1) >>> 8) ^ MASK_K2;
 
   // P4 分块自解密。块密钥由块号运行期派生：BK(b) = imul(b, BK_A) ^ BK_B，
@@ -573,20 +646,22 @@ function compileFunction(fn, ctx) {
   // 存储字多异或一项 BK(b(z))，取指必须带上同一项——静态面没有 BK_A/BK_B/BL_SH
   // 的明文（旧 wasm 档把它们搬进模块数据段），不知道块长与派生常数就解不出任何字。
   // WASM 解释器内核档（桥接函数没有 JS 取指）自动关闭，产物与不开时逐字节一致。
-  const useBlock = !!opts.vmBlockDecrypt && !ctx.__vmWasmShared;
-  const BL_SH = useBlock ? randInt(4, 6) : 0;              // 块长指数（16/32/64 字）
+  // 编码关闭时字里没有「加密过的字」可再分层，分块自解密跟着失效；
+  // WASM 解释器内核档的桥接函数没有 JS 取指，该档一向关闭本项。
+  const useBlock = !!opts.vmBlockDecrypt && !ctx.__vmWasmShared && enc;
+  const BL_SH = useBlock ? krand(4, 6) : 0;              // 块长指数（16/32/64 字）
   const BL = useBlock ? (1 << BL_SH) : 0;                  // 块长（字）
-  const BK_A = useBlock ? (randInt(0x10001, 0x7ffffffe) | 1) : 0; // 派生乘数，奇数
-  const BK_B = useBlock ? randInt(0x1000, 0xffffff) : 0;   // 派生异或分量
+  const BK_A = useBlock ? (krand(0x10001, 0x7ffffffe) | 1) : 0; // 派生乘数，奇数
+  const BK_B = useBlock ? krand(0x1000, 0xffffff) : 0;   // 派生异或分量
   const bkOf = useBlock ? (z) => (Math.imul(z >>> BL_SH, BK_A) ^ BK_B) | 0 : () => 0;
 
   // 字符串表加密参数。产物里没有明文字符串字面量，字符串以码元密文表存在，
   // 每个码元与「项序号、项内下标」的位置散列异或，只有 VM 解释器执行 MKS 指令
   // 时才把它还原成 string 并交回调用方，静态面拿不到明文。
-  const STR_P = randInt(0x1000, 0xffff) | 1;          // 项序号乘数
-  const STR_K1 = randInt(0x10001, 0x7ffffffe) | 1;    // 位置散列乘数，取奇数
-  const STR_K2 = randInt(0x1000, 0xffffff);           // 位置散列异或分量
-  const STR_M0 = randInt(0x1000, 0x3fffffff);         // 码元掩码
+  const STR_P = krand(0x1000, 0xffff) | 1;          // 项序号乘数
+  const STR_K1 = krand(0x10001, 0x7ffffffe) | 1;    // 位置散列乘数，取奇数
+  const STR_K2 = krand(0x1000, 0xffffff);           // 位置散列异或分量
+  const STR_M0 = krand(0x1000, 0x3fffffff);         // 码元掩码
   const strHash = (si, i) => ((Math.imul(Math.imul(si + 1, STR_P) + i, STR_K1) >>> 8) ^ STR_K2 ^ STR_M0) >>> 0;
 
   // 名字分类。被捕获的保留为真实 var，经 G/H 闭包读写；未捕获的进槽位
@@ -1124,8 +1199,8 @@ function compileFunction(fn, ctx) {
   // t === d。静态能看到的只有 switch 标签（桶号，本身没有语义）和 if 的比较常数 d。
   // 想知道 d 与语义的对应关系，必须先解出字节码流密文（含位置散列与掩码轮换）拿到实际
   // 的 d 序列，直接读 case 表已经得不到编号到语义的映射。
-  const DISP_P1 = (randInt(1, 0xffff) * 2 + 1) | 0;
-  const DISP_Q1 = randInt(1, 0xffff);
+  const DISP_P1 = (krand(1, 0xffff) * 2 + 1) | 0;
+  const DISP_Q1 = krand(1, 0xffff);
 
   // 指令集编号空间。真实操作码与干扰项共用一个稠密编号空间 0..N-1，编号来自一次全排列
   // 抽取，逐函数独立。稠密编号让 wasm 档可以按编号直接索引「编号 → 语义序号」表，
@@ -1183,7 +1258,7 @@ function compileFunction(fn, ctx) {
   // 明文 ^ 位置分量 ^ 初始掩码 ^ chainAt[z]，其中 chainAt[z] 就是前一字的明文。
   // 任何一字的解密都要用到前一字的明文，没法从任意下标单独解密，只能从字 0 顺序推进。
   // 跳转指令额外携带目标处的链值字，跳转之后链状态就恢复成目标处的预期值。
-  const CHAIN_SEED = randInt(1, 0xfffffff) | 0;
+  const CHAIN_SEED = krand(1, 0xfffffff) | 0;
   // 字布局：owner[z] = { instr, slot }（slot 0=opcode, 1/2=操作数, 3=链值字）
   const owner = [];
   const words = []; // 明文字，null 是链值字占位，后面迭代填上
@@ -1194,10 +1269,10 @@ function compileFunction(fn, ctx) {
     for (let s = 0; s < w; s++) owner.push({ instr: i, slot: s });
     words.push(opNums.get(e.op));
     if (ARG2_KINDS.has(e.op)) {
-      words.push(pos[e.a]); words.push(e.n);
+      words.push(jumpEnc ? pos[e.a] - pos[i] : pos[e.a]); words.push(e.n);
       if (isJump) words.push(null);
     } else if (isJump) {
-      words.push(pos[e.a]); words.push(null);
+      words.push(jumpEnc ? pos[e.a] - pos[i] : pos[e.a]); words.push(null);
     } else if (ARG1_KINDS.has(e.op)) {
       words.push(e.a);
     }
@@ -1258,7 +1333,9 @@ function compileFunction(fn, ctx) {
     let c = CHAIN_SEED;
     for (let z = 0; z < words.length; z++) {
       chainAt[z] = c;
-      flat.push(((words[z] ^ posMask(z + 1)) ^ MASK_M0 ^ c ^ bkOf(z)) | 0);
+      flat.push(enc
+        ? (((words[z] ^ posMask(z + 1)) ^ MASK_M0 ^ c ^ bkOf(z)) | 0)
+        : (words[z] | 0)); // 编码关闭：明文落库，链值仍留下一项但无人取用
       c = words[z];
     }
   }
@@ -1334,20 +1411,20 @@ function compileFunction(fn, ctx) {
       rtlib.mulCall(ctx,
         t.binaryExpression('>>>',
           t.binaryExpression('-', t.identifier(npc), t.numericLiteral(1)),
-          t.numericLiteral(BL_SH)),
-        t.numericLiteral(BK_A)),
-      t.numericLiteral(BK_B)) : null;
-    const dec = xorTree([
+          kLit(BL_SH, rt && rt.BS)),
+        kLit(BK_A, rt && rt.BA)),
+      kLit(BK_B, rt && rt.BB)) : null;
+    const dec = enc ? xorTree([
       fetch,
       t.binaryExpression('^',
         t.binaryExpression('>>>',
-          rtlib.mulCall(ctx, t.identifier(npc), t.numericLiteral(MASK_K1)),
+          rtlib.mulCall(ctx, t.identifier(npc), kLit(MASK_K1, rt && rt.K1)),
           t.numericLiteral(8)),
-        t.numericLiteral(MASK_K2)),
+        kLit(MASK_K2, rt && rt.K2)),
       MASK,
       t.identifier(nCHAIN),
       ...(blkTerm ? [blkTerm] : []),
-    ]);
+    ]) : fetch;
     // 序列式结果：nCHN = v, nCHAIN = nCHN, 可选 dst = nCHN，整个表达式的值取 nCHN
     const parts = [
       t.assignmentExpression('=', t.identifier(nCHN), dec),
@@ -1368,6 +1445,13 @@ function compileFunction(fn, ctx) {
     t.variableDeclaration('const', [t.variableDeclarator(t.identifier(name), init)]);
   const idn = (n) => t.identifier(n);
   const assignPC = (val) => t.expressionStatement(t.assignmentExpression('=', PC, val));
+  // 跳转目标还原。开启 jumps 编码后操作数存的是差值，要用取指游标还原本指令的字下标：
+  // npc 此时已自增到「读完本指令全部字」的位置，减去本指令的字跨度就是它的字下标。
+  // 跨度：JMP / JPF / JPT 三个字（op、目标、链值），JANDK 系四个字（op、目标、数量、链值）。
+  const jumpTarget = (deltaNode, span) => (jumpEnc
+    ? t.binaryExpression('+', deltaNode,
+        t.binaryExpression('-', t.identifier(npc), t.numericLiteral(span)))
+    : deltaNode);
   // 解释器 case 体里的局部名。
   //
   // **不能**用 a / b / c / v / f / k / o / x0 这类短名：解释器的语句是直接塞进用户
@@ -1528,7 +1612,7 @@ function compileFunction(fn, ctx) {
       declJmpA(),
       t.expressionStatement(t.assignmentExpression('=', idn(N_A), bAt(N_A))),
       t.expressionStatement(bAt(null)), // 链值字，取走后 nCHAIN 即为目标链值
-      assignPC(idn(N_A)),
+      assignPC(jumpTarget(idn(N_A), 3)),
     ];
     if (kind === 'JPF' || kind === 'JPT') {
       // 链值字在两个互斥分支里各取一次。跳转时 nCHAIN 变成目标链值；不跳时
@@ -1542,7 +1626,7 @@ function compileFunction(fn, ctx) {
           kind === 'JPF' ? t.unaryExpression('!', popCall()) : popCall(),
           t.blockStatement([
             t.expressionStatement(bAt(null)), // 链值字，取走后 nCHAIN 即为目标链值
-            assignPC(idn(N_A)),
+            assignPC(jumpTarget(idn(N_A), 3)),
           ]),
           t.blockStatement([
             t.expressionStatement(bAt(null)), // 链值字，取走后 nCHAIN 即为顺序预期值
@@ -1572,7 +1656,7 @@ function compileFunction(fn, ctx) {
                   t.binaryExpression('-', Slen(), t.numericLiteral(1)), idn(N_N)),
                 idn(N_N),
               ])),
-            assignPC(idn(N_A)),
+            assignPC(jumpTarget(idn(N_A), 4)),
           ]),
           t.blockStatement([t.expressionStatement(popCall())])),
       ];
@@ -1794,11 +1878,38 @@ function compileFunction(fn, ctx) {
 
   // 分发形态每函数随机：vmDispatchEnc 关闭时 A/B/C 三选一；开启时 75% 走
   // 形态 D（表密文化），25% 仍走 A/B/C，避免「全库单一形态」的新指纹。
-  const dispatchForm = ctx.options.vmDispatchEnc
-    ? (randInt(0, 3) === 0 ? randInt(0, 2) : 3)  // 75% 走 D，25% 仍走 A/B/C（避免形态单一）
-    : randInt(0, 2); // 0 为 A，1 为 B，2 为 C，3 为 D
+  // 紧凑分发器（vmCompactDispatcher）：强制形态 E（直接寻址）。
+  // A/C 是分支链形态，会为每个条目——包括上千个干扰字——各生成一段比较代码；
+  // E 把「字 → 动作」压成一条密文整数流，运行期解成直接寻址表，结构代码只剩一句话。
+  const dispatchForm = ctx.options.vmCompactDispatcher
+    ? 4
+    : (ctx.options.vmDispatchEnc
+      ? (randInt(0, 3) === 0 ? randInt(0, 2) : 3) // 75% 走 D，25% 仍走 A/B/C（避免形态单一）
+      : randInt(0, 2)); // 0 为 A，1 为 B，2 为 C，3 为 D，4 为 E（紧凑）
   let dispSwitchNode = null;   // 形态 A 的 switch 判别式节点
-  // 解释器循环之前先声明干扰项共享的垃圾体，三种分发形态都要；形态 B 再追加表
+  // 表驱动形态（B/D/E）共用的动作体转换：return 一律转成 [0, 值] / [0]，由调度层
+  // 穿透返回。三种形态共用同一实现，避免各写一份之后漂移。
+  const toActionFn = (k) => {
+    const stmts = caseBody(k).map((s) => s);
+    const conv = (n) => {
+      if (!n || typeof n !== 'object' || typeof n.type !== 'string') return;
+      if (n.type === 'ReturnStatement') {
+        n.argument = n.argument
+          ? t.arrayExpression([t.numericLiteral(0), n.argument])
+          : t.arrayExpression([t.numericLiteral(0)]);
+        return;
+      }
+      for (const key of Object.keys(n)) {
+        if (key === 'loc') continue;
+        const v = n[key];
+        if (Array.isArray(v)) for (const c of v) conv(c);
+        else if (v && typeof v === 'object' && typeof v.type === 'string') conv(v);
+      }
+    };
+    stmts.forEach(conv);
+    return t.blockStatement(stmts);
+  };
+  // 解释器循环之前先声明干扰项共享的垃圾体，各种分发形态都要；B/D/E 再追加各自的表
   let preLoopStmts = junkDecls.slice();
   let dispatchBody = null;     // 分发体，可能是 switch 语句、if 链或表扫描循环
 
@@ -1924,41 +2035,19 @@ function compileFunction(fn, ctx) {
     const DBI = uniqueName(ctx.usedNames, '_0x');   // 解密临时：条目掩码
     const DDR = uniqueName(ctx.usedNames, '_0x');   // 解密游标
     // 位置散列乘数（奇数）与异或分量、表掩码，全部逐构建随机。
-    const DE_S1 = randInt(0x10001, 0x7ffffffe) | 1;
-    const DE_S2 = randInt(0x1000, 0xffffff);
-    const DE_M0 = randInt(0x1000, 0x3fffffff);
+    const DE_S1 = krand(0x10001, 0x7ffffffe) | 1;
+    const DE_S2 = krand(0x1000, 0xffffff);
+    const DE_M0 = krand(0x1000, 0x3fffffff);
     const deMask = (i) => (Math.imul(i + 1, DE_S1) >>> 9) ^ DE_S2 ^ DE_M0;
 
     // 动作函数表：只装真实语义（干扰条目在解密后指向一个共享的垃圾箭头下标，
     // 与真实项混排，静态上无法按下标规律区分真假）。
-    // toFnBody 复用形态 B 的实现思路：return 一律转 [0, 值] / [0]，由调度层穿透。
-    const toFnBodyD = (k) => {
-      const stmts = caseBody(k).map((s) => s);
-      const conv = (n) => {
-        if (!n || typeof n !== 'object' || typeof n.type !== 'string') return;
-        if (n.type === 'ReturnStatement') {
-          n.argument = n.argument
-            ? t.arrayExpression([t.numericLiteral(0), n.argument])
-            : t.arrayExpression([t.numericLiteral(0)]);
-          return;
-        }
-        for (const key of Object.keys(n)) {
-          if (key === 'loc') continue;
-          const v = n[key];
-          if (Array.isArray(v)) for (const c of v) conv(c);
-          else if (v && typeof v === 'object' && typeof v.type === 'string') conv(v);
-        }
-      };
-      stmts.forEach(conv);
-      return t.blockStatement(stmts);
-    };
-    // 表里每一项都是箭头函数。干扰条目引用共享的垃圾箭头（与形态 B 一致）。
-    // 无干扰项（vmDecoyOps=0 的低档）时 junkNames 为空，跳过干扰动作占位。
+    // 动作体转换用共用的 toActionFn（return 转 [0, 值] / [0]，由调度层穿透）。
     const actElems = [];
     const actIdxOfKind = new Map();
     for (const k of opKinds) {
       actIdxOfKind.set(k, actElems.length);
-      actElems.push(t.arrowFunctionExpression([], toFnBodyD(k)));
+      actElems.push(t.arrowFunctionExpression([], toActionFn(k)));
     }
     const junkActIdx = junkNames.length ? actElems.length : -1;
     if (junkNames.length) actElems.push(t.identifier(junkNames[0])); // 干扰动作，引用共享垃圾箭头
@@ -2146,6 +2235,92 @@ function compileFunction(fn, ctx) {
             ])),
         ])),
     ]);
+  } else if (dispatchForm === 4) {
+    // 形态 E（紧凑分发器）：直接寻址。
+    //
+    // 分发字空间本来就是稠密的——opNums 取的是 0..totalSlots-1 的一次全排列，每个整数
+    // 要么是真实操作码要么是干扰字。所以「字」本身就是下标：不需要桶、不需要桶区间表、
+    // 也不需要桶内线性扫描。
+    //   1. 动作函数表 A[i]：每个真实语义一个箭头函数（return 转 [0,值]，调度层穿透）。
+    //   2. 条目密文流 C：按字下标就地存放，**位置即字**，每项只有动作下标那一个字与
+    //      位置散列异或——产物里是一串整数，长度正好等于字空间大小。
+    //   3. 运行期在循环之前把 C 解成**直接寻址表** M：M[word] = C[word] ^ 位置掩码，
+    //      解完就地清空 C。
+    //   4. 分发 = 一次 A[M[t]]() 加一个返回值判断，O(1)。
+    //
+    // 与形态 D 对比：D 每项三个字（桶、字、动作）外加一张桶区间表，分发要按桶取区间再
+    // 线性扫描；E 每项一个字、无区间表、分发 O(1)。两者的「字 → 语义」都只在运行期解出，
+    // 静态面上同样只有一串密文整数，隐藏程度相同。
+    const A_TBL = uniqueName(ctx.usedNames, '_0x');
+    const M_TBL = uniqueName(ctx.usedNames, '_0x');
+    const C_TBL = uniqueName(ctx.usedNames, '_0x');
+    const DDR = uniqueName(ctx.usedNames, '_0x');
+    const CE_S1 = krand(0x10001, 0x7ffffffe) | 1;
+    const CE_S2 = krand(0x1000, 0xffffff);
+    const CE_M0 = krand(0x1000, 0x3fffffff);
+    const actElems = [];
+    const actIdxOfKind = new Map();
+    for (const k of opKinds) {
+      actIdxOfKind.set(k, actElems.length);
+      actElems.push(t.arrowFunctionExpression([], toActionFn(k)));
+    }
+    const junkActIdx = junkNames.length ? actElems.length : -1;
+    if (junkNames.length) actElems.push(t.identifier(junkNames[0]));
+    // 按字升序编码。M 是直接寻址表，条目次序本身不承载信息
+    // **位置即分发字**：条目按字下标就地存放，每项只存一个加密的动作下标。
+    // 字空间是稠密的（0..totalSlots-1 全覆盖），所以数组长度正好等于字空间大小——
+    // 这是直接寻址能压到的最小数据量，也是它比形态 D 小的原因（D 每项存三个字）。
+    const actIdxByWord = new Map();
+    for (const k of opKinds) actIdxByWord.set(opNums.get(k), actIdxOfKind.get(k));
+    const cWords = [];
+    for (let w = 0; w < totalSlots; w++) {
+      const ai = actIdxByWord.has(w) ? actIdxByWord.get(w) : junkActIdx;
+      cWords.push((ai ^ ((Math.imul(w + 1, CE_S1) >>> 9) ^ CE_S2 ^ CE_M0)) | 0);
+    }
+    preLoopStmts.push(t.variableDeclaration('var', [
+      t.variableDeclarator(t.identifier(A_TBL), t.arrayExpression(actElems)),
+      t.variableDeclarator(t.identifier(C_TBL),
+        t.arrayExpression(cWords.map((n) => t.numericLiteral(n)))),
+      t.variableDeclarator(t.identifier(M_TBL), t.arrayExpression([])),
+    ]));
+    // 解密与归位：M[word] = C[word] ^ 位置掩码，一项一个字，与编码式同构
+    const ceMask = (idxNode) => t.binaryExpression('^',
+      t.binaryExpression('^',
+        t.binaryExpression('>>>',
+          rtlib.mulCall(ctx, t.binaryExpression('+', idxNode, t.numericLiteral(1)),
+            t.numericLiteral(CE_S1)),
+          t.numericLiteral(9)),
+        t.numericLiteral(CE_S2)),
+      t.numericLiteral(CE_M0));
+    preLoopStmts = preLoopStmts.concat([
+      t.forStatement(
+        t.variableDeclaration('var', [t.variableDeclarator(idn(DDR), t.numericLiteral(0))]),
+        t.binaryExpression('<', idn(DDR),
+          t.memberExpression(t.identifier(C_TBL), t.identifier('length'), false)),
+        t.updateExpression('++', idn(DDR), false),
+        t.blockStatement([
+          t.expressionStatement(t.assignmentExpression('=',
+            t.memberExpression(idn(M_TBL), idn(DDR), true),
+            t.binaryExpression('^',
+              t.memberExpression(t.identifier(C_TBL), idn(DDR), true),
+              ceMask(idn(DDR))))),
+        ])),
+      // 密文流就地清空：运行期内存里不再保留可 dump 的密文
+      t.expressionStatement(t.assignmentExpression('=',
+        t.memberExpression(t.identifier(C_TBL), t.identifier('length'), false),
+        t.numericLiteral(0))),
+    ]);
+    const _rr = uniqueName(ctx.usedNames, '_0x');
+    dispatchBody = t.blockStatement([
+      t.variableDeclaration('var', [t.variableDeclarator(idn(_rr), t.callExpression(
+        t.memberExpression(t.identifier(A_TBL),
+          t.memberExpression(idn(M_TBL), idn(_dispT), true), true), []))]),
+      t.ifStatement(
+        t.binaryExpression('!==', idn(_rr),
+          t.unaryExpression('void', t.numericLiteral(0), true)),
+        t.blockStatement([t.returnStatement(
+          t.memberExpression(idn(_rr), t.numericLiteral(1), true))])),
+    ]);
   } else {
     // 形态 C：嵌套 if 桶链
     const outer = [];
@@ -2169,6 +2344,15 @@ function compileFunction(fn, ctx) {
   // 指纹之一，这两种形态与 dispatchForm 的四种分发正交组合出 8 种骨架，针对单一骨架
   // 模板写的还原规则无法跨构建复用。
   const interpBody = t.blockStatement([
+    // 越界守卫，**只在开启运行期密钥（useRtKey）时生成**：取回的密钥不对时所有分发
+    // 条目都落空，取指游标会一直越界读下去变成死循环，把浏览器主线程挂死。这里改成
+    // 明确抛出，失败模式从"卡死"变成"立刻报错"。密钥正确时 END 一定会先 return，
+    // 所以这道守卫不会误伤；默认路径（不开启本项）一条指令都不多。
+    ...(rt ? [t.ifStatement(
+      t.binaryExpression('>', t.identifier(npc),
+        t.memberExpression(B, t.identifier('length'), false)),
+      t.blockStatement([t.throwStatement(t.newExpression(
+        t.identifier('Error'), [t.stringLiteral(msg('vmKeyMismatch'))]))]))] : []),
     t.variableDeclaration('var', [
       t.variableDeclarator(t.identifier(_dispT), bAt()),
     ]),
@@ -2200,8 +2384,8 @@ function compileFunction(fn, ctx) {
     // P4 模型 M2 的地址栈。仅在 M2 下声明；M0/M1 下 SA 为 null，声明里不出现。
     ...(SA ? [t.variableDeclarator(SA, t.arrayExpression([]))] : []),
     t.variableDeclarator(PC, t.numericLiteral(0)),
-    t.variableDeclarator(MASK, t.numericLiteral(MASK_M0)),
-    t.variableDeclarator(t.identifier(nCHAIN), t.numericLiteral(CHAIN_SEED)), // 链值状态
+    t.variableDeclarator(MASK, kLit(MASK_M0, rt && rt.M0)),
+    t.variableDeclarator(t.identifier(nCHAIN), kLit(CHAIN_SEED, rt && rt.CS)), // 链值状态
     t.variableDeclarator(t.identifier(nCHN), t.numericLiteral(0)),           // 取指暂存
     // 寄存器窗口，压栈与出栈都经这里中转
     ...REGS.map((r) => t.variableDeclarator(idn(r), t.numericLiteral(0))),
@@ -2216,12 +2400,13 @@ function compileFunction(fn, ctx) {
   // 每次调用执行一遍，调用期间内存中的字节码与源码字面量不同。
   const nNM = uniqueName(ctx.usedNames, '_0x');
   const nZI = uniqueName(ctx.usedNames, '_0x');
-  const rotStmts = [
+  // 编码关闭时没有掩码可轮换，也不需要在入口重写 B 数组
+  const rotStmts = !enc ? [] : [
     t.variableDeclaration('var', [
       t.variableDeclarator(t.identifier(nNM), t.binaryExpression('>>>',
         t.binaryExpression('^',
-          rtlib.mulCall(ctx, MASK, t.numericLiteral(ROT_A)),
-          t.numericLiteral(ROT_B)),
+          rtlib.mulCall(ctx, MASK, kLit(ROT_A, rt && rt.RA)),
+          kLit(ROT_B, rt && rt.RB)),
         t.numericLiteral(0))),
     ]),
     t.forStatement(
@@ -2248,7 +2433,104 @@ function compileFunction(fn, ctx) {
       }
     }
   }
+  // 运行期密钥派生语句。与构建期 krand 的调用顺序**逐项对齐**：
+  //   掩码三件 → 轮换两件 → [分块三件，仅 useBlock] → 字符串表四件 → 分发仿射两件 → 链种子
+  // 字符串表与分发仿射这两组运行期用不到，但必须照样推进派生状态，否则后面的链种子
+  // 对不上。取值一律「先推进一步、再取模」，与 krand 同构。
+  // 用户给的表达式文本经项目自带解析器转 AST——核心模块禁止 eval / new Function。
+  const rtKeyStmts = () => {
+    if (!rt) return [];
+    const KS = () => t.identifier(rt.ks);
+    const num = (n) => t.numericLiteral(n);
+    const xor = (a, b) => t.binaryExpression('^', a, b);
+    const shl = (a, b) => t.binaryExpression('<<', a, b);
+    const shru = (a, b) => t.binaryExpression('>>>', a, b);
+    const setKS = (e) => t.expressionStatement(t.assignmentExpression('=', KS(), e));
+    // 一步 xorshift32。构建期是「a ^= a << 13; a >>>= 0」，等价于 a = (a ^ (a << 13)) >>> 0；
+    // 后两步同理。<< 与 >>> 都只看 32 位位型，所以每步各自归一成无符号与构建期完全等价。
+    const advance = () => [
+      setKS(shru(xor(KS(), shl(KS(), num(13))), num(0))),
+      setKS(shru(xor(KS(), shru(KS(), num(17))), num(0))),
+      setKS(shru(xor(KS(), shl(KS(), num(5))), num(0))),
+    ];
+    // 推进一次并取出落在 [lo, hi] 的值；name 为空表示只为推进状态
+    const take = (name, lo, hi, odd) => {
+      const out = advance();
+      if (name) {
+        const v = t.binaryExpression('+', num(lo),
+          t.binaryExpression('%', KS(), num(hi - lo + 1)));
+        out.push(t.variableDeclaration('var', [t.variableDeclarator(
+          t.identifier(name), odd ? t.binaryExpression('|', v, num(1)) : v)]));
+      }
+      return out;
+    };
+    const getter = (() => {
+      let file;
+      try {
+        file = parser.parse('(' + rtGetterText + '\n)');
+      } catch (e) {
+        throw new Error(msg('vmRuntimeKeyGetterParseFailed', { msg: (e && e.message) || String(e) }));
+      }
+      const st = file.program && file.program.body && file.program.body[0];
+      if (!st || st.type !== 'ExpressionStatement' || !st.expression) {
+        throw new Error(msg('vmRuntimeKeyGetterParseFailed', { msg: 'empty expression' }));
+      }
+      return st.expression;
+    })();
+    const RI = () => t.identifier(rt.ri);
+    const RS = () => t.identifier(rt.rs);
+    const stmts = [
+      // 密钥串 = 取回的值 + '#' + 函数序号，与构建期的 tag 是同一个串
+      t.variableDeclaration('var', [
+        t.variableDeclarator(KS(), num(0x811c9dc5)),
+        t.variableDeclarator(RI(), num(0)),
+        t.variableDeclarator(RS(), t.binaryExpression('+', getter, t.stringLiteral('#' + keySeq))),
+      ]),
+      // FNV-1a
+      t.forStatement(
+        null,
+        t.binaryExpression('<', RI(), t.memberExpression(RS(), t.identifier('length'), false)),
+        t.updateExpression('++', RI(), false),
+        t.blockStatement([
+          setKS(shru(rtlib.mulCall(ctx, xor(KS(), t.callExpression(
+            t.memberExpression(RS(), t.identifier('charCodeAt'), false), [RI()],
+          )), num(0x01000193)), num(0))),
+        ]),
+      ),
+      // 0 是 xorshift32 的不动点，与构建期同一处兜底
+      t.ifStatement(
+        t.binaryExpression('===', KS(), num(0)),
+        t.blockStatement([setKS(num(0x9e3779b9))])),
+    ];
+    stmts.push(
+      ...take(rt.K1, 0x10001, 0x7ffffffe, true),
+      ...take(rt.K2, 0x1000, 0xffffff, false),
+      ...take(rt.M0, 0x1000, 0x3fffffff, false),
+      ...take(rt.RA, 0x10001, 0x7ffffffe, true),
+      ...take(rt.RB, 0x1000, 0xffffff, false),
+    );
+    if (useBlock) {
+      stmts.push(
+        ...take(rt.BS, 4, 6, false),
+        ...take(rt.BA, 0x10001, 0x7ffffffe, true),
+        ...take(rt.BB, 0x1000, 0xffffff, false),
+      );
+    }
+    stmts.push(
+      // 字符串表散列四件 + 分发仿射两件：运行期不用，但必须推进状态
+      ...take(null, 0x1000, 0xffff, true),
+      ...take(null, 0x10001, 0x7ffffffe, true),
+      ...take(null, 0x1000, 0xffffff, false),
+      ...take(null, 0x1000, 0x3fffffff, false),
+      ...take(null, 1, 0xffff, false),
+      ...take(null, 1, 0xffff, false),
+      ...take(rt.CS, 1, 0xfffffff, false),
+    );
+    return stmts;
+  };
   fn.body = t.blockStatement([
+    // 运行期密钥派生必须排在 runtimeDecl 之前：MASK 与链种子的初始化要读它算出的值
+    ...rtKeyStmts(),
     runtimeDecl,
     // 形态 B 的 handler 表与干扰项共享垃圾体，都是不变量，在循环外构建一次
     ...preLoopStmts,
@@ -2372,6 +2654,13 @@ function hasStringLiteral(root) {
  */
 function vm(ast, options, ctx) {
   const threshold = options.vmThreshold !== undefined ? options.vmThreshold : 3;
+  // 运行时密钥取值必须与编译期密钥配对：没有编译期密钥就没有"正确值"可比，
+  // 取回什么都能自洽，门禁不成立。这种情况直接报错，不静默降级成一份无效配置。
+  if (options.vmRuntimeKeyGetter && !options.vmCompileKey) {
+    throw new Error(msg('vmRuntimeKeyNeedsCompileKey'));
+  }
+  // 函数序号按 pass 运行重置：同一份源码 + 同一密钥必须得到同一套密钥材料
+  ctx.__vmKeySeq = 0;
   // WASM 解释器内核档：建立全程序共享的分发字编号空间（解释器在 WASM 内查表分发）
   ctx.__vmWasmShared = null;
   if (options.wasmInterpreter === true) {
@@ -2403,9 +2692,9 @@ function vm(ast, options, ctx) {
   let opsReal = 0;
   let opsDecoy = 0;
   const rtNames = ctx.rtNames || new Set();
-  // 分发形态计数（A=0/B=1/C=2/D=3）。形态 D 的验收用例据此断言「D 真的出现了」，
-  // 也用于观察 vmDispatchEnc 开关下的形态分布。
-  const formCount = { A: 0, B: 0, C: 0, D: 0 };
+  // 分发形态计数（A=0/B=1/C=2/D=3/E=4）。形态 D 的验收用例据此断言「D 真的出现了」，
+  // 也用于观察 vmDispatchEnc 与 vmCompactDispatcher 开关下的形态分布。
+  const formCount = { A: 0, B: 0, C: 0, D: 0, E: 0 };
   // 寄存器模型计数（P4 多态验收用）
   const modelCount = { M0: 0, M1: 0, M2: 0 };
   // comment 模式的最近声明头判定要用到全部候选函数的头下标
@@ -2425,7 +2714,7 @@ function vm(ast, options, ctx) {
         compiled++;
         opsReal += r.real;
         opsDecoy += r.decoy;
-        if (r.form !== undefined) formCount['ABCD'[r.form]]++;
+        if (r.form !== undefined) formCount['ABCDE'[r.form]]++;
         if (ctx.vmModel) modelCount[ctx.vmModel]++;
       }
     } catch (e) {

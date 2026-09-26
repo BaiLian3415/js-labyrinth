@@ -35,13 +35,16 @@
   --ok: #8fa86b;
   --warn: #d6a84a;
   --err: #e06c75;
-  --mono: "SFMono-Regular", "SF Mono", ui-monospace, "Cascadia Mono", "JetBrains Mono", Consolas, "Courier New", monospace;
-  /* Inter 放最前是渐进增强：用户装了就用，没装走后备，不引入任何下载 */
-  --ui: Inter, system-ui, -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
-  /* 衬线只给正文段落（对齐官网：标题是粗体无衬线，正文才是衬线）。
-     Anthropic Serif 未公开分发，Georgia 是官方后备；中文补宋体系，
-     避免中英混排时半句变宋半句变黑 */
-  --serif: "Anthropic Serif", "Tiempos Text", Georgia, "Noto Serif SC", "Source Han Serif SC", "Songti SC", "SimSun", serif;
+  /* 三套字族全部对齐 Claude 的排印体系，且**只靠本机已装字体**，不引入任何下载
+     （零依赖是硬要求）——所以每套都是「Claude 真实字体名 → 官方后备」的降级链，
+     用户装了就用，没装就落到后备，观感不会塌。
+     分工沿用 Claude 的：无衬线管 UI，衬线管正文段落，等宽管代码。 */
+  --mono: "Anthropic Mono", "SFMono-Regular", "SF Mono", ui-monospace, "Cascadia Mono", "JetBrains Mono", Consolas, "Courier New", monospace;
+  /* Styrene A/B 是 Claude 的 UI 字体；Arial 是官方后备，这里用系统 UI 栈兜底 */
+  --ui: "Styrene A", "Styrene B", "Anthropic Sans", Inter, system-ui, -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
+  /* Copernicus / Tiempos 是 Claude 的衬线；Georgia 是官方后备。
+     中文补宋体系，避免中英混排时半句变宋半句变黑 */
+  --serif: "Copernicus", "Anthropic Serif", "Tiempos Text", "Tiempos Headline", Georgia, "Noto Serif SC", "Source Han Serif SC", "Songti SC", "SimSun", serif;
   --radius: 8px;
   --radius-lg: 12px;
   /* 主按钮：深色下反相成暖白实心，文字色随之反相 */
@@ -484,18 +487,42 @@ input.text:focus, select.mini:focus, button:focus-visible, textarea:focus {
 
 .drawer h3:first-child { margin-top: 0; }
 
+/* 卡片网格。每个分组一张卡片，标题栏是「图标 + 组名」——
+   结构对齐参考图，网格自适应，窄屏自动收成一列。 */
 .opt-groups {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
-  gap: 14px;
+  grid-template-columns: repeat(auto-fill, minmax(258px, 1fr));
+  gap: 12px;
+  align-items: start;
 }
 
-.opt-group h4 {
-  margin: 0 0 6px;
-  font-size: 12px;
-  color: var(--accent);
-  font-weight: 600;
+.opt-card {
+  min-width: 0;
+  padding: 10px 12px 12px;
+  background-color: var(--bg-pane);
+  background-image: var(--grad-pane);
+  border: 1px solid var(--line);
+  border-radius: 10px;
 }
+
+.opt-card-head {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin-bottom: 7px;
+}
+
+.opt-card-head svg { width: 15px; height: 15px; flex: 0 0 auto; color: var(--fg-dim); }
+
+.opt-card-head h4 {
+  margin: 0;
+  font-size: 12.5px;
+  font-weight: 600;
+  letter-spacing: .01em;
+  color: var(--fg);
+}
+
+.opt-card-body { display: flex; flex-direction: column; gap: 1px; }
 
 .row {
   display: flex;
@@ -511,17 +538,143 @@ input.text:focus, select.mini:focus, button:focus-visible, textarea:focus {
 
 .row input[type="checkbox"] { accent-color: var(--accent); }
 
+/* 选项行。开关项渲染成 [开关] 名称 [徽章] [ⓘ]；值项是 名称 [徽章] [ⓘ] …… 控件，
+   字符串项的控件折到第二行整行宽（.opt-ctl.wide）。 */
 .opt-row {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 6px;
   font-size: 12.5px;
-  padding: 1px 0;
+  padding: 3px 0;
+  min-width: 0;
 }
 
-.opt-row .name { flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.opt-row .name { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .opt-row.gated { opacity: .55; }
 .opt-row.gated .name { text-decoration: line-through; }
+
+/* 开关：把原生勾选框重绘成轨道 + 圆钮（appearance:none）。
+   仍然是一个真的 <input type="checkbox">，原生语义、键盘行为与 change 事件都不变，
+   所以 app.js 的取值/落库逻辑一行没改。 */
+.opt-row.is-bool input[type="checkbox"] {
+  appearance: none;
+  -webkit-appearance: none;
+  position: relative;
+  flex: 0 0 auto;
+  width: 32px;
+  height: 18px;
+  margin: 0;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background-color: var(--bg);
+  background-image: var(--grad-well);
+  cursor: pointer;
+  transition:
+    background-color var(--dur-mid) var(--ease-out),
+    border-color var(--dur-mid) var(--ease-out);
+}
+
+.opt-row.is-bool input[type="checkbox"]::after {
+  content: '';
+  position: absolute;
+  top: 50%;
+  left: 2px;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--fg-dim);
+  transform: translateY(-50%);
+  transition:
+    transform var(--dur-mid) var(--ease-out),
+    background-color var(--dur-mid) var(--ease-out);
+}
+
+.opt-row.is-bool input[type="checkbox"]:checked {
+  background-color: var(--accent);
+  background-image: none;
+  border-color: var(--accent);
+}
+
+.opt-row.is-bool input[type="checkbox"]:checked::after {
+  transform: translate(14px, -50%);
+  background: var(--btn-fg);
+}
+
+/* 徽章。文案固定英文（与参考图一致），颜色取语义色，安全项偏暖金、推荐项偏绿。 */
+.obadge {
+  flex: 0 0 auto;
+  padding: 1px 6px;
+  border: 1px solid currentColor;
+  border-radius: 999px;
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: .06em;
+  white-space: nowrap;
+}
+.obadge-experimental { color: var(--warn); }
+.obadge-recommended { color: var(--ok); }
+
+/* ⓘ 说明按钮。提示气泡用 data-tip + ::after 画，不引第三方库、也不占脚本状态。 */
+.opt-row .info {
+  position: relative;
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 50%;
+  background: transparent;
+  color: var(--fg-dim);
+  font: italic 600 9.5px/1 var(--serif);
+  cursor: help;
+}
+.opt-row .info:hover,
+.opt-row .info:focus-visible { color: var(--fg); border-color: var(--fg-dim); }
+
+/* 气泡贴在图标下方（不是上方）：抽屉是一块 max-height:42vh 的滚动区，
+   往上弹会在靠近顶部的行被裁掉，往下弹只有最底部几行才可能被裁。 */
+.opt-row .info::after {
+  content: attr(data-tip);
+  position: absolute;
+  top: calc(100% + 7px);
+  right: -4px;
+  z-index: 40;
+  width: max-content;
+  max-width: 264px;
+  padding: 7px 9px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background-color: var(--bg-pane);
+  background-image: var(--grad-pane);
+  box-shadow: var(--shadow-pane);
+  color: var(--fg);
+  font: 400 11.5px/1.55 var(--ui);
+  font-style: normal;
+  text-align: left;
+  white-space: pre-line;
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transition:
+    opacity var(--dur-mid) var(--ease-out),
+    visibility 0s linear var(--dur-mid);
+}
+.opt-row .info:hover::after,
+.opt-row .info:focus-visible::after {
+  opacity: 1;
+  visibility: visible;
+  transition:
+    opacity var(--dur-mid) var(--ease-out),
+    visibility 0s linear 0s;
+}
+
+/* 值项控件。枚举与数值留在行尾，字符串折行占满整行。 */
+.opt-ctl { margin-left: auto; flex: 0 0 auto; }
+
 .opt-row input[type="text"], .opt-row input[type="number"] {
   width: 78px;
   background-color: var(--bg);
@@ -541,8 +694,9 @@ input.text:focus, select.mini:focus, button:focus-visible, textarea:focus {
   padding: 2px 6px;
   font: 12px var(--mono);
 }
+.opt-row input.opt-ctl.wide { width: 100%; flex: 1 1 100%; margin-left: 0; }
 .opt-row input.dirty, .opt-row select.dirty { border-color: var(--accent); }
-.opt-row input[type="checkbox"].dirty { accent-color: var(--accent); outline: 1px solid var(--accent); }
+.opt-row input[type="checkbox"].dirty { outline: 1px solid var(--accent); outline-offset: 1px; }
 
 .hint { color: var(--fg-dim); font-size: 12px; margin: 4px 0; }
 
@@ -750,14 +904,14 @@ button.primary:hover:not(:disabled) { opacity: .88; }
 .drawer[data-open="1"] > .drawer-inner { overflow: visible; }
 
 /* 抽屉内各行依次入场的错位效果：只在打开时播，收起不播（收起要干脆）。 */
-.drawer[data-open="1"] .opt-group {
+.drawer[data-open="1"] .opt-card {
   animation: group-in var(--dur-slow) var(--ease-out) backwards;
 }
-.drawer[data-open="1"] .opt-group:nth-child(1) { animation-delay: 20ms; }
-.drawer[data-open="1"] .opt-group:nth-child(2) { animation-delay: 45ms; }
-.drawer[data-open="1"] .opt-group:nth-child(3) { animation-delay: 70ms; }
-.drawer[data-open="1"] .opt-group:nth-child(4) { animation-delay: 95ms; }
-.drawer[data-open="1"] .opt-group:nth-child(n+5) { animation-delay: 120ms; }
+.drawer[data-open="1"] .opt-card:nth-child(1) { animation-delay: 20ms; }
+.drawer[data-open="1"] .opt-card:nth-child(2) { animation-delay: 45ms; }
+.drawer[data-open="1"] .opt-card:nth-child(3) { animation-delay: 70ms; }
+.drawer[data-open="1"] .opt-card:nth-child(4) { animation-delay: 95ms; }
+.drawer[data-open="1"] .opt-card:nth-child(n+5) { animation-delay: 120ms; }
 
 @keyframes group-in {
   from { opacity: 0; transform: translateY(4px); }
@@ -880,7 +1034,7 @@ button.primary:hover:not(:disabled) { opacity: .88; }
 
   /* 入场/错位动画全部取消，直接显示终态 */
   .panes > .pane,
-  .drawer[data-open="1"] .opt-group,
+  .drawer[data-open="1"] .opt-card,
   .files button,
   .stats-body,
   .status.flash,
@@ -909,7 +1063,7 @@ button.primary:hover:not(:disabled) { opacity: .88; }
   .noscript, #shortcutHint kbd {
     transition-duration: 1ms;
   }
-  .panes > .pane, .drawer[data-open="1"] .opt-group, .files button,
+  .panes > .pane, .drawer[data-open="1"] .opt-card, .files button,
   .stats-body, .status.flash, #output.flash, .badge.pop {
     animation-duration: 1ms;
   }

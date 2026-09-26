@@ -46,6 +46,8 @@ export const VALUE_OPTIONS = {
   debugProtectionInterval: { kind: 'count', group: 'defense', zh: '反调试检测间隔', en: 'Anti-debug interval' },
   vmMode: { kind: 'enum', values: ['global', 'comment', 'only-string'], group: 'vm', zh: 'VMP 目标筛选', en: 'VMP target selection' },
   vmModel: { kind: 'enum', values: ['auto', 'M0', 'M1', 'M2'], group: 'vm', guiHide: true, zh: '寄存器模型（测试用）', en: 'Register model (testing)' },
+  vmCompileKey: { kind: 'string', group: 'vm', zh: '编译期密钥', en: 'Compile-time key', hintZh: '留空则 VM 的密钥材料每次构建随机。填了就由「密钥 + 函数序号」哈希派生掩码、位置散列、轮换函数、字符串表散列、分发仿射常数、链种子与分块密钥：同一密钥每次构建产物可复现，且没有密钥就复现不出掩码，字节码字的解密式凑不出来', hintEn: 'Empty randomizes VM key material per build. When set, the mask, position hash, rotation function, string-table hash, dispatch affine constants, chain seed and block keys are derived from key + function index: the same key reproduces the build, and without the key the mask cannot be reproduced so bytecode words cannot be decoded' },
+  vmRuntimeKeyGetter: { kind: 'string', group: 'vm', zh: '运行时密钥取值', en: 'Runtime key getter', hintZh: '运行期表达式（如 window.__VM_KEY__）。产物在每个 VM 函数开头求值它，用取回的值重跑一遍密钥派生。取回的值必须等于编译期密钥，否则字节码解成垃圾、函数崩掉。必须与编译期密钥同时设置；宿主不提供该密钥时产物无法运行。WASM 解释器内核档忽略本项', hintEn: 'A runtime expression (e.g. window.__VM_KEY__). Each VM-compiled function evaluates it and re-runs the key derivation from the returned value. The value must equal the compile-time key, otherwise the bytecode decodes to garbage and the function breaks. Requires the compile-time key; the artifact will not run unless the host provides it. Ignored by the WASM interpreter tier' },
   vmThreshold: { kind: 'count', group: 'vm', zh: 'VMP 函数最小语句数', en: 'VMP minimum statements' },
   vmDecoyOps: { kind: 'count', group: 'vm', zh: '分发器干扰字总数', en: 'Dispatcher decoy ops' },
   wasmThreshold: { kind: 'count', group: 'vm', zh: 'WASM 搬入最小字节码字数', en: 'WASM minimum bytecode words' },
@@ -118,7 +120,10 @@ const BOOL_LABELS = {
   controlFlowFlattening: ['控制流扁平化', 'Control flow flattening'],
   controlFlowLoopFlattening: ['循环扁平化', 'Loop flattening'],
   vmProtection: ['虚拟机保护（VMP）', 'Virtual machine protection'],
+  vmBytecodeEncoding: ['字节码编码', 'Bytecode encoding'],
   vmDispatchEnc: ['分发条目表加密', 'Encrypted dispatch table'],
+  vmCompactDispatcher: ['紧凑分发器', 'Compact dispatcher'],
+  vmJumpsEncoding: ['跳转编码', 'Jumps encoding'],
   vmPolymorph: ['多态寄存器模型', 'Polymorphic register model'],
   vmBlockDecrypt: ['字节码分块自解密', 'Per-block bytecode self-decryption'],
   wasmInterpreter: ['WASM 解释器内核', 'WASM interpreter core'],
@@ -156,14 +161,62 @@ const BOOL_GROUPS = {
   numberObfuscation: 'flow', controlFlowRollingKey: 'flow',
   logicalExpressions: 'flow', conditionObfuscation: 'flow',
   opaquePredicates: 'flow', deadCodeInjection: 'flow', decoyFunctions: 'flow',
-  vmProtection: 'vm', wasm: 'vm',
-  vmDispatchEnc: 'vm', vmPolymorph: 'vm', vmBlockDecrypt: 'vm',
+  vmProtection: 'vm', vmBytecodeEncoding: 'vm', wasm: 'vm',
+  vmDispatchEnc: 'vm', vmCompactDispatcher: 'vm', vmJumpsEncoding: 'vm', vmPolymorph: 'vm', vmBlockDecrypt: 'vm',
   wasmInterpreter: 'vm', stringScatter: 'strings', antiLLM: 'defense',
   debugProtection: 'defense', debugPoison: 'defense', consoleStub: 'defense',
   antiCDP: 'defense',
   selfDefending: 'defense', envFingerprint: 'defense', integrityCheck: 'defense',
   selfCheck: 'defense', shell: 'defense',
   compact: 'output', escapeNonAscii: 'output', simplify: 'output',
+};
+
+/**
+ * 卡片图标：24×24 线性图标的 path 数据（stroke，不填充）。
+ * 内联成 path 字符串而不是引入图标库——零依赖是硬要求。
+ */
+export const CARD_ICONS = {
+  basic: 'M4 6h16M4 12h16M4 18h16',
+  structure: 'M9 4H8a2 2 0 0 0-2 2v3a2 2 0 0 1-2 2 2 2 0 0 1 2 2v3a2 2 0 0 0 2 2h1M15 4h1a2 2 0 0 1 2 2v3a2 2 0 0 0 2 2 2 2 0 0 0-2 2v3a2 2 0 0 1-2 2h-1',
+  strings: 'M8 4H6a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h2M16 4h2a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-2',
+  flow: 'M4 6h6M14 6h6M4 18h6M14 18h6M10 6l4 12M14 6l-4 12',
+  vm: 'M4 5h16v14H4zM7 9.5l3 2.5-3 2.5M13 15h4',
+  defense: 'M12 3l7 3v6c0 4.2-2.9 7.3-7 9-4.1-1.7-7-4.8-7-9V6z',
+  output: 'M12 4v10M8 11l4 4 4-4M5 19h14',
+};
+
+/**
+ * 选项徽章。**只标真实状态**，不做装饰性标签：
+ *   experimental —— 默认关、属于后期引入的高级项（P3/P4 那几项）
+ *   recommended  —— 当前默认预设里就是开的，属于"建议保持"
+ * 没在这里出现的选项不显示徽章。
+ */
+export const OPTION_BADGES = {
+  vmPolymorph: 'experimental',
+  vmBlockDecrypt: 'experimental',
+  wasmInterpreter: 'experimental',
+  simplify: 'experimental',
+  vmBytecodeEncoding: 'recommended',
+  stringArrayEncoding: 'recommended',
+  stringArrayThreshold: 'recommended',
+  controlFlowFlattening: 'recommended',
+  vmProtection: 'recommended',
+  domainLock: 'recommended',
+  integrityCheck: 'recommended',
+};
+
+/** 布尔项的说明文案。CLI 旗标名由 flagLabel() 补进提示，不必在这里重复。 */
+const BOOL_HINTS = {
+  vmProtection: ['把符合条件的函数体编译成自定义字节码，由注入的解释器循环执行；控制流在静态视图下消失', 'Compiles eligible function bodies into custom bytecode run by an injected interpreter loop; control flow disappears from the static view'],
+  vmBytecodeEncoding: ['字节码字按「值 ^ 位置散列 ^ 掩码 ^ 链值 ^ 块密钥」逐字加密，取指做同一逆运算，并在每次调用入口整体重写；关掉后字节码以明文整数数组存在，仅供排查问题。关掉会让分块自解密与运行时密钥取值失效（前者无密文可分层，后者无掩码可守门），编译期密钥仍会派生字符串表与分发常数、但不再构成门禁', 'Each bytecode word is stored as value ^ position-hash ^ mask ^ chain ^ block-key with the fetch inverting it, and the whole array is rewritten at every call entry; turning it off leaves a plain integer array, for troubleshooting only. It disables block self-decryption (nothing left to layer) and the runtime key getter (no mask left to gate); the compile-time key still diversifies the string table and dispatch constants but no longer acts as a gate'],
+  vmDispatchEnc: ['分发条目表密文化：分发字与语义动作的对应关系不以明文出现在产物里', 'Encrypts the dispatch table: the mapping from dispatch word to semantic action never appears in plaintext'],
+  vmCompactDispatcher: ['强制走直接寻址形态：分发字本身就是下标（字空间是稠密的），不需要桶、桶区间表与桶内扫描。条目按字下标就地存放，每项只存一个加密的动作下标，分发是一次下标加一次调用，比密文表形态更小也更快，静态隐藏程度相同', 'Forces direct addressing: the dispatch word is itself the index (the word space is dense), so no buckets, no bucket-range table and no in-bucket scan. Entries sit at their own word index and each stores one encrypted action index; dispatch is one index plus one call — smaller and faster than the encrypted-table form, with the same static hiding'],
+  vmJumpsEncoding: ['跳转操作数由「目标绝对字下标」改存「目标 − 本指令」的相对差值，运行期用取指游标还原。差值脱离所在位置就没有意义，dump 出解密后的字节码也只看得到相对位移，要还原控制流得先确定每条指令的字跨度。这是叠加在逐字加密之上的第二层；WASM 内核档的解释器按绝对下标硬编码，该档忽略本项', 'Jump operands store (target − this instruction) instead of the absolute word index, restored at runtime from the fetch cursor. The delta is meaningless out of context, so even a dump of the decrypted bytecode only shows relative displacements and recovering the CFG needs each instruction width. A second layer on top of per-word encryption; ignored by the WASM interpreter tier, which is hard-coded to absolute indices'],
+  vmPolymorph: ['逐函数从纯栈 / 寄存器优先 / 双栈分立三种执行结构里随机抽一种，静态数据流模型不再统一', 'Picks one of three execution shapes per function (pure stack / register-first / dual stack) so no single static model holds'],
+  vmBlockDecrypt: ['字节码按块自解密：块边界逐构建随机，任一时刻内存里最多一两块明文', 'Per-block bytecode self-decryption: block boundaries are randomized per build, at most one or two blocks are plaintext at any moment'],
+  wasmInterpreter: ['把解释器本体（取指、解密、分发、值栈）编译进共享 WASM 模块，JS 侧只剩桥接语句', 'Compiles the interpreter core (fetch, decrypt, dispatch, value stack) into a shared WASM module, leaving only bridge statements in JS'],
+  wasm: ['WASM 虚拟机档：整体走 WASM 内核的强档', 'WASM VM tier: the stronger tier running through the WASM core'],
+  integrityCheck: ['自校验产物摘要，被改一个字节即失败', 'Self-checks the artifact digest; a single modified byte fails it'],
 };
 
 export const OPTION_GROUPS = [
@@ -174,7 +227,7 @@ export const OPTION_GROUPS = [
   { id: 'vm', zh: '虚拟机与 WASM', en: 'VM & WASM' },
   { id: 'defense', zh: '防护与外壳', en: 'Protection' },
   { id: 'output', zh: '输出', en: 'Output' },
-];
+].map((g) => ({ ...g, icon: CARD_ICONS[g.id] }));
 
 export function guiOptions() {
   const out = [];
@@ -188,6 +241,7 @@ export function guiOptions() {
       en: spec.en || key,
       hintZh: spec.hintZh,
       hintEn: spec.hintEn,
+      badge: OPTION_BADGES[key],
       values: spec.values,
       intRange: spec.intRange,
       min: spec.min,
@@ -198,12 +252,16 @@ export function guiOptions() {
   for (const key of Object.keys(DEFAULTS)) {
     if (!BOOL_OPTIONS.has(key)) continue;
     const labels = BOOL_LABELS[key] || [key, key];
+    const hint = BOOL_HINTS[key];
     out.push({
       key,
       kind: 'bool',
       group: BOOL_GROUPS[key] || 'structure',
       zh: labels[0],
       en: labels[1],
+      hintZh: hint ? hint[0] : undefined,
+      hintEn: hint ? hint[1] : undefined,
+      badge: OPTION_BADGES[key],
       def: DEFAULTS[key],
     });
   }

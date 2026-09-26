@@ -215,43 +215,102 @@ function renderOptions() {
   for (const g of OPTION_GROUPS) {
     const list = byGroup.get(g.id) || [];
     if (!list.length) continue;
-    const box = document.createElement('div');
-    box.className = 'opt-group';
+    // 每个分组渲染成一张卡片：标题栏是「图标 + 组名」，下面是选项行。
+    const card = document.createElement('section');
+    card.className = 'opt-card';
+
+    const head = document.createElement('header');
+    head.className = 'opt-card-head';
+    head.appendChild(svgIcon(g.icon));
     const h = document.createElement('h4');
     h.textContent = state.lang === 'zh' ? g.zh : g.en;
-    box.appendChild(h);
+    head.appendChild(h);
+    card.appendChild(head);
 
-    for (const opt of list) {
-      box.appendChild(renderOption(opt));
-    }
-    groups.appendChild(box);
+    const body = document.createElement('div');
+    body.className = 'opt-card-body';
+    for (const opt of list) body.appendChild(renderOption(opt));
+    card.appendChild(body);
+    groups.appendChild(card);
   }
   host.appendChild(groups);
   refreshGateStyles();
 }
 
-/** 单个选项的控件。 */
+/** 24×24 线性图标节点，路径数据来自 options-meta 的 CARD_ICONS。 */
+function svgIcon(d) {
+  const NS = 'http://www.w3.org/2000/svg';
+  const svg = document.createElementNS(NS, 'svg');
+  svg.setAttribute('viewBox', '0 0 24 24');
+  svg.setAttribute('fill', 'none');
+  svg.setAttribute('stroke', 'currentColor');
+  svg.setAttribute('stroke-width', '1.8');
+  svg.setAttribute('stroke-linecap', 'round');
+  svg.setAttribute('stroke-linejoin', 'round');
+  svg.setAttribute('aria-hidden', 'true');
+  if (d) {
+    const p = document.createElementNS(NS, 'path');
+    p.setAttribute('d', d);
+    svg.appendChild(p);
+  }
+  return svg;
+}
+
+/** 徽章节点。文案跟徽章语义走，不随语言变（与图中的英文标签一致）。 */
+function badgeNode(kind) {
+  const b = document.createElement('span');
+  b.className = 'obadge obadge-' + kind;
+  b.textContent = kind === 'recommended' ? 'RECOMMENDED' : 'EXPERIMENTAL';
+  return b;
+}
+
+/**
+ * ⓘ 说明按钮。提示文本放 data-tip，由 CSS 的 ::after 显示，不需要额外脚本状态。
+ * 必须拦掉点击：这一行是 <label>，按钮在 label 里会被转成对控件的激活（开关就是翻转）。
+ */
+function infoBtn(tip) {
+  const b = document.createElement('button');
+  b.type = 'button';
+  b.className = 'info';
+  b.dataset.tip = tip;
+  b.setAttribute('aria-label', tip);
+  b.textContent = 'i';
+  b.addEventListener('click', (e) => { e.preventDefault(); e.stopPropagation(); });
+  return b;
+}
+
+/**
+ * 单个选项的控件。
+ * 开关项渲染成 [开关] 名称 [徽章] [ⓘ]（与图一致）；字符串项的输入框折到第二行整行宽，
+ * 枚举与数值项的控件留在行尾。
+ */
 function renderOption(opt) {
-  const row = document.createElement('label');
-  row.className = 'opt-row';
+  const row = document.createElement('div');
+  row.className = 'opt-row' + (opt.kind === 'bool' ? ' is-bool' : '');
   row.dataset.key = opt.key;
 
   const label = state.lang === 'zh' ? opt.zh : opt.en;
-  const name = document.createElement('span');
+  const hint = state.lang === 'zh' ? opt.hintZh : (opt.hintEn || opt.hintZh);
+  const tip = [label, flagLabel(opt.key) || '', hint || ''].filter(Boolean).join('\n');
+
+  const name = document.createElement('label');
   name.className = 'name';
   name.textContent = label;
-  name.title = (flagLabel(opt.key) || '') + (opt.hintZh || opt.hintEn
-    ? '  ' + (state.lang === 'zh' ? opt.hintZh : (opt.hintEn || opt.hintZh)) : '');
 
   if (opt.kind === 'bool') {
-    name.textContent = label;
     const cb = document.createElement('input');
     cb.type = 'checkbox';
     cb.checked = state.touched.has(opt.key) ? !!state.touched.get(opt.key) : !!presetValue(opt.key);
     cb.addEventListener('change', () => mark(opt.key, cb.checked, cb));
-    row.append(name, cb);
+    row.append(cb, name);
+    if (opt.badge) row.appendChild(badgeNode(opt.badge));
+    row.appendChild(infoBtn(tip));
     return row;
   }
+
+  row.appendChild(name);
+  if (opt.badge) row.appendChild(badgeNode(opt.badge));
+  row.appendChild(infoBtn(tip));
 
   let ctl;
   if (opt.kind === 'enum') {
@@ -290,7 +349,11 @@ function renderOption(opt) {
     ctl.value = String(state.touched.has(opt.key) ? state.touched.get(opt.key) : presetValue(opt.key));
   }
   ctl.className = 'opt-ctl';
+  if (opt.kind === 'string') ctl.classList.add('wide'); // 折行占满整行
   if (state.touched.has(opt.key)) ctl.classList.add('dirty');
+  // 行不再是 <label> 包住控件，点名与控件的关联靠 for/id 保住
+  ctl.id = 'opt-' + opt.key;
+  name.htmlFor = ctl.id;
 
   if (opt.key === 'preset') {
     // 预设切换沿用原 chips 的语义（"选预设 = 整套套用这份默认值"）：
@@ -305,7 +368,7 @@ function renderOption(opt) {
       refreshGateStyles();
       updatePresetHint();
     });
-    row.append(name, ctl);
+    row.appendChild(ctl);
     return row;
   }
 
@@ -321,7 +384,7 @@ function renderOption(opt) {
   ctl.addEventListener('change', commit);
   ctl.addEventListener('input', () => { ctl.classList.add('dirty'); });
 
-  row.append(name, ctl);
+  row.appendChild(ctl);
   return row;
 }
 
