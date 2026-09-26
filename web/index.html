@@ -8,13 +8,14 @@
 <title>JsLabyrinth — JS 混淆器</title>
 <meta name="description" content="JsLabyrinth 混淆器网页版：混淆在浏览器内完成，代码不出本机。">
 <meta name="color-scheme" content="dark light">
-<meta name="theme-color" content="#0f172a" media="(prefers-color-scheme: dark)">
-<meta name="theme-color" content="#edf1f7" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#262624" media="(prefers-color-scheme: dark)">
+<meta name="theme-color" content="#f5f4ed" media="(prefers-color-scheme: light)">
 <meta property="og:type" content="website">
 <meta property="og:title" content="JsLabyrinth — JS 混淆器">
 <meta property="og:description" content="浏览器内运行的 JavaScript 混淆器，代码不出本机，不需要把源码上传到任何服务器。">
 <meta name="twitter:card" content="summary">
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ctext y='26' font-size='26'%3E%F0%9F%8C%80%3C/text%3E%3C/svg%3E">
+<!-- 站点图标：Claude 式星芒（terracotta 描边），与 .topbar .brand .logo 同一形状 -->
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cg fill='none' stroke='%23d97757' stroke-width='3' stroke-linecap='round'%3E%3Cpath d='M16 3.5v6.2M16 22.3v6.2M3.5 16h6.2M22.3 16h6.2M7.2 7.2l4.4 4.4M20.4 20.4l4.4 4.4M24.8 7.2l-4.4 4.4M11.6 20.4l-4.4 4.4'/%3E%3C/g%3E%3C/svg%3E">
 
 <!-- 首屏防闪：在样式表之前把已存的深浅色与语言贴到 <html> 上。
      放在 app.js 里做会晚一帧，浅色用户每次加载都先闪一下深色底。 -->
@@ -46,7 +47,13 @@
   <div class="main">
     <header class="topbar">
       <div class="brand">
-        <span class="logo" aria-hidden="true">🌀</span>
+        <!-- 品牌标记是内联 SVG 星芒（描边取 currentColor → CSS 里的 --accent）：
+            原来是 🌀 彩色 emoji，无法随主题变色，在暖色纸感底上会跳色。 -->
+        <span class="logo" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round">
+            <path d="M12 2.6v5.1M12 16.3v5.1M2.6 12h5.1M16.3 12h5.1M5.4 5.4l3.6 3.6M15 15l3.6 3.6M18.6 5.4L15 9M9 15l-3.6 3.6"/>
+          </svg>
+        </span>
         <div class="brand-text">
           <h1 data-i18n="guiTitle">JsLabyrinth 混淆器</h1>
           <span class="ver" id="ver"></span>

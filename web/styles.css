@@ -2,11 +2,14 @@
 
 :root {
   color-scheme: dark;
-  /* 设计语言对齐 obfuscator.io（2026-09-22 用 Playwright 实测其线上计算值）：
-     底 slate-900 #0f172a、卡片 slate-800 系、边框 slate-700 #334155、
-     文字 #f8fafc / 次级 #94a3b8、强调青 #2dbce6、Inter 字体栈。
-     其"高级感"来源：大圆角（卡片 16px）、药丸徽章/按钮（999px）、
-     玻璃感渐变 CTA（半透明青→深蓝 + 青描边 + 上下内阴影）。逐条对齐。
+  /* 设计语言对齐 Claude / Anthropic 官网。色值取自其公开品牌规范：
+     主强调 terracotta #d97757（小字用更深的 #a8502f 才过 AA）、
+     近黑 #141413、暖白 #faf9f5、暖银 #b0aea5、深面 #30302e、
+     边框暖灰 #e8e6dc / #f0eee6、次强调 slate 蓝 #6a9bcc。
+     其"温度"来源：整套中性色都带黄红相（不用冷灰/纯灰），卡片只比底色
+     亮一档、边框极浅、投影近乎不可见（whisper），层次靠暖色而非高对比；
+     标题走衬线（Anthropic Serif → Georgia），功能文字走无衬线。
+     逐条对齐到下面这些变量，组件规则里不再出现任何裸色值。
 
      纯色基色。**不能删**：它们是主题切换过渡的载体。
      background-image（渐变）在 Chrome 里不参与插值，只写 gradient 的话
@@ -17,72 +20,81 @@
      两者同时存在时 background-image 盖在 background-color 上，
      而 background-color 的过渡仍然可见（渐变多为半透明感的低对比层）。
      纯色值取对应渐变复合到所在底色上的中间调。 */
-  --bg: #0f172a;
-  --bg-soft: #1e293b;
-  --bg-pane: #1b2537;
-  --line: #334155;
-  --line-soft: #26334a;
-  --fg: #f8fafc;
-  --fg-dim: #94a3b8;
-  --accent: #2dbce6;
-  --accent-dim: #1e4057;
-  --ok: #34d399;
-  --warn: #fbbf24;
-  --err: #f87171;
-  --mono: ui-monospace, "Cascadia Mono", "JetBrains Mono", Consolas, "Courier New", monospace;
+  --bg: #262624;
+  --bg-soft: #1f1e1d;
+  --bg-pane: #30302e;
+  --line: #3d3d3a;
+  --line-soft: #363632;
+  --fg: #faf9f5;
+  --fg-dim: #b0aea5;
+  --accent: #d97757;
+  --accent-dim: #4a2e24;
+  /* 语义色也留在暖色族里：鼠尾草绿 / 暖金 / 暖红，与 terracotta 同温 */
+  --ok: #8fa86b;
+  --warn: #d6a84a;
+  --err: #e06c75;
+  --mono: "SFMono-Regular", "SF Mono", ui-monospace, "Cascadia Mono", "JetBrains Mono", Consolas, "Courier New", monospace;
   /* Inter 放最前是渐进增强：用户装了就用，没装走后备，不引入任何下载 */
   --ui: Inter, system-ui, -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
-  --radius: 10px;
-  --radius-lg: 16px;
-  /* 主按钮的过渡载体色 = 其渐变两端复合到卡片底上的中间值（#1e4f71 附近） */
-  --grad-accent-solid: #1e4f71;
-  --btn-line: rgba(45,188,230,.5);
-  --shadow-pane: 0 12px 32px rgba(2, 6, 23, .45);
+  /* 衬线用于标题/品牌：Anthropic Serif 未公开分发，Georgia 是官方后备；
+     中文补宋体系，避免中英混排时半句变宋半句变黑 */
+  --serif: "Anthropic Serif", "Tiempos Text", Georgia, "Noto Serif SC", "Source Han Serif SC", "Songti SC", "SimSun", serif;
+  --radius: 8px;
+  --radius-lg: 12px;
+  /* 主按钮的过渡载体色 = 其渐变两端复合到卡片底上的中间值（#a85333 附近） */
+  --grad-accent-solid: #a85333;
+  --btn-line: rgba(217,119,87,.45);
+  /* Claude 的 whisper 投影：大模糊、极低不透明度，只暗示浮起，不画可见阴影 */
+  --shadow-pane: 0 4px 24px rgba(0,0,0,.42);
 
   /* 渐变层。六条按用途分层（页面 / 横条 / 面板 / 凹槽 / 强调 / 小片），
      不是按颜色分——这样调某类区域时知道该动哪一条。
-     页面那条的第一个 radial 是右上角青色辉光，对应其落地页 hero 的氛围光。
+     页面那条的第一个 radial 是右上角 terracotta 辉光，对应其官网 hero 的氛围光。
 
      ⚠️ 这些渐变的色值**必须带 alpha**（rgba 而不是 #rrggbb）。
      主题过渡实际由下层 background-color 承担，渐变若完全不透明就会
      把它整块盖住，切主题又变回硬跳。
      实测过：全不透明的 6 位色值下，切主题时像素从 [13,16,22] 直接跳到
      [241,244,249]，中间零帧；改成半透明后才有连续过渡。 */
-  --grad-page: radial-gradient(1100px 520px at 78% -10%, rgba(45,188,230,.13) 0%, rgba(45,188,230,0) 62%), linear-gradient(180deg, rgba(30,64,92,.26) 0%, rgba(15,23,42,0) 46%);
-  --grad-bar: linear-gradient(90deg, rgba(48,66,96,.45) 0%, rgba(28,38,56,.22) 50%, rgba(36,54,82,.38) 100%);
-  --grad-pane: linear-gradient(165deg, rgba(40,58,86,.40) 0%, rgba(24,34,52,.16) 55%, rgba(19,28,45,.20) 100%);
-  --grad-well: linear-gradient(180deg, rgba(9,15,28,.50) 0%, rgba(12,19,34,.30) 100%);
-  --grad-accent: linear-gradient(135deg, rgba(45,188,230,.55) 0%, rgba(20,39,90,.55) 100%);
-  --grad-chip: linear-gradient(135deg, rgba(46,64,94,.50) 0%, rgba(30,42,64,.32) 100%);
+  --grad-page: radial-gradient(1100px 520px at 78% -10%, rgba(217,119,87,.11) 0%, rgba(217,119,87,0) 62%), linear-gradient(180deg, rgba(122,92,72,.10) 0%, rgba(38,38,36,0) 46%);
+  --grad-bar: linear-gradient(90deg, rgba(74,70,64,.42) 0%, rgba(46,44,40,.20) 50%, rgba(62,58,52,.36) 100%);
+  --grad-pane: linear-gradient(165deg, rgba(78,73,66,.34) 0%, rgba(50,48,43,.14) 55%, rgba(44,42,38,.18) 100%);
+  --grad-well: linear-gradient(180deg, rgba(18,18,17,.50) 0%, rgba(26,26,24,.30) 100%);
+  --grad-accent: linear-gradient(135deg, rgba(176,86,47,.95) 0%, rgba(150,68,39,.95) 100%);
+  --grad-chip: linear-gradient(135deg, rgba(84,78,70,.45) 0%, rgba(56,53,48,.30) 100%);
 }
 
 html.light {
   color-scheme: light;
-  --bg: #edf1f7;
-  --bg-soft: #ffffff;
-  --bg-pane: #ffffff;
-  --line: #d8e0ec;
-  --line-soft: #e6ebf3;
-  --fg: #0f172a;
-  --fg-dim: #5f6f85;
-  --accent: #0e7490;
-  --accent-dim: #d5f2fb;
-  --ok: #047857;
-  --warn: #b45309;
-  --err: #dc2626;
-  --grad-accent-solid: #295d95;
-  --btn-line: rgba(14,116,144,.4);
-  --shadow-pane: 0 12px 32px rgba(15, 23, 42, .08);
+  /* 浅色就是 Claude 官网那套"纸感"：底 Parchment #f5f4ed、卡片 Ivory #faf9f5
+     ——两者几乎同色，只差一档形成极轻的层；边框暖灰，正文近黑 #141413。
+     小字强调色比品牌 terracotta 更深（#a8502f）：品牌色在米底上只有 3.4:1，
+     达不到正文 AA，只留给按钮底与图表这类非文字用途。 */
+  --bg: #f5f4ed;
+  --bg-soft: #f0eee6;
+  --bg-pane: #faf9f5;
+  --line: #e8e6dc;
+  --line-soft: #efece3;
+  --fg: #141413;
+  --fg-dim: #5e5d59;
+  --accent: #a8502f;
+  --accent-dim: #f3e4dc;
+  --ok: #4f6b3a;
+  --warn: #8a6d1f;
+  --err: #b53333;
+  --grad-accent-solid: #a85333;
+  --btn-line: rgba(168,80,47,.45);
+  --shadow-pane: 0 4px 24px rgba(20,20,19,.06);
 
-  /* 浅色把同一套青色语言压到高明度底上：辉光更淡，其余渐变更实一点
-     （浅底上太透会显脏）。主按钮渐变浓度提到 .9：白字要过 AA——
-     青端复合到白底约 #247189，白字 5.5:1；浓度低了就掉到 4 以下。 */
-  --grad-page: radial-gradient(1100px 520px at 78% -10%, rgba(45,188,230,.18) 0%, rgba(45,188,230,0) 62%), linear-gradient(180deg, rgba(255,255,255,.70) 0%, rgba(237,241,247,0) 46%);
-  --grad-bar: linear-gradient(90deg, rgba(255,255,255,.85) 0%, rgba(248,250,252,.50) 50%, rgba(240,246,252,.72) 100%);
-  --grad-pane: linear-gradient(165deg, rgba(255,255,255,.92) 0%, rgba(249,251,254,.55) 55%, rgba(242,246,252,.65) 100%);
-  --grad-well: linear-gradient(180deg, rgba(236,242,248,.90) 0%, rgba(245,248,252,.55) 100%);
-  --grad-accent: linear-gradient(135deg, rgba(12,98,124,.90) 0%, rgba(23,52,150,.90) 100%);
-  --grad-chip: linear-gradient(135deg, rgba(255,255,255,.95) 0%, rgba(238,244,251,.60) 100%);
+  /* 浅色把同一套暖色语言压到高明度底上：辉光更淡，其余渐变更实一点
+     （浅底上太透会显脏）。主按钮沿用与深色完全相同的一段深 terracotta——
+     品牌色 #d97757 压白字只有 3.9:1，过不了 AA，所以按钮底统一压深。 */
+  --grad-page: radial-gradient(1100px 520px at 78% -10%, rgba(217,119,87,.14) 0%, rgba(217,119,87,0) 62%), linear-gradient(180deg, rgba(255,255,255,.70) 0%, rgba(245,244,237,0) 46%);
+  --grad-bar: linear-gradient(90deg, rgba(255,255,255,.85) 0%, rgba(240,238,230,.55) 50%, rgba(245,244,237,.75) 100%);
+  --grad-pane: linear-gradient(165deg, rgba(255,255,255,.92) 0%, rgba(250,249,245,.55) 55%, rgba(245,244,237,.65) 100%);
+  --grad-well: linear-gradient(180deg, rgba(236,233,224,.90) 0%, rgba(245,244,237,.55) 100%);
+  --grad-accent: linear-gradient(135deg, rgba(176,86,47,.95) 0%, rgba(150,68,39,.95) 100%);
+  --grad-chip: linear-gradient(135deg, rgba(255,255,255,.95) 0%, rgba(240,238,230,.62) 100%);
 }
 
 
@@ -93,12 +105,12 @@ html, body {
   height: 100%;
 }
 
-/* 文字选区用强调青：默认的蓝在青色语言里显得突兀 */
-::selection { background: rgba(45,188,230,.32); }
-html.light ::selection { background: rgba(14,116,144,.20); }
+/* 文字选区用 terracotta：默认的蓝在暖色语言里显得突兀 */
+::selection { background: rgba(217,119,87,.32); }
+html.light ::selection { background: rgba(201,100,66,.22); }
 
 /* 细滚动条。Windows 默认滚动条又宽又灰，是"土"感的重要来源之一；
-   药丸拇指 + 透明轨道贴近 obfuscator.io 的观感。仅 webkit 前缀，
+   药丸拇指 + 透明轨道贴近 Claude 官网的观感。仅 webkit 前缀，
    Firefox 走 color-scheme 的默认深/浅滚动条。 */
 ::-webkit-scrollbar { width: 10px; height: 10px; }
 ::-webkit-scrollbar-track { background: transparent; }
@@ -120,7 +132,7 @@ body {
   overflow: hidden;
 }
 
-/* ---------- 两栏外壳（布局语言对齐 obfuscator.io dashboard）---------- */
+/* ---------- 外壳：单列 ---------- */
 
 /* 单列外壳：左导航已在 2026-09-23 整块移除（web/index.html 的注释里说），品牌 + 预设
    + 设置合并到 .topbar，主列只剩状态条 + 面板 + 选项抽屉 + 状态栏。
@@ -168,12 +180,26 @@ body {
   min-width: 0;
   flex: 0 0 auto;
 }
+/* 品牌标记：Claude 式星芒（terracotta 描边），替换原来的彩色 emoji——
+   彩色 emoji 不随主题变色，在暖色纸感底上会整块跳色。 */
 .topbar .brand .logo {
-  width: 30px;
-  height: 30px;
-  font-size: 16px;
+  width: 28px;
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--accent);
 }
-.topbar .brand h1 { font-size: 15px; margin: 0; font-weight: 700; letter-spacing: -.01em; white-space: nowrap; }
+.topbar .brand .logo svg { width: 21px; height: 21px; display: block; }
+/* 品牌名走衬线（Claude 的标题字体族），字重取 500 而非 700 */
+.topbar .brand h1 {
+  font-family: var(--serif);
+  font-size: 17px;
+  font-weight: 500;
+  margin: 0;
+  letter-spacing: .01em;
+  white-space: nowrap;
+}
 .topbar .brand .ver { color: var(--fg-dim); font-size: 11.5px; }
 .topbar .brand-text { display: flex; flex-direction: column; min-width: 0; gap: 1px; }
 
@@ -183,10 +209,6 @@ body {
 .topbar #themeBtn { height: 32px; }
 .topbar #lang { width: auto; min-width: 96px; margin-left: auto; }
 .topbar #themeBtn { width: auto; padding: 0 12px; }
-
-/* 主题按钮的图标：emoji 字形，与品牌标记同一族。文案仍由 JS 按当前主题写入。 */
-#themeBtn::before { content: '☀️'; margin-right: 6px; font-size: 13px; }
-html.light #themeBtn::before { content: '🌙'; }
 
 /* ---------- 主列顶条 ---------- */
 
@@ -247,15 +269,18 @@ button.mini:hover, select.mini:hover { border-color: var(--accent); }
 button.mini:active { transform: translateY(1px); }
 
 button.primary {
-  /* 玻璃渐变按钮，逐项取自 obfuscator.io 的 CTA 实测值：
-     半透明青→深蓝渐变（.55 alpha）+ 青色描边 + 上白下黑内阴影（玻璃斜面高光）。
-     白字在青端复合色上约 5.4:1，两套主题都过 AA（浅色端渐变浓度已相应加大）。
-     药丸形（999px）对应它家 CTA 的 32px 大圆角。 */
+  /* 实心 terracotta 主按钮，对齐 Claude 的 Brand CTA：
+     暖橙渐变 + 同色描边 + 极轻的上下内阴影（斜面高光）。
+     白字必须过 AA，所以按钮底统一压深到 #b0562f → #964427 一段。
+     实测（文字是奶油白 #faf9f5，不是纯白）：渐变最亮端 4.73:1、中点 5.38:1、
+     暗端 6.23:1，14px/600 过 AA。品牌色 #d97757 压白字只有 3.9:1，
+     只留给描边、强调与图表，不做按钮底。
+     圆角 8px 对应该站 CTA 的 comfortably rounded 一档，不做药丸。 */
   background-color: var(--grad-accent-solid);
   background-image: var(--grad-accent);
-  color: #f8fafc;
+  color: #faf9f5;
   border: 1px solid var(--btn-line);
-  border-radius: 999px;
+  border-radius: 8px;
   padding: 5px 16px;
   font: inherit;
   font-weight: 600;
@@ -303,8 +328,8 @@ input.text:focus, select.mini:focus, button:focus-visible, textarea:focus {
   background-color: var(--bg-pane);
   background-image: var(--grad-pane);
   border: 1px solid var(--line);
-  /* 16px 大圆角 + 深投影是现代 SaaS 卡片的两个标志性特征，
-     8px 小圆角是"老后台"观感的主要来源之一 */
+  /* Claude 的卡片只有 1px 浅边 + whisper 投影，层次靠暖色而非阴影；
+     圆角收到 12px（其 generously rounded 一档），不做重投影。 */
   border-radius: var(--radius-lg);
   box-shadow: var(--shadow-pane);
   overflow: hidden;
@@ -322,12 +347,11 @@ input.text:focus, select.mini:focus, button:focus-visible, textarea:focus {
 }
 
 .pane-head h2 {
-  font-size: 13px;
+  font-size: 12.5px;
   margin: 0;
   font-weight: 600;
   color: var(--fg-dim);
-  text-transform: uppercase;
-  letter-spacing: .04em;
+  letter-spacing: .01em;
 }
 
 .pane-tools { margin-left: auto; display: flex; gap: 6px; flex-wrap: wrap; }
@@ -446,10 +470,10 @@ input.text:focus, select.mini:focus, button:focus-visible, textarea:focus {
 }
 
 .drawer h3 {
-  font-size: 12px;
+  font-size: 12.5px;
   color: var(--fg-dim);
-  text-transform: uppercase;
-  letter-spacing: .04em;
+  font-weight: 600;
+  letter-spacing: .01em;
   margin: 10px 0 6px;
 }
 
@@ -995,10 +1019,11 @@ button.primary:hover:not(:disabled) { filter: brightness(1.1); }
 
 /* ---------- 混淆强度对比弹窗（十维雷达，零依赖手绘 SVG） ---------- */
 
-/* 对比弹窗专用配色：JsLabyrinth 用站点强调青，obfuscator.io 用暖橙区分。
+/* 对比弹窗专用配色：JsLabyrinth 用站点主强调 terracotta，obfuscator.io 用品牌规范里的
+   次强调 slate 蓝区分——暖冷对撞在雷达图上边界最清楚，也不会与主强调撞色。
    随深浅主题切换，与站点其余组件同一套变量语言。 */
-:root { --cmp-js: #2dbce6; --cmp-js-fill: rgba(45,188,230,.16); --cmp-obf: #f97316; --cmp-obf-fill: rgba(249,115,22,.14); }
-html.light { --cmp-js: #0e7490; --cmp-js-fill: rgba(14,116,144,.13); --cmp-obf: #c2410c; --cmp-obf-fill: rgba(194,65,12,.12); }
+:root { --cmp-js: #d97757; --cmp-js-fill: rgba(217,119,87,.16); --cmp-obf: #6a9bcc; --cmp-obf-fill: rgba(106,155,204,.16); }
+html.light { --cmp-js: #c96442; --cmp-js-fill: rgba(201,100,66,.14); --cmp-obf: #3f6f9e; --cmp-obf-fill: rgba(63,111,158,.13); }
 
 .compare-modal {
   position: fixed;
@@ -1010,8 +1035,8 @@ html.light { --cmp-js: #0e7490; --cmp-js-fill: rgba(14,116,144,.13); --cmp-obf: 
   padding: 20px;
 }
 .compare-modal[hidden] { display: none; }
-.compare-backdrop { position: absolute; inset: 0; background: rgba(2, 6, 23, .6); }
-html.light .compare-backdrop { background: rgba(15, 23, 42, .32); }
+.compare-backdrop { position: absolute; inset: 0; background: rgba(20,20,19,.62); }
+html.light .compare-backdrop { background: rgba(20,20,19,.30); }
 
 .compare-card {
   position: relative;
@@ -1027,7 +1052,7 @@ html.light .compare-backdrop { background: rgba(15, 23, 42, .32); }
 }
 
 .compare-head { display: flex; align-items: center; gap: 12px; }
-.compare-head h2 { font-size: 15px; margin: 0; font-weight: 700; letter-spacing: -.01em; }
+.compare-head h2 { font-family: var(--serif); font-size: 17px; margin: 0; font-weight: 500; letter-spacing: 0; }
 .compare-head #compareClose { margin-left: auto; width: 32px; padding: 0; }
 
 .compare-note { color: var(--fg-dim); font-size: 12.5px; margin: 8px 0 14px; }
