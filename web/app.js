@@ -504,6 +504,12 @@ function enableReorder(container, itemSel, opts) {
       if (Math.abs(e.clientX - drag.x) + Math.abs(e.clientY - drag.y) < 5) return;
       live = true;
       drag.el.classList.add('dragging');
+      // 入场动画必须掐掉：DOM 一重排，节点就被重新插入，而 CSS 动画在重新插入时
+      // 会**重启**。group-in / pane-in 都是 backwards 填充 + from{opacity:0}，重启
+      // 瞬间元素是全透明的——拖动时每重排一次就闪一次，看着就是"卡片莫名消失"。
+      // 这个标记**故意不清**：松手就清会让动画在落位那一刻再闪一次。抽屉那边由
+      // setDrawer 在下次打开时清（入场动画本来就该每次开抽屉重播一次）。
+      container.classList.add('reordering');
     }
     place(e);
     e.preventDefault(); // 拖动中别选中文本
@@ -816,6 +822,12 @@ function setStatus(msg, kind) {
 function setDrawer(open) {
   els.drawer.setAttribute('data-open', open ? '1' : '0');
   els.optsBtn.setAttribute('aria-expanded', String(open));
+  // 每次打开都重播卡片那套错位入场，所以把拖动重排期间加的 reordering 标记清掉
+  // （它当初是为了掐断"重排导致入场动画重启"而留下的，见 enableReorder）。
+  if (open) {
+    const g = document.querySelector('.opt-groups');
+    if (g) g.classList.remove('reordering');
+  }
 }
 
 function setBusy(on) {

@@ -448,6 +448,13 @@ html.light .pane { box-shadow: var(--shadow-pane), inset 0 1px 0 rgba(255, 255, 
 }
 html.light .dragging { box-shadow: var(--shadow-pane), 0 8px 22px rgba(20, 20, 19, .16); }
 
+/* 拖动重排期间掐掉入场动画。
+   CSS 动画在节点被重新插入 DOM 时会**重启**，而 group-in / pane-in 都是
+   `backwards` 填充 + `from { opacity: 0 }`——重启后到各自 animation-delay 结束
+   之前，元素是全透明的。重排每发生一次就重启一次，于是拖动时表现为"卡片/面板
+   莫名消失、也不跟着手实时重绘"。这个标记由 enableReorder 打上（见 app.js）。 */
+.reordering > * { animation: none !important; }
+
 /* 落点插入线。用 ::after 画在目标块的某一侧，横向网格下就是一条竖线。
    落在最后（追加到末尾）时没有"后继"可依附，改用容器的 ::after 兜底。 */
 .drop-mark::after {
