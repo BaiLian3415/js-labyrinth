@@ -295,6 +295,28 @@ function obfuscate(code, userOptions) {
   if (options.envFingerprint) applyPass(envFingerprint, 'envFingerprint');
   if (options.functionWrapper) timePass('functionWrapper', () => functionWrapper(ast, options, ctx));
   if (options.callProxy) applyPass(callProxy, 'callProxy');
+  // ---- domainLock 与 WASM 档互锁（2026-09-27 实测发现）----
+  //
+  // 两者不兼容，且是**旧实现里就存在**的潜在问题：wasm 档会把未被函数或导出引用的
+  // 顶层语句搬进它合成的 main()，而 domainLock 的授权贡献（+Q）靠 insertHeadEarly
+  // 落在头部、必须在任何字符串池访问之前执行。搬进 main() 后时序全变，实测**授权
+  // 主机上产物直接抛错**（不是腐蚀，是 THREW）。显式关掉 wasm 即恢复正常，所以
+  // 失败确实由 wasm 引入。
+  //
+  // 平时碰不到它，是因为 domainLock 是用户显式选项、四个预设里默认关；但 wasm
+  // 恢复默认开启后，任何 plus+ 用户开域名锁定就会踩到，所以这里必须互锁。
+  //
+  // 方向选择：**关 wasm，保 domainLock**。domainLock 是用户显式选定的安全功能，
+  // 悄悄把它降级是 fail-open；wasm 是防护/优化层，关掉产物照样正确。这与项目既有
+  // 取舍一致——宁可少一层保护，也不拿自损坏的产物换覆盖率。
+  const dlRequested = Array.isArray(options.domainLock) && options.domainLock.length > 0;
+  if (dlRequested) {
+    if (options.wasm || options.wasmInterpreter) {
+      ctx.wasmDisabledByDomainLock = true;
+      options.wasm = false;
+      options.wasmInterpreter = false;
+    }
+  }
   // WASM 解释器内核档与旧 wasm 档互斥：内核档把解释器整体搬进 WASM，旧档只搬
   // 数据与原语，两者同时开会生成两个模块与两套取指假设，故内核档优先。
   if (options.wasmInterpreter) timePass('wasmvm', () => wasmvm(ast, options, ctx));

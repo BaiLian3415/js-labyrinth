@@ -2056,7 +2056,10 @@ section('P4：多态寄存器模型与字节码分块自解密');
 
   // P4-8 篡改块移位字面量即被检出：块号派生是取指式的一部分，改一位解密即错
   {
-    const r = obfuscate(jumpSrc, { preset: 'high', shell: false, vmBlockDecrypt: true, integrityCheck: false, seed: 3 });
+    // 必须隔离 wasm 档：块移位字面量在 **JS 侧取指式**里，而 high/max 现在默认走
+    // wasm（取指搬进 WASM 模块），JS 产物里自然搜不到 >>>4/5/6。这条探针测的是
+    // JS 侧那一层，所以显式关掉 wasm，与上面的 P4-5/P4-6 一样按档位分开测。
+    const r = obfuscate(jumpSrc, { preset: 'high', shell: false, vmBlockDecrypt: true, integrityCheck: false, seed: 3, wasm: false, wasmInterpreter: false });
     let hit = 0;
     const patched = r.code.replace(/>>>\s*([456])(?![\d.])/g, (m, d) => {
       hit++;
@@ -2989,6 +2992,83 @@ section('JSFuck 壳形式（shellForm）');
 
 // ---------------------------------------------------------------------------
 // ------------------------------------------------- 增强保护（横幅 / 碎片化 / Anti-LLM）
+
+// ---------------------------------------------------------------- WASM 档位
+// 阶段一恢复的 WASM 能力（见 e0d5d32 的移除与 fe2384a 的恢复）。这一段钉四件事：
+//   ① 闸门按档位生效（free 拦、plus+ 放行）——闸门是恢复的一部分，不能只恢复选项；
+//   ② 各预设的**默认**行为：low 关、medium/high 走旧 wasm 档、max 走解释器内核档；
+//   ③ 显式关闭时不该有 wasm pass（那些需要纯 JS VM 行为的隔离测试依赖这一点）；
+//   ④ 开着 wasm 也要同 seed 逐字节可复现。
+// 语义正确性是底线：wasm 档把字节码搬进 WASM 模块、内核档把解释循环整体搬进去，
+// 出错的表现都是"产物跑出错值"，所以每个预设都要真跑一遍比对。
+section('WASM 档位（阶段一恢复）');
+{
+  const makeEnt = (name) => ({
+    plan: name, preset: plan.presetCeiling(name), gates: plan.gates(name), limits: plan.limits(name),
+  });
+  const freeEnt = makeEnt('free');
+  const plusEnt = makeEnt('plus');
+  const bizEnt = makeEnt('business');
+
+  ok(gate.checkOptions({ wasm: true }, freeEnt).ok === false, 'free 开 wasm 被闸门拦下');
+  ok(gate.checkOptions({ wasmInterpreter: true }, freeEnt).ok === false, 'free 开 wasmInterpreter 被闸门拦下');
+  ok(gate.checkOptions({ wasm: true }, plusEnt).ok === true, 'plus 开 wasm 放行');
+  ok(gate.checkOptions({ wasmInterpreter: true }, bizEnt).ok === true, 'business 开 wasmInterpreter 放行');
+  ok(plan.gates('free').wasm === false && plan.gates('free').wasmInterpreter === false
+    && plan.gates('free').rtDepth === 1, 'free 的 wasm 闸门值已恢复',
+    JSON.stringify({ wasm: plan.gates('free').wasm, interp: plan.gates('free').wasmInterpreter, rt: plan.gates('free').rtDepth }));
+
+  // 用足够长的函数体，让 medium 的阈值（64 字）也能被跨过。
+  // ⚠️ 输出必须走 process.stdout.write，**不能用 console.log**：max 预设的
+  // consoleStub 刻意清空 console.*，用它取输出会得到空串，从而把正确产物判成失败
+  // （第一版就是这么写的，自测当场抓到）。
+  const src = 'function fib(n){if(n<2)return n;return fib(n-1)+fib(n-2);}\n'
+    + 'var s="hello world";\n'
+    + 'process.stdout.write(fib(8)+" "+s.length+" "+s+"\\n");';
+  const want = runNode(src, 'wasm-plain.js').trim();
+
+  const tiers = [
+    ['low', null],
+    ['medium', 'wasm'],
+    ['high', 'wasm'],
+    ['max', 'wasmvm'],
+  ];
+  let tierBad = '';
+  for (const [preset, expect] of tiers) {
+    const r = obfuscate(src, { preset, seed: 5, shell: false });
+    const w = r.stats.find((s) => s.pass === 'wasm' || s.pass === 'wasmvm');
+    const got = runNode(r.code, 'wasm-' + preset + '.js').trim();
+    if (got !== want) { tierBad = preset + ' 输出 ' + got.slice(0, 40); break; }
+    const actual = w ? w.pass : null;
+    if (expect === null && actual !== null) { tierBad = preset + ' 不该有 wasm pass，却出现 ' + actual; break; }
+    if (expect !== null && actual !== expect) { tierBad = preset + ' 期望 ' + expect + ' 实得 ' + (actual || '无'); break; }
+  }
+  ok(tierBad === '', '各预设默认 wasm 档位正确且语义保持（low 关 / medium·high 旧档 / max 内核档）', tierBad);
+
+  // 显式关闭：隔离测试依赖"关掉就没有 wasm pass"
+  {
+    const r = obfuscate(src, { preset: 'max', seed: 5, shell: false, wasm: false, wasmInterpreter: false });
+    const w = r.stats.find((s) => s.pass === 'wasm' || s.pass === 'wasmvm');
+    ok(!w, '显式关闭 wasm 后不出现 wasm pass', w ? '仍出现 ' + w.pass : '');
+    ok(runNode(r.code, 'wasm-off.js').trim() === want, '显式关闭后语义仍正确');
+  }
+
+  // 阈值：调高到不可能达到时应搬入 0 个函数
+  {
+    const r = obfuscate(src, { preset: 'high', seed: 5, shell: false, wasm: true, wasmThreshold: 100000 });
+    const w = r.stats.find((s) => s.pass === 'wasm');
+    ok(w && w.result.moved === 0, 'wasmThreshold 生效（阈值过高时 moved=0）', JSON.stringify(w && w.result));
+  }
+
+  // 可复现：wasm 档涉及模块字节生成，必须与 seed 绑定
+  let reproBad = '';
+  for (const preset of ['medium', 'high', 'max']) {
+    const a = obfuscate(src, { preset, seed: 77, shell: false }).code;
+    const b = obfuscate(src, { preset, seed: 77, shell: false }).code;
+    if (a !== b) { reproBad = preset + ' 同 seed 两次不同'; break; }
+  }
+  ok(reproBad === '', 'wasm 开启时同 seed 仍逐字节可复现');
+}
 
 section('增强保护：横幅 / 碎片化 / Anti-LLM');
 {

@@ -20,6 +20,7 @@ export default {
       "vmDispatchEnc": false,
       "vmPolymorph": false,
       "vmBlockDecrypt": false,
+      "wasm": false,
       "callProxy": false,
       "honeyStrings": false,
       "decoyFunctions": false,
@@ -53,8 +54,10 @@ export default {
       "sentinelRate": 0,
       "integrityPoisonPoints": 2,
       "bannerText": [""],
+      "wasmInterpreter": false,
       "stringScatter": false,
       "antiLLM": false,
+      "rtDepth": 1,
       "shellDepth": 1,
       "shellForm": [
         "classic"
@@ -81,6 +84,7 @@ export default {
       "vmDispatchEnc": true,
       "vmPolymorph": false,
       "vmBlockDecrypt": false,
+      "wasm": true,
       "callProxy": true,
       "honeyStrings": true,
       "decoyFunctions": true,
