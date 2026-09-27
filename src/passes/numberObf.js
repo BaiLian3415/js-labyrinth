@@ -29,12 +29,87 @@ const { insideVmFunction } = vmBoundary;
  */
 const RUNTIME_FORM_RATE = 0.25;
 
+/**
+ * MBA（混合布尔算术）形态：位运算与算术**交织**的代数恒等式。
+ *
+ * 与上面那批单一算子形态的区别在于化简成本。`a ^ b` 或 `a + b` 是单算子表达式，
+ * 一个按算子分派的窥孔化简器逐个处理即可；MBA 把 `& | ^ + - * <<` 混在同一棵树里，
+ * 要还原成 V 必须先认出**进位恒等式**这一族关系：
+ *
+ *   x + y = (x ^ y) + 2·(x & y)     进位：xor 是不进位和，and 是被进位的位
+ *   x + y = (x | y) + (x & y)       or = xor + and
+ *   x ^ y = (x | y) - (x & y)       由上一条移项
+ *
+ * 只按算子做局部化简的工具有两种下场：要么化简不动，要么在中间表达式上取错值
+ * （`(x|y) - (x&y)` 若被当成 `(x|y) - (x&y)` 之外的任意近似都会偏）。这正是 MBA
+ * 相对普通常量混淆的增益所在——它不是"把数字写得难认"，而是"让代数化简本身失效"。
+ *
+ * ## 精确性前提（与 eligible 的取值域一致，不可放宽）
+ *
+ * x、y 都取自 [1, V-1] 且 V < 2^30，因此 x、y 均落在 int32 非负区间内：
+ *   - `& | ^` 走 ToInt32 后结果非负且 < 2^31，回写为 Number 精确；
+ *   - 由 x + y = V 得 min(x,y) ≤ V/2，故 `x & y ≤ V/2`，于是 `(x & y) << 1 ≤ V < 2^30`，
+ *     **不会**溢出成负的 int32（这是本族恒等式里唯一有溢出风险的算子，其余无上界压力）；
+ *   - 所有 `+ - *` 的中间量 ≤ 2^31，远在双精度精确整数范围内（2^53）。
+ * 三条合起来保证恒等是**数学意义上的**，不是"在 int32 里恰好成立"。改这里前
+ * 必须重新验算这三条——把取值域放宽到 2^31 就会让 `<< 1` 翻负，产物静默算错。
+ *
+ * @param {number} V 目标值（≥2）
+ * @param {Array<function():object>} forms 追加到这里
+ */
+function mbaForms(V, forms) {
+  // x + y = V，两侧都非平凡（避开 0 与 V，否则恒等式退化成直接暴露 V）
+  const split = () => {
+    const x = randInt(1, V - 1);
+    return [x, V - x];
+  };
+  const xor = (a, b) => t.binaryExpression('^', t.numericLiteral(a), t.numericLiteral(b));
+  const or = (a, b) => t.binaryExpression('|', t.numericLiteral(a), t.numericLiteral(b));
+  const and = (a, b) => t.binaryExpression('&', t.numericLiteral(a), t.numericLiteral(b));
+
+  // (x ^ y) + 2*(x & y)
+  forms.push(() => {
+    const [x, y] = split();
+    return t.binaryExpression('+', xor(x, y),
+      t.binaryExpression('*', t.numericLiteral(2), and(x, y)));
+  });
+  // (x | y) + (x & y)
+  forms.push(() => {
+    const [x, y] = split();
+    return t.binaryExpression('+', or(x, y), and(x, y));
+  });
+  // (x & y) + (x | y) —— 交换加法两侧，文本形态不同、树形不同
+  forms.push(() => {
+    const [x, y] = split();
+    return t.binaryExpression('+', and(x, y), or(x, y));
+  });
+  // (x ^ y) + ((x & y) << 1)
+  forms.push(() => {
+    const [x, y] = split();
+    return t.binaryExpression('+', xor(x, y),
+      t.binaryExpression('<<', and(x, y), t.numericLiteral(1)));
+  });
+  // 2*(x | y) - (x ^ y)
+  forms.push(() => {
+    const [x, y] = split();
+    return t.binaryExpression('-',
+      t.binaryExpression('*', t.numericLiteral(2), or(x, y)), xor(x, y));
+  });
+  // (x & y) * 2 + (x ^ y)
+  forms.push(() => {
+    const [x, y] = split();
+    return t.binaryExpression('+',
+      t.binaryExpression('*', and(x, y), t.numericLiteral(2)), xor(x, y));
+  });
+}
+
 /** 恒等式生成：返回求值严格等于 V 的表达式节点。
  * @param {number} V 目标值
  * @param {object|null} rtState 运行时状态计数器 { id: () => Identifier }，
  *   为空表示不生成运行时形式（本 pass 未启用该形式时）
+ * @param {boolean} mba 是否允许 MBA（混合布尔算术）形态
  */
-function identity(V, rtState) {
+function identity(V, rtState, mba) {
   const forms = [];
   if (V >= 2) {
     // a ^ b，操作数与结果都落在 [0, 2^31)
@@ -73,6 +148,8 @@ function identity(V, rtState) {
         t.binaryExpression('^', t.numericLiteral(a), t.numericLiteral(a ^ x1)),
         t.binaryExpression('-', t.numericLiteral(x2 + d), t.numericLiteral(d)));
     });
+    // MBA：位算与算术交织，单算子窥孔化简失效（见 mbaForms 的说明）
+    if (mba) mbaForms(V, forms);
   }
   // 运行时状态形式（P1）：以上五种操作数全是字面量，常量传播能把整棵表达式折回
   // V，等于给静态分析送答案。这一形式让中间量 depend on 运行期才存在的值：
@@ -94,6 +171,20 @@ function identity(V, rtState) {
             t.binaryExpression('*', rtState.id(), t.numericLiteral(rtState.a)),
             t.numericLiteral(rtState.b)),
           t.numericLiteral(0x1ffff)));
+      // MBA × 运行期状态：xor 用「or 减 and」展开，同一个 C 在两处相消。
+      //   (a^C) ^ ((a^V)^C)  ==  a ^ a ^ V  ==  V
+      // 于是表达式里同时出现 | 、- 、& 三种运算，且中间量 depend on 运行期计数器；
+      // 静态折叠既认不出 C 的取值，也认不出这棵树其实是一个 xor。
+      if (mba && randInt(0, 1) === 1) {
+        const p = () => t.binaryExpression('^', t.numericLiteral(a), rtState.id());
+        const q = () => t.binaryExpression('^',
+          t.binaryExpression('^', t.numericLiteral(a), t.numericLiteral(V)),
+          rtState.id());
+        return t.sequenceExpression([upd,
+          t.binaryExpression('-',
+            t.binaryExpression('|', p(), q()),
+            t.binaryExpression('&', p(), q()))]);
+      }
       const expr = t.binaryExpression('^',
         t.binaryExpression('^', t.numericLiteral(a), rtState.id()),
         t.binaryExpression('^',
@@ -125,11 +216,14 @@ function eligible(path, ctx) {
 }
 
 export default function numberObf(ast, options, ctx) {
-  if (options.numberObfuscation === false) return { replaced: 0 };
+  // 统计口径固定：三条返回路径都带齐同样的字段，否则"是否干活"会改变 stat 形状，
+  // 消费方（自测、界面、bench）就得对两种形状分别兜底。
+  if (options.numberObfuscation === false) return { replaced: 0, runtimeState: 0, mba: false };
   const { traverse, rng } = ctx;
   const threshold = options.numberObfuscationThreshold !== undefined
     ? options.numberObfuscationThreshold : 0.6;
-  if (threshold <= 0) return { replaced: 0 };
+  const mba = !!options.numberObfuscationMBA;
+  if (threshold <= 0) return { replaced: 0, runtimeState: 0, mba };
 
   const targets = [];
   traverse(ast, {
@@ -179,8 +273,8 @@ export default function numberObf(ast, options, ctx) {
   // 随机数消耗序列跟着变，固定 seed 下不可复现
   for (const path of targets) {
     const v = path.node.value;
-    path.replaceWith(identity(v, rtState));
+    path.replaceWith(identity(v, rtState, mba));
     replaced++;
   }
-  return { replaced, runtimeState: rtName ? 1 : 0 };
+  return { replaced, runtimeState: rtName ? 1 : 0, mba };
 }

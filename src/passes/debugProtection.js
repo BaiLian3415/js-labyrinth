@@ -67,6 +67,30 @@ export default function debugProtection(ast, options, ctx) {
       'if(_0cv>=2||(_0cv>=1&&' + ref + '["' + KEYS.insp + '"])){' + poisonSrc(ref) + '}'
     : '');
 
+  /**
+   * 反 Hook / 反 Proxy 专项的命中响应。
+   *
+   * 分两档，依据是"误报可能性"而不是"信号强度"：
+   *
+   *   strong=false（纯身份比对）—— 隐蔽断点 + 确认后投毒（沿用 sentinel 的两级）。
+   *     身份被替换在理论上可能是**语义等价**的 polyfill，留一次确认更稳。头部函数
+   *     有一次性闩锁，所以这条依赖周期复查累积计数才有第二次机会。
+   *
+   *   strong=true（行为探针）—— 隐蔽断点 + **立即投毒**。
+   *     行为探针要求"同一个函数两种途径调用结果不一致"或"Proxy trap 不触发"，
+   *     语义等价的实现**不可能**命中；命中即确定被插桩，再等一次确认只是给攻击者
+   *     多留一个执行窗口（头部只跑一次，周期复查要等定时器，实测沙箱里根本不跑）。
+   *
+   * 代价与逃生口：若宿主在产物加载**之前**就替换了这些内建且语义不等价（例如把
+   * `apply` 换成会改写返回值的转发层），产物会被投毒。这是有意为之的 fail-closed，
+   * 关掉 `debugProtection` 即可规避。
+   */
+  const hookHit = (strong) => {
+    const base = '_0xdg();';
+    if (!poisonable) return base;
+    return base + (strong ? poisonSrc('_0xG') : confirmSrc('_0xG'));
+  };
+
   // 构建期随机阈值
   const TIME_ALLOW = randInt(80, 150);
   const TIME_CONFIRM = TIME_ALLOW + randInt(350, 650);
@@ -195,11 +219,45 @@ export default function debugProtection(ast, options, ctx) {
     '}}})();',
   ];
 
+  // ---- 反 Hook / 反 Proxy 专项：常驻，不参与抽样 ----
+  // 七条探针分两组：身份快照比对（查出"被替换"）与行为自洽（查出"被包装成行为不同的
+  // 等价物"——这类 hook 的身份快照反正是自己，只能靠行为对上）。劫持方要绕过就得同时
+  // 伪造身份与行为。
+  //
+  // **不抽样的理由**：抽样是为了摊薄检查成本，代价是"这一条本次没执行"。尺寸/时差那
+  // 类环境信号即使漏检也就是少一次机会；而 hook 检测漏检等于整条防线不存在——实测
+  // 70% 抽样下七条里通常只进 1~2 条，装上 hook 的产物照样跑出正确结果。这组探针总共
+  // 只是几次属性读与一次极小对象的 Proxy 构造，成本远低于被抽掉的风险，因此常驻。
+  // 命中响应走 hookHit()：隐蔽断点 + 可用时升级投毒（理由见该函数的注释）。
+  //
+  // 注意快照的固有边界：hook 若在**本代码加载之前**就装好，快照拍到的就是 hook 本身，
+  // 身份比对自然相等——所以真正兜底的是下面那几条**行为**探针（它们不依赖快照）。
+  // 两组缺一不可。
+  const hookChecks = [
+    // --- 身份比对（strong=false：语义等价的 polyfill 理论可能存在，留一次确认）---
+    // Function.prototype.apply 被替换
+    '(function(){if(_0xAP&&typeof Function!=="undefined"&&Function.prototype&&Function.prototype[' + M('apply') + ']!==_0xAP){' + hookHit(false) + '}})();',
+    // Proxy 构造器被替换
+    '(function(){if(_0xPX&&typeof Proxy!=="undefined"&&Proxy!==_0xPX){' + hookHit(false) + '}})();',
+    // Reflect 被替换 / 被包装
+    '(function(){if(_0xRF&&typeof Reflect!=="undefined"&&Reflect!==_0xRF){' + hookHit(false) + '}})();',
+    // --- 行为自洽（strong=true：语义等价的实现不可能命中，立即投毒）---
+    // apply 行为：两种途径调用必须一致。预装 hook 也抓得到（不依赖快照）
+    '(function(){try{var _0af=function(_0x){return _0x+1;};if(_0af[' + M('apply') + '](null,[1])!==2){' + hookHit(true) + '}}catch(_0w){' + hookHit(true) + '}})();',
+    // Proxy 行为：trap 必须真的被调用，且透传取值正确
+    '(function(){if(!_0xPX){return;}try{var _0pa=0;var _0pt=new Proxy({v:0x1a7},{get:function(_0t,_0k){_0pa++;return _0t[_0k];}});if(_0pt.v!==0x1a7||_0pa<1){' + hookHit(true) + '}}catch(_0w){' + hookHit(true) + '}})();',
+    // Reflect.apply 行为：被替换，或与 Function.prototype.apply 结果不一致
+    '(function(){if(!_0xRG||typeof Reflect==="undefined"||!Reflect||!Reflect[' + M('apply') + ']){return;}if(Reflect[' + M('apply') + ']!==_0xRG){' + hookHit(true) + ';return;}try{var _0af=function(_0x){return _0x+1;};if(Reflect[' + M('apply') + '](_0af,null,[1])!==2){' + hookHit(true) + '}}catch(_0w){' + hookHit(true) + '}})();',
+    // defineProperty 行为：数据属性必须真的写进去（转发但吞掉/改写的包装层会露）
+    '(function(){if(!_0xDP){return;}try{var _0o={};_0xDP(_0o,' + M('d') + ',{value:0x1a7,configurable:true});if(_0o[' + M('d') + ']!==0x1a7){' + hookHit(true) + '}}catch(_0w){' + hookHit(true) + '}})();',
+  ];
+
   const headChecks = [];
   for (const chk of checks) {
     if (rng() < 0.7) headChecks.push(chk);
   }
   if (!headChecks.length) headChecks.push(checks[randInt(0, checks.length - 1)]);
+  headChecks.push(...hookChecks);
   shuffle(headChecks);
 
   // 头部函数体，整体以源码构造，规避手工拼 AST 的引用与调用错位
@@ -233,6 +291,16 @@ export default function debugProtection(ast, options, ctx) {
   parts.push('var _0xGP=(typeof Object!=="undefined"?Object.getOwnPropertyDescriptor:null);');
   parts.push('var _0xCA=(typeof Function!=="undefined"&&Function.prototype?Function.prototype[' + M('call') + ']:null);');
   parts.push('var _0xEV=(typeof eval!=="undefined"?eval:null);');
+  // ---- 反 Hook / 反 Proxy 快照（劫持检测用）----
+  // 身份快照能查出"被替换"，查不出"被包装成行为不同的等价物"。所以除了快照，
+  // 下面还配了**行为探针**：同一个函数用两种途径调用结果必须一致，Proxy 的 trap
+  // 必须真的触发且取值正确。劫持方要绕过就得同时伪造身份与行为。
+  // apply 与 call 是一对，此前只快照了 call；Reflect.apply 又常被用来绕过
+  // Function.prototype.apply 上的 hook，三者一并纳入。
+  parts.push('var _0xAP=(typeof Function!=="undefined"&&Function.prototype?Function.prototype[' + M('apply') + ']:null);');
+  parts.push('var _0xPX=(typeof Proxy!=="undefined"?Proxy:null);');
+  parts.push('var _0xRF=(typeof Reflect!=="undefined"?Reflect:null);');
+  parts.push('var _0xRG=(typeof Reflect!=="undefined"&&Reflect[' + M('apply') + ']?Reflect[' + M('apply') + ']:null);');
   // Error.prepareStackTrace 设值陷阱：devtools 协议 attach 时会赋值该属性，
   // 陷阱被摘除即描述符不再是访问器，同样命中。_0xPT 是在位性探测函数，先于
   // 装配定义，复入路径上探测能力不会丢失；探测到陷阱在位就不重装，重装会把
@@ -275,10 +343,16 @@ export default function debugProtection(ast, options, ctx) {
     'if(_0rc>=' + REARMS + '){return false;}' +
     '_0xG["' + KEYS.rc + '"]=_0rc+1;_0xhb();return true;' +
     '}catch(_0w){return false;}};');
+  // 周期性复查里也带上 hook 探针：身份快照与身份比对在同一个同步块内，**预装**的
+  // hook 拍到的就是它自己，只有"加载之后才被装"的才能靠身份比对抓到——而 DevTools /
+  // 运行时插桩恰好就是加载后才装。不挂进周期复查，那三条身份检查等于白写。行为探针
+  // 一并挂上，于是 hook 无论何时出现，最迟一个复查周期内必被投毒。
+  const hookProbes = hookChecks.join('');
   parts.push('var _0xpd=function(){try{_0xhb();' +
     'if(typeof Function!=="undefined"&&Function.prototype&&Function.prototype[' + M('toString') + ']!==_0xFP){' +
     (poisonable ? confirmSrc('_0xG') : '_0xdg();') + '}' +
     'if(_0xPT&&!_0xPT()){_0xdg();}' +
+    hookProbes +
     '_0xdg();}catch(_0w){}};');
   parts.push('var _0xtd=function(){try{' +
     'var _0xs=new Date();_0xdg();var _0xe=new Date();var _0xdt=_0xe-_0xs;' +

@@ -174,6 +174,13 @@ export default {
   "objectKeyEncoding": true,
   "numberObfuscation": true,
   "numberObfuscationThreshold": 0.6,
+  // MBA（混合布尔算术）。把数值字面量改写成位运算与算术**交织**的恒等式，例如
+  //   V  ->  (x ^ y) + 2*(x & y)       // x + y = V，进位恒等式
+  // 与相邻的单一算子形态相比，化简它必须先认出进位恒等式这一族关系，只按算子做
+  // 局部折叠的工具会失效或算错。精确性前提见 numberObf.js 的 mbaForms：取值域
+  // 限定在 int32 非负区间，`<< 1` 不会翻负，全部中间量都在双精度精确整数内。
+  // 默认关（不改既有产物基线），max 预设启用；无额外运行期开销。
+  "numberObfuscationMBA": false,
   "controlFlowRollingKey": true,
   "logicalExpressions": true,
   "logicalExpressionsThreshold": 1,

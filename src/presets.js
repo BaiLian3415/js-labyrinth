@@ -247,6 +247,7 @@ export default {
     "objectKeyEncoding": true,
     "numberObfuscation": true,
     "numberObfuscationThreshold": 1,
+    "numberObfuscationMBA": true,
     "controlFlowRollingKey": true,
     "logicalExpressions": true,
     "logicalExpressionsThreshold": 1,

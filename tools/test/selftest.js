@@ -1339,6 +1339,39 @@ section('数值常量混淆');
     }
   }
   ok(mismatch === 0, '数值常量改写后取值语义保持（2 例 × 2 预设 × 6 seed）', firstBad);
+
+  // MBA（混合布尔算术）：位算与算术交织的恒等式。这里钉的是两件事——
+  //   ① 取值恒等，尤其是 `(x & y) << 1` 那条：x + y = V 时 x&y ≤ V/2，
+  //      所以左移不会翻负；把取值域放宽到 2^31 就会静默算错，边界值必须覆盖；
+  //   ② 默认关、max 开：不改既有预设基线，且开关真的生效（不是只加了选项名）。
+  {
+    const vals = [2, 3, 4, 7, 8, 255, 256, 65535, 65536, 1048575, 1048576,
+      0x1ffff, 0x20000, 0x3fffffe, 0x3fffffff];
+    const mbaSrc = 'var o=[];\n'
+      + vals.map((v) => `o.push(${v});`).join('\n')
+      + '\nprocess.stdout.write(JSON.stringify(o));\n';
+    const mbaWant = runNode(mbaSrc, 'mba-plain.js');
+    let mbaBad = '';
+    for (let seed = 1; seed <= 5 && !mbaBad; seed++) {
+      const got = runNode(obfuscate(mbaSrc, {
+        preset: 'medium', seed, numberObfuscationMBA: true,
+        numberObfuscationThreshold: 1,
+      }).code, 'mba-' + seed + '.js');
+      if (got !== mbaWant) mbaBad = 'seed=' + seed + '：' + got.slice(0, 60) + ' 应为 ' + mbaWant.slice(0, 60);
+    }
+    ok(mbaBad === '', 'MBA 恒等式取值语义保持（边界值 × 5 seed）', mbaBad);
+
+    const stMax = obfuscate(mbaSrc, { preset: 'max', seed: 3, shell: false }).stats
+      .find((s) => s.pass === 'numberObf');
+    ok(stMax && stMax.result.mba === true, 'max 预设启用 MBA', JSON.stringify(stMax && stMax.result));
+
+    const on = obfuscate(mbaSrc, { preset: 'medium', seed: 3, numberObfuscationMBA: true, numberObfuscationThreshold: 1 }).code;
+    const off = obfuscate(mbaSrc, { preset: 'medium', seed: 3, numberObfuscationMBA: false, numberObfuscationThreshold: 1 }).code;
+    ok(on !== off, 'MBA 开关真的改变产物（不是空开关）');
+    // 形态特征：同一棵表达式里同时出现 & / | / << 与算术算子
+    ok(/(?:&[^;]*\)\s*<<|&[^;]*\)\s*[+*]|[-+]\s*\([^()]*&)/.test(on),
+      'MBA 产物里出现位算与算术交织的形态');
+  }
 }
 
 // ---------------------------------------------------------------- 多态与可复现
@@ -1482,6 +1515,40 @@ section('自防御：篡改检出');
     const hooked = tryRun(hook + code, 'sd-hooked.js');
     ok(hooked !== want, '钩住 Function.prototype.toString 即被检出',
       '钩子环境下仍然输出 ' + hooked.slice(0, 40));
+
+    // 反 Hook / 反 Proxy 专项：apply / Proxy / Reflect / defineProperty 被换成
+    // **行为不同**的实现时必须被检出。
+    //
+    // ⚠️ 这里**必须用 bannerSkip:true 的产物**。带横幅的产物在 Node 下会读
+    // __filename 核对"文件头就是那段横幅"，在前面前置任何一行（哪怕是
+    // `Function.prototype.apply=Function.prototype.apply;` 这种空操作）都会触发
+    // 自毁——实测空操作前置也报 ERR。用它做前置，断言会因为 banner 而不是探针通过，
+    // 是**假通过**。关掉横幅后 banner 互锁不再介入，剩下的差异才真的来自 hook 探针。
+    // （专用校验里用 vm.runInContext 跑就没有这个问题，因为拿不到 __filename。）
+    const hookCode = obfuscate(src, { preset: 'medium', seed: 1, shell: false, bannerSkip: true }).code;
+    ok(tryRun(hookCode, 'sd-hook-clean.js') === want, '反 Hook 对照产物（无横幅）本身输出正确');
+
+    const HOOKS = [
+      ['apply 被换成改写返回值的实现', 'Function.prototype.apply=function(){return 0;};'],
+      ['Proxy 被换成返回空对象的实现', 'Proxy=function(){return {};};'],
+      ['Reflect 被换成自带假 apply 的对象', 'Reflect={apply:function(){return 0;}};'],
+      ['Reflect.apply 被换成改写返回值的实现', 'Reflect.apply=function(){return 0;};'],
+      ['defineProperty 被换成静默吞掉写入的实现', 'Object.defineProperty=function(o){return o;};'],
+    ];
+    let hookMissed = '';
+    for (const [label, pre] of HOOKS) {
+      const got = tryRun(pre + hookCode, 'sd-hook-' + label.slice(0, 6) + '.js');
+      if (got === want) { hookMissed = label + '：仍输出正确'; break; }
+    }
+    ok(hookMissed === '', '反 Hook/反 Proxy：五类劫持均被检出', hookMissed);
+
+    // 反向：语义等价的转发层不该被立即打死。行为探针要求"语义真的发散"，所以它
+    // 应放过；只有身份比对命中，而身份比对需二次确认才投毒（头部有一次性闩锁，
+    // 单遍到不了 2）。这条钉的是"不过度误杀"——合法 polyfill 不该让产物当场崩掉。
+    const fwd = 'var _o=Function.prototype.apply;Function.prototype.apply=function(t,a){return _o.call(this,t,a);};';
+    const fwdGot = tryRun(fwd + hookCode, 'sd-hook-fwd.js');
+    ok(fwdGot === want, '语义等价的 apply 转发层不被立即投毒（避免误杀 polyfill）',
+      '输出 ' + String(fwdGot).slice(0, 40));
 
     // 主校验面：改一个根级函数声明的函数体也必须被检出。关掉 mangle 才认得出
     // 名字（生成器输出是 `function fib (`，按 "function fib(" 找会漏）
