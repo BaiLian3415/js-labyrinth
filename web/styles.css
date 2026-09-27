@@ -432,28 +432,47 @@ html.light .pane { box-shadow: var(--shadow-pane), inset 0 1px 0 rgba(255, 255, 
 /* ---------- 拖动重排（2026-09-27）---------- */
 
 /* 区块可拖动重排：选项卡片（.opt-card）与输入/输出面板（.pane）。
-   逻辑在 app.js 的 enableReorder()，这里只管三件事的外观：
+   逻辑在 app.js 的 enableReorder()，这里只管外观：
      · 把手光标（写在 .opt-card-head / .pane-head 上）
-     · 被拎起来的那一块：抬亮 + 描边强调
+     · 被拎起来的那一块：跟手 + 抬亮 + 描边强调（.dragging）
+     · 替它留在流里的占位格（.reorder-ph）
      · 落点提示：插入线
    位移只走 transform/opacity（见文末动效层的硬规则），不碰 width/height/margin——
    一次拖动会连续触发几十次 pointermove，动布局属性等于每帧重排。 */
-.dragging {
-  position: relative;
-  z-index: 40;
-  opacity: .92;
-  border-color: var(--accent);
-  box-shadow: var(--shadow-pane), 0 8px 22px rgba(0, 0, 0, .34);
-  cursor: grabbing;
-}
-html.light .dragging { box-shadow: var(--shadow-pane), 0 8px 22px rgba(20, 20, 19, .16); }
 
-/* 拖动重排期间掐掉入场动画。
-   CSS 动画在节点被重新插入 DOM 时会**重启**，而 group-in / pane-in 都是
+/* 拖动重排期间掐掉入场动画，并给其余块补上 FLIP 位移的过渡。
+   入场动画：CSS 动画在节点被重新插入 DOM 时会**重启**，而 group-in / pane-in 都是
    `backwards` 填充 + `from { opacity: 0 }`——重启后到各自 animation-delay 结束
    之前，元素是全透明的。重排每发生一次就重启一次，于是拖动时表现为"卡片/面板
-   莫名消失、也不跟着手实时重绘"。这个标记由 enableReorder 打上（见 app.js）。 */
+   莫名消失、也不跟着手实时重绘"。这个标记由 enableReorder 打上（见 app.js）。
+
+   过渡只给非拖动块（:not(.dragging)）：被拖的那块必须 1:1 跟手，加过渡会粘手。 */
 .reordering > * { animation: none !important; }
+.reordering > *:not(.dragging) { transition: transform var(--dur-mid) var(--ease-out); }
+
+/* 被拖的块：摘出文档流、跟着指针走。几何（left/top/width/height/transform）由
+   app.js 按指针增量写行内样式，这里只管定位方式与"被拎起来"的样子。 */
+.dragging {
+  position: fixed;
+  z-index: 60;
+  pointer-events: none;
+  margin: 0;
+  opacity: .97;
+  border-color: var(--accent);
+  box-shadow: 0 14px 34px rgba(0, 0, 0, .40);
+  cursor: grabbing;
+  will-change: transform;
+}
+html.light .dragging { box-shadow: 0 14px 34px rgba(20, 20, 19, .20); }
+
+/* 占位格：替被拖的块留在流里，尺寸与它一致。虚线框 = "这里会落下来"。 */
+.reorder-ph {
+  border: 1px dashed var(--line);
+  border-radius: var(--radius-lg);
+  background-color: var(--bg-soft);
+  background-image: var(--grad-well);
+  opacity: .6;
+}
 
 /* 落点插入线。用 ::after 画在目标块的某一侧，横向网格下就是一条竖线。
    落在最后（追加到末尾）时没有"后继"可依附，改用容器的 ::after 兜底。 */

@@ -450,10 +450,12 @@ function enableReorder(container, itemSel, opts) {
   if (!container) return;
   const o = opts || {};
   const handleSel = o.handle || itemSel;
-  let drag = null;  // { el, pid, x, y }
-  let live = false; // 是否已越过阈值、进入真正的拖动
+  // drag: { el, ph, pid, sx, sy, rect0, live }
+  //   ph    —— 占位格，替 el 留在流里，尺寸与 el 一致
+  //   rect0 —— 起拖瞬间 el 的视口矩形，用来把 fixed 化的 el 摆回原处并算落位补间
+  let drag = null;
   let bound = false; // window 监听是否已挂上（renderOptions 会反复重建容器，
-                      // 在 enableReorder 时就挂会一次比一次多，且没拖动时摘不掉）
+                     // 在 enableReorder 时就挂会一次比一次多，且没拖动时摘不掉）
 
   const kids = () => Array.prototype.filter.call(container.children, (c) => c.matches(itemSel));
 
@@ -483,34 +485,87 @@ function enableReorder(container, itemSel, opts) {
     return e.clientX < r.left + r.width / 2;
   }
 
+  /**
+   * FLIP：先量旧位置 → 改 DOM → 用 transform 把元素拉回旧位置 → 下一帧撤掉
+   * transform，让它自己滑到新位置。**只动 transform**，不碰 width/height/margin：
+   * 一次拖动会连着触发几十次 pointermove，动布局属性等于每帧重排。
+   */
+  function flip(mutate) {
+    const items = Array.prototype.slice.call(container.children)
+      .filter((c) => c !== drag.el);
+    const first = new Map();
+    for (const n of items) first.set(n, n.getBoundingClientRect());
+    mutate();
+    for (const n of items) {
+      const b = first.get(n);
+      const a = n.getBoundingClientRect();
+      const dx = b.left - a.left;
+      const dy = b.top - a.top;
+      if (!dx && !dy) continue;
+      n.style.transition = 'none';
+      n.style.transform = 'translate(' + dx + 'px,' + dy + 'px)';
+      void n.offsetHeight;          // 强制回流，让上面那行 transform 真的生效
+      n.style.transition = '';
+      n.style.transform = '';
+    }
+  }
+
+  /** 起拖：把 el 摘出来跟手，原位留一个等大的占位格。 */
+  function lift() {
+    const el = drag.el;
+    const r = drag.rect0;
+    const ph = document.createElement('div');
+    ph.className = 'reorder-ph';
+    ph.style.width = r.width + 'px';
+    ph.style.height = r.height + 'px';
+    container.insertBefore(ph, el);
+    // .dragging 里是 position:fixed，这里只给几何，免得与 CSS 抢
+    el.style.left = r.left + 'px';
+    el.style.top = r.top + 'px';
+    el.style.width = r.width + 'px';
+    el.style.height = r.height + 'px';
+    el.classList.add('dragging');
+    // 入场动画必须掐掉：DOM 一重排节点就被重新插入，而 CSS 动画在重新插入时会
+    // **重启**。group-in / pane-in 都是 backwards 填充 + from{opacity:0}，重启
+    // 瞬间元素是全透明的——拖动时每重排一次就闪一次，看着就是"卡片莫名消失"。
+    // 这个标记**故意留到下次开抽屉才清**（setDrawer 里清 .opt-groups）：松手就清
+    // 会让入场动画在落位那一刻再闪一次，等于把问题挪了个位置。
+    container.classList.add('reordering');
+    drag.ph = ph;
+  }
+
+  /** 决定占位格该待在谁前面，并让其余块补间过去。 */
   function place(e) {
-    clearMarks();
+    const ph = drag.ph;
+    let anchor = null;
     for (const s of kids()) {
       if (s === drag.el) continue;
-      if (isBefore(s, e)) {
-        container.insertBefore(drag.el, s);
-        s.classList.add('drop-mark', 'drop-before');
-        return;
-      }
+      if (isBefore(s, e)) { anchor = s; break; }
     }
-    // 没有"后继"可依附（要追加到末尾），落点线改挂在容器右缘
-    container.appendChild(drag.el);
-    container.classList.add('drop-end');
+    clearMarks();
+    if (anchor) {
+      const already = ph.parentElement === container && ph.nextElementSibling === anchor;
+      if (!already) flip(() => container.insertBefore(ph, anchor));
+      anchor.classList.add('drop-mark', 'drop-before');
+    } else {
+      if (ph !== container.lastElementChild) flip(() => container.appendChild(ph));
+      // 没有"后继"可依附（追加到末尾），落点线改挂在容器右缘
+      container.classList.add('drop-end');
+    }
   }
 
   function onMove(e) {
     if (!drag || e.pointerId !== drag.pid) return;
-    if (!live) {
-      if (Math.abs(e.clientX - drag.x) + Math.abs(e.clientY - drag.y) < 5) return;
-      live = true;
-      drag.el.classList.add('dragging');
-      // 入场动画必须掐掉：DOM 一重排，节点就被重新插入，而 CSS 动画在重新插入时
-      // 会**重启**。group-in / pane-in 都是 backwards 填充 + from{opacity:0}，重启
-      // 瞬间元素是全透明的——拖动时每重排一次就闪一次，看着就是"卡片莫名消失"。
-      // 这个标记**故意不清**：松手就清会让动画在落位那一刻再闪一次。抽屉那边由
-      // setDrawer 在下次打开时清（入场动画本来就该每次开抽屉重播一次）。
-      container.classList.add('reordering');
+    if (!drag.live) {
+      if (Math.abs(e.clientX - drag.sx) + Math.abs(e.clientY - drag.sy) < 5) return;
+      drag.live = true;
+      drag.rect0 = drag.el.getBoundingClientRect();
+      lift();
     }
+    // 块跟手：位移直接由指针增量给出，抓点偏移因此天然保持
+    const dx = e.clientX - drag.sx;
+    const dy = e.clientY - drag.sy;
+    drag.el.style.transform = 'translate(' + dx + 'px,' + dy + 'px)';
     place(e);
     e.preventDefault(); // 拖动中别选中文本
   }
@@ -531,30 +586,52 @@ function enableReorder(container, itemSel, opts) {
     window.removeEventListener('pointercancel', onUp);
   }
 
+  /**
+   * 落位：块从当前位置补间到占位格那里，再把占位格换回块本身。
+   * 补间走 transform 过渡，另外挂一个定时兜底——位移为 0、或用户开了
+   * "减少动态效果"把过渡掐掉时 transitionend 不会触发，收尾必须另有出处。
+   */
   function onUp(e) {
     if (!drag || e.pointerId !== drag.pid) return;
     unbind();
-    clearMarks();
-    if (live) {
-      drag.el.classList.remove('dragging');
+    if (!drag.live) { drag = null; return; }
+    const el = drag.el;
+    const ph = drag.ph;
+    const slot = ph.getBoundingClientRect();
+    const dx = slot.left - drag.rect0.left;
+    const dy = slot.top - drag.rect0.top;
+    let done = false;
+    const finish = () => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      el.removeEventListener('transitionend', onEnd);
+      ph.replaceWith(el);
+      el.style.cssText = '';        // 撤掉 left/top/width/height/transform/transition
+      el.classList.remove('dragging');
+      clearMarks();
       if (o.onCommit) o.onCommit(kids());
-    }
-    drag = null;
-    live = false;
+      drag = null;
+    };
+    const onEnd = (ev) => { if (ev.target === el && ev.propertyName === 'transform') finish(); };
+    const timer = setTimeout(finish, 320);
+    el.addEventListener('transitionend', onEnd);
+    el.style.transition = 'transform var(--dur-slow) var(--ease-out)';
+    el.style.transform = 'translate(' + dx + 'px,' + dy + 'px)';
   }
 
   container.addEventListener('pointerdown', (e) => {
     if (e.button != null && e.button !== 0) return;
-    // 交互控件上不起拖：点开关/下拉/按钮是操作，不是拖动
+    // 交互控件上不起拖：点开关、点下拉、点按钮是操作，不是拖动
     if (e.target.closest('button, input, select, textarea, a, summary, [contenteditable]')) return;
     if (!e.target.closest(handleSel)) return;
     const el = childOf(e.target);
     if (!el) return;
-    drag = { el, pid: e.pointerId, x: e.clientX, y: e.clientY };
-    live = false;
+    drag = { el, ph: null, pid: e.pointerId, sx: e.clientX, sy: e.clientY, rect0: null, live: false };
     bind();
   });
 }
+
 
 /** --flag 形式的选项名，给提示用。 */
 function flagLabel(key) {
