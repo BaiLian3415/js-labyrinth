@@ -12,7 +12,7 @@
  *   目录模式   递归混淆、镜像目录结构、非 JS 文件按开关复制或跳过
  *   闸门       试用/低档卡密的预设上限与逐项闸门按预期拦截
  *   外壳形态   jsfuck 形态编解码往返、产物可执行、多层叠加与横幅互锁、超限构建失败
- *   压缩能力   simplify 的无用声明消除边界、nameStyle=short 的体积与语义、动态 import 解析
+ *   压缩能力   simplify 的无用声明消除边界、四档 nameStyle 的形状/体积/语义/闸门、动态 import 解析
  *               （与 terser 的体积对比见 npm run bench:minify）
  *   许可证     codec 签发-校验往返、篡改卡密/用量/套餐一律失败
  *   机器码     服务端按卡密编号签发并永久绑定（同卡恒等、异卡不同、激活前后一致）
@@ -42,6 +42,7 @@ import codec from '../../src/license-codec.js';
 import licCore from '../../src/license-core.js';
 import plan from '../../src/plan.js';
 import gate from '../../src/options-gate.js';
+import optionsMeta from '../../src/options-meta.js';
 import pipeline from '../../src/pipeline.js';
 import licenseWeb from '../../src/license-web.js';
 import platform from '../../src/platform.js';
@@ -2461,11 +2462,93 @@ section('命名策略（nameStyle）与动态 import');
     ok(got === want && want === 'globals=18', '短名不遮蔽未声明的全局引用', got + ' ≠ ' + want);
   }
 
+  // hex / readable 两档（2026-09-27 新增）。为了能逐个检查发出来的名字长什么样，
+  // 这里把除 mangle 之外的 pass 全关掉：否则 stringArray 之类注入的声明名会混进来，
+  // 那部分按设计是保持原样的（ctx.rtNames / ctx.keepNames），不该算进改名结果。
+  const NAMEONLY = {
+    preset: 'low', shell: false, stringArray: false, controlFlowFlattening: false,
+    logicalExpressions: false, conditionObfuscation: false, opaquePredicates: false,
+    deadCodeInjection: false, functionWrapper: false, objectKeyEncoding: false,
+    numberObfuscation: false, templateToConcat: false, selfCheck: false,
+    stringSplitProbability: 0, bannerSkip: true,
+  };
+  const shapeSrc = 'var computeTotals = 0; var runningTotal = 1; var currentRecord = 2;\n'
+    + 'var describeResult = 3;\n'
+    + 'function collectAll(records) { var idx = 0; var acc = 0;\n'
+    + '  while (idx < records.length) { acc = acc + records[idx] + runningTotal; idx = idx + 1; }\n'
+    + '  return acc; }\n'
+    + 'console.log(computeTotals + runningTotal + currentRecord + describeResult + collectAll([1, 2]));';
+  // 刻意挑不可能是命名池产物的标识符：`out` 这种短词不行，readable 池里有 output，
+  // 子串匹配会把它误报成"原名残留"
+  const ORIG_NAMES = ['computeTotals', 'runningTotal', 'currentRecord', 'describeResult', 'collectAll', 'records', 'idx', 'acc'];
+  const declNames = (code) => [...new Set(
+    [...code.matchAll(/(?:var|let|const|function)\s+([A-Za-z_$][A-Za-z0-9_$]*)/g)].map((m) => m[1]),
+  )];
+  {
+    const want = runNode(shapeSrc, 'namestyle-shape-raw.js').trim();
+    const hex = obfuscate(shapeSrc, { ...NAMEONLY, nameStyle: 'hex', seed: 9 });
+    const decls = declNames(hex.code);
+    // 内核注入名（TC2lPuc2m、_0xf1fac5c 这类）不参与形状统计，只看我们发出去的那些
+    const hexShaped = decls.filter((n) => /^[A-Za-z][0-9a-f]{1,3}$/.test(n));
+    ok(hexShaped.length >= 8, 'hex 档发出的名字都是"字母+十六进制"形状', hexShaped.length + '/' + decls.length + '：' + hexShaped.slice(0, 8).join(' '));
+    ok(decls.every((n) => n.length >= 2 || !hexShaped.includes(n)), 'hex 档不发 1 字符名（否则退回 short 的序列感）', decls.filter((n) => n.length < 2).join(' '));
+    ok(!ORIG_NAMES.some((n) => hex.code.includes(n)), 'hex 档把用户标识符全部换掉', ORIG_NAMES.filter((n) => hex.code.includes(n)).join(' '));
+    let got = 'THREW';
+    try { got = runNode(hex.code, 'namestyle-hex.js').trim(); } catch (e) { got = 'THREW'; }
+    ok(got === want, 'hex 档产物语义不变', got + ' ≠ ' + want);
+    ok(obfuscate(shapeSrc, { ...NAMEONLY, nameStyle: 'hex', seed: 9 }).code === hex.code, 'hex 档同 seed 逐字节可复现');
+    ok(obfuscate(shapeSrc, { ...NAMEONLY, nameStyle: 'hex', seed: 10 }).code !== hex.code, 'hex 档换 seed 换一套名字');
+  }
+  {
+    const want = runNode(shapeSrc, 'namestyle-shape-raw.js').trim();
+    const readable = obfuscate(shapeSrc, { ...NAMEONLY, nameStyle: 'readable', seed: 9 });
+    const decls = declNames(readable.code);
+    const words = decls.filter((n) => /^[a-z]{3,8}[0-9]*$/.test(n));
+    ok(words.length >= 8, 'readable 档发出的是可读词名', words.length + '/' + decls.length + '：' + words.slice(0, 8).join(' '));
+    ok(!ORIG_NAMES.some((n) => readable.code.includes(n)), 'readable 档把用户标识符全部换掉', ORIG_NAMES.filter((n) => readable.code.includes(n)).join(' '));
+    let got = 'THREW';
+    try { got = runNode(readable.code, 'namestyle-readable.js').trim(); } catch (e) { got = 'THREW'; }
+    ok(got === want, 'readable 档产物语义不变', got + ' ≠ ' + want);
+    ok(obfuscate(shapeSrc, { ...NAMEONLY, nameStyle: 'readable', seed: 9 }).code === readable.code, 'readable 档同 seed 逐字节可复现');
+    ok(obfuscate(shapeSrc, { ...NAMEONLY, nameStyle: 'readable', seed: 10 }).code !== readable.code, 'readable 档换 seed 换一套词');
+  }
+  {
+    // 定位：hex 贴着 short 的体积，readable 明显更大但仍小于 random
+    const size = {};
+    for (const style of ['random', 'short', 'hex', 'readable']) {
+      size[style] = obfuscate(namey, { preset: 'low', shell: false, nameStyle: style, seed: 9 }).code.length;
+    }
+    ok(size.hex < size.random && size.hex < size.short * 1.15,
+      'hex 档体积贴近 short（远小于 random）', size.short + ' → hex ' + size.hex + ' / random ' + size.random);
+    ok(size.readable < size.random && size.readable > size.hex,
+      'readable 档比 hex 大但仍小于 random（可读性换体积）', 'hex ' + size.hex + ' → readable ' + size.readable + ' / random ' + size.random);
+  }
+  {
+    // 未知档名退回 random，且不能因为 nameStyle 来自调用方就命中
+    // Object.prototype 上的 'constructor'（命名池是 Map，就是为了这个）
+    const fallback = obfuscate(namey, { preset: 'low', shell: false, nameStyle: 'constructor', seed: 9 });
+    const randomRef = obfuscate(namey, { preset: 'low', shell: false, nameStyle: 'random', seed: 9 });
+    ok(fallback.code === randomRef.code, '未知 nameStyle 退回 random 而不是抛异常',
+      fallback.code.length + ' vs ' + randomRef.code.length);
+  }
+
   // 闸门与默认值
   ok(plan.violations({ nameStyle: 'short' }, 'free').length === 1, 'free 档 nameStyle=short 被闸门锁死');
   ok(plan.violations({ nameStyle: 'random' }, 'free').length === 0, 'free 档 nameStyle=random 放行');
   ok(plan.violations({ nameStyle: 'short' }, 'plus').length === 0, 'plus 档 nameStyle=short 放行');
+  ok(plan.violations({ nameStyle: 'hex' }, 'free').length === 1, 'free 档 nameStyle=hex 被闸门锁死');
+  ok(plan.violations({ nameStyle: 'hex' }, 'plus').length === 0, 'plus 档 nameStyle=hex 放行');
+  ok(plan.violations({ nameStyle: 'readable' }, 'free').length === 1, 'free 档 nameStyle=readable 被闸门锁死');
+  ok(plan.violations({ nameStyle: 'readable' }, 'plus').length === 0, 'plus 档 nameStyle=readable 放行');
   ok(obfuscateMod.DEFAULTS.nameStyle === 'random', 'nameStyle 默认 random');
+  // 元数据枚举与实际实现必须同步：界面上能选、闸门放行，但 mangle 里没有对应池的档位
+  // 会静默退回 random（选项存在但无效），这类漂移要有断言兜住
+  ok(optionsMeta.VALUE_OPTIONS.nameStyle.values.join(',') === 'random,short,hex,readable',
+    'nameStyle 枚举与实现同步', optionsMeta.VALUE_OPTIONS.nameStyle.values.join(','));
+  for (const style of optionsMeta.VALUE_OPTIONS.nameStyle.values) {
+    const r = obfuscate(namey, { preset: 'low', shell: false, nameStyle: style, seed: 9 });
+    ok(typeof r.code === 'string' && r.code.length > 0, '枚举里的 ' + style + ' 档确实生效', r.code.length + ' 字节');
+  }
 }
 
 // ---------------------------------------------------------------- 属性名重命名与保留名单

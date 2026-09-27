@@ -68,7 +68,8 @@ if (!obfIo) console.log('提示：未安装 javascript-obfuscator；npm install 
 console.log('');
 
 const head = '输入'.padEnd(26) + '原始'.padStart(9) + 'terser'.padStart(9)
-  + 'random'.padStart(15) + 'short'.padStart(15) + 'short+DCE'.padStart(15)
+  + 'random'.padStart(15) + 'short'.padStart(15) + 'hex'.padStart(15) + 'readable'.padStart(15)
+  + 'short+DCE'.padStart(15)
   + (obfIo ? 'obfuscator.io'.padStart(17) : '');
 console.log(head);
 console.log('-'.repeat(head.length));
@@ -78,6 +79,8 @@ for (const [name, code] of INPUTS) {
   const rows = [
     ['random', { nameStyle: 'random', simplify: false }],
     ['short', { nameStyle: 'short', simplify: false }],
+    ['hex', { nameStyle: 'hex', simplify: false }],
+    ['readable', { nameStyle: 'readable', simplify: false }],
     ['short+DCE', { nameStyle: 'short', simplify: true }],
   ];
   let line = name.padEnd(26) + kb(code.length).padStart(9).trimEnd().padStart(9) + kb(base);
@@ -98,3 +101,4 @@ for (const [name, code] of INPUTS) {
 console.log('');
 console.log('读法：short+DCE 那列就是"当 minifier 用"的成绩；random 列是混淆档的命名策略');
 console.log('（长随机名，防指纹优先），它比 short 大一截是设计选择，不是缺陷。');
+console.log('hex 与 short 体积接近但不留字母表指纹；readable 是调试档，词名换来的是体积。');

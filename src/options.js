@@ -7,9 +7,14 @@ export default {
   "simplify": false,
   "identifierPrefix": "_0x",
   "mangle": true,
-  // 命名策略（Paid 档，plus+；free 档闸门锁死 random）。random 是原来的随机混族
-  // 长名（防指纹优先）；short 走 minifier 式短名池：长度递增、字母逐构建打乱、
-  // 按引用次数分配，实测把"纯压缩"产物体积从 2.40× terser 降到 1.18~1.58×。
+  // 命名策略（Paid 档，plus+；free 档闸门锁死 random）。四档：
+  //   random   随机混族长名（防指纹优先，默认）
+  //   short    minifier 式短名池：长度递增、字母逐构建打乱、按引用次数分配，
+  //             实测把"纯压缩"产物体积从 2.40× terser 降到 1.18~1.58×
+  //   hex      摘要式短名：长度与 short 相当，但每个名都是"字母+十六进制"，
+  //             肉眼看不出发放顺序，留不下字母表指纹
+  //   readable 固定词表的可读名：调试与审计友好，产物比 short 大、词表可枚举
+  //             抗指纹弱，定位是调试档不是发布档
   "nameStyle": "random",
   // 属性名重命名（renameProperties，safe 模式）：改成员访问 obj.foo / 对象键
   // {foo:1} / 方法名 / 类方法·类属性名的属性名。只改「程序内定义 ∩ 访问」的

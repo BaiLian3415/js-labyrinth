@@ -1,6 +1,6 @@
 import t from '../ast/types.js';
 import rand from '../utils/rand.js';
-const { uniqueName, shuffle, RESERVED } = rand;
+const { uniqueName, shuffle, RESERVED, HEXD } = rand;
 
 /**
  * 标识符重命名。
@@ -18,8 +18,9 @@ const { uniqueName, shuffle, RESERVED } = rand;
  * arguments、import 的模块绑定以及被 export 的本地名字一律跳过，对外接口保持
  * 不变。
  *
- * 命名策略由 `nameStyle` 选：默认 `random`（上面的随机混族长名，防指纹优先），
- * `short` 走下面的 minifier 式短名池（体积优先，见那里的说明）。
+ * 命名策略由 `nameStyle` 选，共四档：默认 `random`（随机混族长名，防指纹优先），
+ * `short` / `hex` / `readable` 三档共用下面的"命名池"机制——长度递增、逐构建打乱、
+ * 按引用次数从多到少发放，区别只在池子里装的是什么名字。
  */
 
 /**
@@ -50,6 +51,73 @@ function* shortNames() {
   for (const x of a2[0]) for (const y of a2[1]) yield x + y;
   for (const x of a3[0]) for (const y of a3[1]) for (const z of a3[2]) yield x + y + z;
 }
+
+/**
+ * 摘要式短名池（`nameStyle: 'hex'`）。
+ *
+ * 形状是"头一个字母 + 若干位十六进制"（a7 / f30 / 0e91…），同样逐构建打乱。
+ * 从 **2 字符**起步而不是 1 字符：单字符起步会退回 short 那种 a/b/c 序列感，
+ * 2 字符起每个名字都长得像摘要片段，肉眼看不出发放顺序。`if`（i+f）这类正好
+ * 落在"字母+十六进制"形状里的关键字由 RESERVED 跳过。
+ *
+ * 与 short 的分工：两者长度接近，short 是"短但有规律"（字母表打乱后仍能看出是
+ * 一套字母表），hex 是"一样短但无规律"，抗指纹上更贴近 random 的定位，体积上
+ * 贴近 short——混淆档想要小产物又不想留字母表指纹时用这一档。
+ */
+const HEX_HEAD = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ';
+
+function* hexNames() {
+  const head = shuffle(HEX_HEAD.split(''));
+  const tier = () => shuffle(HEXD.split(''));
+  const b1 = tier();
+  const b2 = [tier(), tier()];
+  const b3 = [tier(), tier(), tier()];
+  for (const h of head) for (const b of b1) yield h + b;
+  for (const h of head) for (const b of b2[0]) for (const c of b2[1]) yield h + b + c;
+  for (const h of head) for (const b of b3[0]) for (const c of b3[1]) for (const d of b3[2]) yield h + b + c + d;
+}
+
+/**
+ * 可读词名池（`nameStyle: 'readable'`）。
+ *
+ * 从固定词表里逐构建打乱地发词名（value / index / result…），一轮发完接"词+序号"。
+ * 这是四档里唯一"看名字还能认出量级"的一档：抛错栈、断点单步、跨版本 AST diff
+ * 里不至于全是 a/b/c，调试成本最低。
+ *
+ * 代价有两条，都写在这里免得误用：产物比 short 大（词平均 5 字符对 1 字符），而且
+ * 词表是可枚举的，抗指纹弱于 random 混族名（那种名字一个词表都拼不出来）。
+ * 定位是"调试/审计时用"，不是"发布时用"。逐构建打乱保证同 seed 复现、换 seed
+ * 换一套词。
+ */
+const READABLE_WORDS = [
+  'value', 'index', 'count', 'total', 'result', 'output', 'input', 'target',
+  'source', 'buffer', 'cursor', 'offset', 'length', 'factor', 'weight', 'limit',
+  'start', 'range', 'field', 'group', 'batch', 'chunk', 'block', 'entry',
+  'record', 'item', 'label', 'flag', 'state', 'store', 'cache', 'queue',
+  'stack', 'frame', 'node', 'leaf', 'root', 'base', 'seed', 'salt',
+  'token', 'key', 'name', 'text', 'line', 'path', 'step', 'phase',
+  'mode', 'level', 'depth', 'width', 'scale', 'ratio', 'delta', 'sum',
+  'avg', 'temp', 'aux', 'part', 'area', 'span', 'rank', 'gap',
+];
+
+function* readableNames() {
+  const words = shuffle(READABLE_WORDS.slice());
+  const n = words.length;
+  // 上限 n*64（约四千个名字）后交回调用方退回随机名，不静默复用名字
+  for (let i = 0; i < n * 64; i++) {
+    yield words[i % n] + (i < n ? '' : String(Math.floor(i / n)));
+  }
+}
+
+/**
+ * nameStyle → 命名池生成器。用 Map 而不是对象字面量：nameStyle 由调用方给，
+ * `POOLS['constructor']` 会命中 Object.prototype 上的构造函数，不是生成器。
+ */
+const NAME_POOLS = new Map([
+  ['short', shortNames],
+  ['hex', hexNames],
+  ['readable', readableNames],
+]);
 
 function collectExportedFromProgram(path, exported) {
   const node = path.node;
@@ -274,9 +342,11 @@ export default function mangle(ast, options, ctx) {
 
   traverse(ast, visitors);
 
-  // 命名策略：random（默认，随机混族长名）或 short（minifier 式短名池）
-  const pool = options.nameStyle === 'short' ? shortNames() : null;
-  const nextShort = () => {
+  // 命名策略：random（默认）走 uniqueName 现摇长名；short / hex / readable
+  // 三档从命名池按序发放，池为空时退回随机名。
+  const makePool = NAME_POOLS.get(options.nameStyle);
+  const pool = makePool ? makePool() : null;
+  const nextName = () => {
     for (;;) {
       const it = pool.next();
       if (it.done) return null;
@@ -286,7 +356,8 @@ export default function mangle(ast, options, ctx) {
     }
   };
   if (pool) {
-    // 引用次数多的先发短名。同权重保持原顺序，产物仍然只由 seed 决定。
+    // 引用次数多的先发短名（池内按长度递增，权重排序才能让热名字落在短的那一档）。
+    // 同权重保持原顺序，产物仍然只由 seed 决定。
     const weight = (b) => ((b.referencePaths && b.referencePaths.length) || 0)
       + ((b.constantViolations && b.constantViolations.length) || 0);
     targets.sort((a, b) => weight(b.binding) - weight(a.binding));
@@ -295,8 +366,8 @@ export default function mangle(ast, options, ctx) {
   let renamed = 0;
   for (const { name, binding } of targets) {
     if (reservedRe.length && reservedRe.some((re) => re.test(name))) continue;
-    // 短名池用尽（>15 万个绑定，实际不可达）时退回随机名，不静默复用名字
-    const newName = pool ? (nextShort() || uniqueName(used, prefix)) : uniqueName(used, prefix);
+    // 命名池用尽（>15 万个绑定，实际不可达）时退回随机名，不静默复用名字
+    const newName = pool ? (nextName() || uniqueName(used, prefix)) : uniqueName(used, prefix);
     try {
       // 声明点。同一条绑定的重复声明（var 重复、Annex B 提升上来的块级函数
       // 声明）都要改，漏掉任何一处都会留下旧名，运行期读到的就不是同一个绑定
