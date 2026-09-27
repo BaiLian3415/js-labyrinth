@@ -44,12 +44,29 @@ function langOf(request, env) {
   return (env && env.JSLABYRINTH_LANG) === 'en' ? 'en' : 'zh';
 }
 
+/**
+ * 本次请求生效的 env，供 jsonResponse 取 CORS 配置。
+ *
+ * 刻意做成模块级而不是逐个传参：jsonResponse 有 7 个调用点（4 个上传/输出预检
+ * 413、CPU 预算 503、兜底 500、重写的 /api/health），逐个传 env 迟早会漏一个，
+ * 而漏掉的表现是跨域调用方只看到不透明的网络错误——精心写好的中文提示根本没机会
+ * 送达。JSLB_CORS_ORIGIN 是部署期常量（不是请求期变量），所以并发请求读到同一个值
+ * 是安全的；真正按请求变化的东西都不走这里。
+ */
+let currentEnv = {};
+
+/** 设置本次请求的 env。buildEnv 里调用。 */
+function setCurrentEnv(env) { currentEnv = env || {}; }
+
 function jsonResponse(body, status, extraHeaders) {
   return new Response(JSON.stringify(body, null, 2), {
     status: status || 200,
     headers: {
       'content-type': 'application/json; charset=utf-8',
       'cache-control': 'no-store',
+      // 跨域头默认带上：/api/plans 与 /api/obfuscate 是靠复制 handler 的 res.headers
+      // 顺带保住的，而这里这 7 个响应走的是本函数，原来一个都没带。
+      ...handler.corsHeaders(currentEnv),
       ...(extraHeaders || {}),
     },
   });
@@ -173,6 +190,9 @@ async function handle(request) {
   const url = new URL(request.url);
   const path = url.pathname.replace(/\/+$/, '') || '/api';
   const { env, store } = buildEnv();
+  // 必须在任何 jsonResponse 之前：上传预检、预算 503、兜底 500、重写的 health
+  // 都要从这里取 CORS 配置。
+  setCurrentEnv(env);
   const host = effectiveHost((name) => env[name]);
   i18n.setLang(langOf(request, env));
 

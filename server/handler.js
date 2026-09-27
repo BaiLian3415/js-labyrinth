@@ -408,6 +408,12 @@ async function handleApi(request, env) {
 
 export default {
   /**
+   * CORS 响应头。vercel/entry.js 自己产生的响应（上传预检 413、CPU 预算 503、
+   * 兜底 500，以及重写过的 /api/health）也必须带上——那些响应不经 handleApi，
+   * 所以入口层要自己取。导出出来是为了让两层用同一份定义，不各自抄一遍。
+   */
+  corsHeaders,
+  /**
    * @param {Request} request 请求
    * @param {object} env 绑定（含可选的 JSLB_KV 与密钥变量）
    * @param {object} ctx 执行上下文

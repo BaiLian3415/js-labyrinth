@@ -289,8 +289,12 @@ async function setRedeemer(cardId, code, machineId) {
   const kv = platform.getKv();
   if (kv && typeof kv.put === 'function') {
     try {
-      await kv.put('redeem:' + cardId, payload);
-      return true;
+      // **必须看返回值**：store 的契约是「成功 true / 失败 false」，不抛异常
+      // （见 vercel/store.js 的接口注释，Upstash 与 RESP 两条实现都这样）。
+      // 只 await 不看返回值的话，Redis 挂掉会返回 false，这里却 return true，
+      // 于是 activate 里那道 fail-closed 的 `=== false` 判定永远走不到——
+      // 兑换登记形同虚设，而请求照样 200。
+      return (await kv.put('redeem:' + cardId, payload)) !== false;
     } catch (e) {
       return false;
     }
@@ -536,8 +540,12 @@ async function allocateMachineCode(cardId) {
   if (kv && typeof kv.put === 'function') {
     const m = newMachineCode();
     try {
-      await kv.put(KV_MACHINE_PREFIX + cardId, m);
-      return { ok: true, machine: m, issued: true, source: 'issued' };
+      // 同 setRedeemer：写失败是「返回 false」而不是抛异常，所以必须看返回值。
+      // 漏看的话会拿一个根本没存下来的随机码当"已永久签发"返回，下次调用又换一个
+      // ——恰好违反这里要保证的恒等。
+      if ((await kv.put(KV_MACHINE_PREFIX + cardId, m)) !== false) {
+        return { ok: true, machine: m, issued: true, source: 'issued' };
+      }
     } catch (e) {
       // KV 写不进去：落到下面的派生，保证恒等
     }
