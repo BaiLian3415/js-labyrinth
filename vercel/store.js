@@ -3,9 +3,10 @@
  *
  * 为什么需要它：Vercel 的函数是无状态的，同一个许可证记录下一秒可能落到另一个实例上。
  * 没有一处**云端存储**，授权记录与用量计数就只能在单实例内存里活着——表现是"刚激活又
- * 提示未激活""每天次数怎么刷新都在涨"。Vercel 没有原生 KV，所以这里用
- * **Upstash Redis 的 REST 接口**（Vercel Marketplace 里一键安装，
- * 免费档 256 MB / 每日 1 万次命令，对授权与计数绰绰有余）。
+ * 提示未激活""每天次数怎么刷新都在涨"。Vercel 没有原生 KV，所以这里认两种 Redis 接入：
+ * **Upstash 的 REST 接口**（Marketplace 里一键安装）以及 **Vercel 官方 Redis 注入的
+ * 标准连接串 REDIS_URL**（Redis Cloud，只有 RESP 协议，客户端在 vercel/redis-tcp.js，
+ * 同样是零依赖）。两条路都不通才退化为单实例内存。
  *
  * 形状对齐 `server/handler.js` 里对 `env.JSLB_KV` 的用法：
  *   get(key) → 字符串或 null
@@ -16,12 +17,16 @@
  * 另外给宿主预算记账提供一个 `addNumber()`（Upstash 的 INCRBY，原子），它不属于 KV
  * 的三件套，只在 Vercel 侧使用。
  *
- * 环境变量（Vercel 的 Upstash 集成会自动注入前一组）：
- *   KV_REST_API_URL / KV_REST_API_TOKEN
- *   UPSTASH_REDIS_REST_URL / UPSTASH_REDIS_REST_TOKEN
- * 都没配时退化为**单实例内存**（进程内 Map）：能跑，但不跨实例持久化，界面与
+ * 环境变量（认这三组里的任意一组，按 REST 优先的顺序取）：
+ *   KV_REST_API_URL / KV_REST_API_TOKEN          Upstash 的 Vercel 集成注入的一对
+ *   UPSTASH_REDIS_REST_URL / UPSTASH_REDIS_REST_TOKEN  Upstash 控制台给的一对
+ *   REDIS_URL                                    Vercel 官方 Redis（Redis Cloud）注入的
+ *                                                标准连接串，走 vercel/redis-tcp.js 的 RESP
+ * 一组都没配时退化为**单实例内存**（进程内 Map）：能跑，但不跨实例持久化，界面与
  * /api/health 会明确提示（hostNoStore）。
  */
+
+import { createTcpStore } from './redis-tcp.js';
 
 const TIMEOUT_MS = 2500;
 
@@ -80,15 +85,33 @@ async function redisCommand(cfg, command) {
 
 /**
  * 建一个云存储。失败的写会返回 false（授权模块据此提示"用量写不进去"）。
+ *
+ * 三条路按序取：Upstash REST（成对的 URL/TOKEN）→ 标准 Redis 连接串 → 单实例内存。
+ * REDIS_URL 放最后是有意的：REST 版在函数里只有一次 fetch，冻结/冷启动下最省事；
+ * 两者都配不会打架，REST 优先。
+ *
  * @param {object} [env] 环境（默认 process.env）
- * @returns {{kind:'upstash'|'memory', kv:object, addNumber:function, note:string}}
+ * @returns {{kind:'upstash'|'redis'|'memory', kv:object, addNumber:function, note:string}}
  */
 export function createStore(env) {
   const source = env || (typeof process !== 'undefined' ? process.env : {}) || {};
   const cfg = upstashConfig(source);
-  if (!cfg) {
-    return { ...memoryStore(), note: 'no-store' };
+  if (cfg) return upstashStore(cfg);
+  const url = String(source.REDIS_URL || '').trim();
+  if (url) {
+    try {
+      return createTcpStore(url);
+    } catch (e) {
+      // 连接串本身不合法（new URL 失败）。这属于部署配错，但要能继续跑：退内存，
+      // note 说清楚是"连接串坏了"而不是"没配"，免得排查时找错方向。
+      return { ...memoryStore(), note: 'bad-redis-url' };
+    }
   }
+  return { ...memoryStore(), note: 'no-store' };
+}
+
+/** Upstash REST 版：一条命令一次 fetch。 */
+function upstashStore(cfg) {
   return {
     kind: 'upstash',
     note: '',

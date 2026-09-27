@@ -81,9 +81,10 @@ npx vercel dev                 # 本地起 Vercel 运行时（静态资源 + /ap
 npx vercel --prod              # 发布（npm run deploy 等价）
 ```
 
-**必须先装 Upstash Redis**（项目 → Marketplace）。Vercel 的函数是无状态的，没有云存储
-时授权记录与每日计数只在单实例内存里活着，表现是"刚激活又提示未激活"。装完自动注入
-环境变量，`/api/health` 里 `store` 字段应显示 `upstash`（显示 `memory` 就是没装成）。
+**必须先在 Marketplace 装 Redis**（Upstash 或 Vercel 官方 Redis 都行，`vercel/store.js`
+自动认）。Vercel 的函数是无状态的，没有云存储时授权记录与每日计数只在单实例内存里活着，
+表现是"刚激活又提示未激活"。装完自动注入环境变量，`/api/health` 里 `store` 字段应显示
+`redis` 或 `upstash`（显示 `memory` 就是没装成）。详见 DEPLOY.md 第 3 节。
 
 `vercel.json` 已配好构建命令（`build:web:cloud`）、输出目录、区域、`JSLB_WEB_CONFIG`
 与函数时长。`api/` 下每个路由一个文件（一行转发），逻辑在 `vercel/entry.js` → 
@@ -655,7 +656,8 @@ api/                Vercel 函数入口，每个路由一个文件（一行转�
 
 vercel/             Vercel 接入层
   entry.js          共用入口：上传预检 / CPU 预算记账 / 流式回执 / health 上报
-  store.js          Upstash Redis REST 适配（没配退化为单实例内存）
+  store.js          云存储适配：Upstash REST / 标准 Redis 连接串 / 单实例内存
+  redis-tcp.js      零依赖 RESP 客户端（走 REDIS_URL 时用，只依赖 node:net + node:tls）
 
 web/                网页界面源码（原生 ESM，无打包器，无第三方依赖）
 tools/

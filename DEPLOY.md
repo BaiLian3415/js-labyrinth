@@ -68,28 +68,43 @@ Vercel 部署走云端执行，构建命令是 `npm run build:web:cloud`（见 `
 没有云存储时记录与计数只在单实例内存里活着，表现是"刚激活又提示未激活"、
 "每天次数怎么刷新都在涨"。
 
-项目用 **Upstash Redis 的 REST 接口**（`vercel/store.js`）：
+项目认两种 Redis 接法（都在 `vercel/store.js` 里自动判断，**不需要手抄变量**）：
 
-1. Vercel 项目 → Marketplace → 装 **Upstash Redis**（免费档 256 MB / 每日 1 万次命令，
-   对授权与计数绰绰有余）；
-2. 装完自动注入环境变量，**不需要手抄**。手动配的话认这四个名字里的任意一对：
+**A. Upstash 的 REST 接口**（一行 fetch，最省事）
+
+1. Vercel 项目 → Marketplace → 装 **Upstash for Redis**（免费档对授权与计数绰绰有余）；
+2. 装完自动注入下面这四个名字里的**任意一对**：
 
    | 变量 | 用途 |
    | --- | --- |
    | `KV_REST_API_URL` / `KV_REST_API_TOKEN` | Upstash Vercel 集成注入的一对 |
    | `UPSTASH_REDIS_REST_URL` / `UPSTASH_REDIS_REST_TOKEN` | Upstash 控制台给的一对 |
 
+**B. Vercel 官方 Redis**（Redis Cloud，只注入一个 `REDIS_URL`）
+
+它没有 REST 接口，只有标准 Redis 协议连接串。官方示例是 `npm install redis`，而本项目
+把零依赖当硬要求，所以自带一个极小的 RESP 客户端（`vercel/redis-tcp.js`，只用
+`node:net` / `node:tls`，~200 行）：
+
+1. Marketplace → 装 **Redis**（免费档每账号一个库，30 MB、100 ops/s、无持久化）；
+2. 装完注入 `REDIS_URL`（形如 `redis://default:<密码>@xxx.db.redis.io:10944`），直接可用。
+
+   注意两点实测结论：`rediss://` 的连接串**只走 TLS，握手失败就判失败**，不会偷偷改走
+   明文；而本部署的 `redis://…:10944` 是**明文端口**（同一端口发 TLS 握手会被回
+   `WRONG_VERSION_NUMBER`），密码在公网上是明文传输的。若在意这一点，用 A 方案或换
+   托管方提供 `rediss://` 的实例。
+
 3. 验证：`curl -s https://<你的域名>/api/health`，看 `store` 字段。
 
 ```jsonc
 {
-  "store": "upstash",        // upstash = 正常；memory = 没配，退化为单实例内存
-  "storeNote": "…",          // memory 时这里会写明"不跨实例持久化，请每次请求带卡密"
+  "store": "redis",           // redis = 走 REDIS_URL；upstash = 走 REST；memory = 没配
+  "storeNote": "…",           // memory 时这里会写明"不跨实例持久化，请每次请求带卡密"
   "budget": { "used": 12, "total": 300, "persistent": true }
 }
 ```
 
-`memory` 不算故障，但多实例下授权会时有时无，先把 Upstash 装上再对外公布。
+`memory` 不算故障，但多实例下授权会时有时无，先把 Redis 装上再对外公布。
 
 ---
 
@@ -177,7 +192,7 @@ npm run verify -- https://<你的域名>
 | --- | --- | --- |
 | 点运行报一句 import 404 | 构建没走 `--cloud`，但 `/api/plans` 又说 `cloudOnly=true`（或反之） | `vercel.json` 的 `buildCommand` 必须是 `npm run build:web:cloud`；改完 `npx vercel --prod` |
 | 未激活界面连激活表单都渲染不出 | 公开模块没下发（挡多了） | 跑 `npm run verify`，第 5 项会指出取不到的模块 |
-| 刚激活又提示未激活 | 没装 Upstash（`store: memory`） | 第 3 节 |
+| 刚激活又提示未激活 | 没装 Redis（`store: memory`） | 第 3 节 |
 | 每天次数怎么刷新都在涨 | 同上 | 同上 |
 | `FUNCTION_PAYLOAD_TOO_LARGE` | 输入太大 | 拆小输入或降预设 |
 | 503 `hostBudgetExhausted` | 当日全网 CPU 预算用尽 | 等明日，或调高 `JSLB_DAILY_CPU_SECONDS` |
@@ -208,7 +223,8 @@ npx serve dist                 # 任意静态服务器即可
 vercel.json          构建命令、区域、环境变量、函数时长、缓存头
 api/*.js             五个路由各一个文件（一行转发，Vercel 按文件建函数）
 vercel/entry.js      共用入口：预检 / 预算记账 / 流式回执 / health 上报
-vercel/store.js      Upstash Redis REST 适配（没配退化为单实例内存）
+vercel/store.js      云存储适配（Upstash REST / REDIS_URL / 没配退化为单实例内存）
+vercel/redis-tcp.js  零依赖 RESP 客户端（REDIS_URL 那条路走它）
 server/handler.js    平台无关的 /api/* 实现（授权判定、混淆执行、机器码签发）
 src/host-limits.js   宿主包络（免费档硬约束反推出的配额上限）
 tools/build/         构建与发布验证（build-web.js、gate-policy.js、verify-deploy.js）

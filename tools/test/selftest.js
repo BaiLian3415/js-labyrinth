@@ -1161,7 +1161,78 @@ section('服务端路由（/api/*）');
   }
 }
 
-// ---------------------------------------------------------------- ZIP
+// ------------------------------------------------- 云存储适配（vercel/store.js）
+
+section('云存储适配与 RESP 协议');
+{
+  // 这一段全是纯函数与工厂选择，不建连：vercel/store.js 认 Upstash REST 与标准
+  // Redis 连接串两条路，选错路的表现是 /api/health 的 store 字段不对，而那要到线
+  // 上才看得见，所以选路规则必须在离线段钉住。
+  const { createStore } = await import('../../vercel/store.js');
+  const { encodeCommand, parseReply } = await import('../../vercel/redis-tcp.js');
+
+  // ---- 选路 ----
+  ok(createStore({}).kind === 'memory' && createStore({}).note === 'no-store',
+    '没配任何存储变量 → 退化为单实例内存并标 no-store');
+  ok(createStore({ KV_REST_API_URL: 'https://x.example/' }).kind === 'memory',
+    'REST 只给 URL 不给 token（不成对）→ 不认，退内存');
+  ok(createStore({ KV_REST_API_URL: 'https://x.example', KV_REST_API_TOKEN: 't' }).kind === 'upstash',
+    'KV_REST_API_URL + TOKEN 成对 → 走 Upstash REST');
+  ok(createStore({ UPSTASH_REDIS_REST_URL: 'https://y.example', UPSTASH_REDIS_REST_TOKEN: 't' }).kind === 'upstash',
+    'UPSTASH_* 成对 → 同样走 REST');
+  // Vercel 官方 Redis 只注入 REDIS_URL，这是本部署实际生效的那条路。
+  const tcp = createStore({ REDIS_URL: 'redis://default:pw@db.example.io:10944' });
+  ok(tcp.kind === 'redis', '只有 REDIS_URL → 走标准 Redis 协议（kind=redis）');
+  ok(tcp.note === '', '接上存储时 note 为空（界面不会误报"没接存储"）');
+  ok(typeof tcp.kv.get === 'function' && typeof tcp.kv.put === 'function'
+    && typeof tcp.kv.delete === 'function' && typeof tcp.addNumber === 'function',
+  'redis 版与 REST 版暴露同一组方法（get/put/delete/addNumber）');
+  ok(createStore({
+    REDIS_URL: 'redis://default:pw@db.example.io:10944',
+    KV_REST_API_URL: 'https://z.example',
+    KV_REST_API_TOKEN: 't',
+  }).kind === 'upstash',
+  '两组都配时 REST 优先（函数里只有一次 fetch，冻结下最省事）');
+  const badUrl = createStore({ REDIS_URL: '这不是一个连接串' });
+  ok(badUrl.kind === 'memory' && badUrl.note === 'bad-redis-url',
+    '连接串坏了要退内存并标 bad-redis-url（不能抛，抛了整条 /api/* 都 500）');
+
+  // ---- 命令编码 ----
+  ok(encodeCommand(['GET', 'k']).toString('utf8') === '*2\r\n$3\r\nGET\r\n$1\r\nk\r\n',
+    '命令编成 RESP 数组');
+  // 注意长度是字节数：'jslb:cloud:cpu:2026-01-01' 是 25 个字符，INCRBY 是 6 个。
+  ok(encodeCommand(['INCRBY', 'jslb:cloud:cpu:2026-01-01', '250']).toString('utf8')
+    === '*3\r\n$6\r\nINCRBY\r\n$25\r\njslb:cloud:cpu:2026-01-01\r\n$3\r\n250\r\n',
+  'INCRBY 三个参数各自按字节数计长');
+  // 中文是三个字节。长度按字符数算就会错位，回包解出来必然是乱码——这类 bug 在真
+  // 部署上表现为"授权记录写进去读出来是坏的"，极难查，所以钉一条。
+  ok(encodeCommand(['SET', 'k', '中']).toString('utf8') === '*3\r\n$3\r\nSET\r\n$1\r\nk\r\n$3\r\n中\r\n',
+    '参数长度按 UTF-8 字节数（中文 1 字 = 3 字节）');
+  ok(encodeCommand([]).toString('utf8') === '*0\r\n', '空命令编出 *0');
+
+  // ---- 回包解析 ----
+  const p = (s) => parseReply(Buffer.from(s, 'utf8'));
+  ok(p('+OK\r\n').ok && p('+OK\r\n').value === 'OK', '简单字符串 +OK');
+  ok(p(':42\r\n').ok && p(':42\r\n').value === 42, '整数 :42（INCRBY 的回包）');
+  ok(p('$-1\r\n').ok && p('$-1\r\n').value === null, '$-1 是 nil（键不存在）');
+  ok(!p('-ERR unknown command\r\n').ok, '错误回包 -ERR 不算成功');
+  ok(p('$5\r\nhello\r\n').value === 'hello', '定长 bulk');
+  ok(p('$9\r\n中文字\r\n').value === '中文字', 'bulk 里的中文按字节数解（9 字节，不被截断）');
+  const arr = p('*2\r\n$3\r\nfoo\r\n:7\r\n');
+  ok(arr.ok && Array.isArray(arr.value) && arr.value[0] === 'foo' && arr.value[1] === 7,
+    '数组回包逐项解析');
+  // 一次喂进两条回包：必须能切开（连接上"上一次的余量 + 新到的整包"就是这个形状）。
+  const two = parseReply(Buffer.from('+OK\r\n$5\r\nhello\r\n', 'utf8'));
+  ok(two.ok && two.value === 'OK' && two.rest === 5, '一次切一条，rest 指出剩下多少字节');
+  // 半条是常态，不是错误：数据跨 TCP 分段到达。
+  ok(parseReply(Buffer.from('$5\r\nhe', 'utf8')) === null, 'bulk 只到一半 → null（等下一段）');
+  // 尾部 CRLF 缺一字节同样要等：急着解就会把半条当整条，剩下一个字节留在缓冲里错位。
+  ok(parseReply(Buffer.from('$5\r\nhello', 'utf8')) === null, 'bulk 数据齐了但尾部 CRLF 没齐 → 仍等');
+  ok(parseReply(Buffer.from('$5\r\nhello\r\n', 'utf8')).ok, '尾部 CRLF 齐了才解出整条');
+  ok(parseReply(Buffer.from('*2\r\n$3\r\nfoo\r\n', 'utf8')) === null, '数组缺第二项 → null');
+  ok(parseReply(Buffer.from('', 'utf8')) === null, '空缓冲 → null');
+}
+
 
 section('ZIP 打包');
 {
