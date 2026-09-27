@@ -69,7 +69,7 @@ export default function objectKeys(ast, options, ctx) {
 
   traverse(ast, {
     // VM 解释器骨架跳过，判断见 vmBoundary.js。B[pc++]、S.pop() 这类成员访问
-    // 属于取指和栈操作的结构代码，改成下标形态会破坏解释器骨架的形态。
+    // 属于取指和栈操作的结构代码，改成下标形态会破坏 wasm 的特征匹配。
     // 嵌套片段闭包里的用户代码照常处理。
     ObjectProperty(path) {
       if (insideVmFunction(path)) return;

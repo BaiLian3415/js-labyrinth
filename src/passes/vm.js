@@ -732,10 +732,12 @@ function compileFunction(fn, ctx) {
   //     它的长度——那是形态伪装，不是语义）；
   //   · 栈编码（vmStackEncoding）：没有栈可编码，这里直接关掉，连编解码函数都不生成；
   //   · 多态寄存器模型（vmPolymorph）：寄存器后端本身就是一种执行结构，模型固定为 M3；
+  //   · WASM 解释器内核（vmInterpreter=wasmInterpreter）：模块内的解释器按栈机硬编码，
+  //     该档下本项不生效（与其它「模块内解释器」受限项同一处理方式）；
   //   · 宏指令融合（vmMacroOps）：仍然生效，只是打包格式换成寄存器版（带目标寄存器号）。
   // 注意这一段**不占任何随机名字**（uniqueName 会推进名字流），关闭时产物与改动前
   // 逐字节一致；开启时才分配寄存器文件等名字。
-  const registerVM = !!opts.vmRegisterVM;
+  const registerVM = !!opts.vmRegisterVM && !ctx.__vmWasmShared;
 
   // 编译期密钥（vmCompileKey）。给了密钥时，本函数的密钥材料不再取自 randInt，
   // 而由「密钥 + 本函数序号」哈希派生出的确定性流给出：
@@ -769,21 +771,24 @@ function compileFunction(fn, ctx) {
 
   // 字节码编码（vmBytecodeEncoding）。关闭时字节码以明文整数数组存在：取指退化成
   // 一次普通数组读取，入口也不再重写 B 数组——这是排查问题用的弱档，不是安全档。
-  const enc = opts.vmBytecodeEncoding !== false;
+  // WASM 解释器内核档的取指在模块里、按加密布局硬编码，所以该档强制保持编码，
+  // 本项对它无效。
+  const enc = (opts.vmBytecodeEncoding !== false) || !!ctx.__vmWasmShared;
 
   // 跳转编码（vmJumpsEncoding）。开启后跳转操作数不存目标的绝对字下标，改存
   // 「目标字下标 − 本指令字下标」的差值，运行期用取指游标把本指令的字下标还原回来
   // 再加回去。差值脱离所在位置就没有意义，所以即使 dump 出解密后的字节码，看到的
   // 也只是一串相对位移，还原控制流图还得先确定每条指令的字跨度。
-  const jumpEnc = !!opts.vmJumpsEncoding;
+  // WASM 内核档的解释器在模块里、按绝对下标硬编码，该档自动关闭本项。
+  const jumpEnc = !!opts.vmJumpsEncoding && !ctx.__vmWasmShared;
 
   // 栈编码（vmStackEncoding）。操作数栈上装的是任意 JS 值，XOR 只对数字成立，所以
   // 编码函数必须对非数字透明：SE(v) 在 v 是 32 位整数且非 -0 时返回 v ^ K，否则原样
   // 返回。SE 是幂等的（SE∘SE = id），所以编码与解码共用同一个函数。
   // 栈上存的永远是 SE(值)：压栈时编码、出栈时解码；DUP 原样复制已编码值（不能再编一次）、
   // 条件跳转与 GETMK 取键要解码、M2 的地址栈迁移原样搬运（两张栈同一密钥，值可以直传）。
-  // 寄存器后端没有操作数栈，本项同样关闭。
-  const stackEnc = !registerVM && !!opts.vmStackEncoding;
+  // WASM 内核档的栈在模块里，该档自动关闭本项；寄存器后端没有操作数栈，本项同样关闭。
+  const stackEnc = !registerVM && !!opts.vmStackEncoding && !ctx.__vmWasmShared;
   const nSE = stackEnc ? uniqueName(ctx.usedNames, '_0x') : null; // 编码函数名
   const nSEK = stackEnc ? uniqueName(ctx.usedNames, '_0x') : null; // 逐函数密钥
   const nSEV = stackEnc ? uniqueName(ctx.usedNames, '_0x') : null; // 编码函数的形参名
@@ -793,7 +798,8 @@ function compileFunction(fn, ctx) {
   // n 个「(下标 << 1) | 源位」的字跟在后面。宏的动作体由被合并的那 n 条指令的动作
   // 体按原顺序拼接而成，所以语义等价是构造性的，不需要逐模式证明。
   // 只在同一个函数内做，且跳转目标不落在被合并的区间内（跳转靠指令下标定位）。
-  const macroOps = !!opts.vmMacroOps;
+  // WASM 解释器内核档的动作体在模块里、按既有指令集硬编码，该档关闭本项。
+  const macroOps = !!opts.vmMacroOps && !ctx.__vmWasmShared;
 
   // 动态操作码（vmDynOpcodes）。分发字到语义动作的对应关系不再是全函数唯一的一张表：
   // 存进字节码的编号是「规范编号 − 本条指令字下标的轮换量」，取指之后由解释器用取指
@@ -808,8 +814,8 @@ function compileFunction(fn, ctx) {
   // 且在任何进入路径（顺序、跳转、回边）上都唯一确定的状态，所以位置轮换不需要额外
   // 指令、不需要入口初始化，也不会在"某处既是跳转目标又是顺序后继"的边界上失配。
   // 代价：取指后多一次 imul、异或与掩码；字空间必须是 2 的幂（还原用 &(N-1)），
-  // 开启时把槽位数上取整、多出的槽位并进干扰项。
-  const dynOps = !!opts.vmDynOpcodes;
+  // 开启时把槽位数上取整、多出的槽位并进干扰项。WASM 内核档的分发在模块里，忽略本项。
+  const dynOps = !!opts.vmDynOpcodes && !ctx.__vmWasmShared;
   // 位置轮换的两个常数。这里**必须用 randInt 而不是 krand**：krand 是与编译期密钥
   // 绑定的确定性流，而运行期要让"密钥取回"重跑一遍派生（rtKeyStmts 里的那张清单）
   // 才能对上构建期的掩码、链种子与分发常数。那份清单按固定顺序列举派生项，中途插进
@@ -824,9 +830,10 @@ function compileFunction(fn, ctx) {
   // 函数开头求值用户给的表达式，用取回的值重跑一遍上面这套派生，把结果当初始掩码、
   // 位置散列常数、轮换函数与链种子。取回的值不等于编译期密钥 → 派生出另一套掩码 →
   // 字节码字解出来是垃圾 → 函数随即崩掉，门禁由此成立。
-  // 两个前提：没有编译期密钥就没有"正确值"可比，门禁不成立，在 pass 入口直接报错
-  // （见 vm()）。
-  const rtGetterText = opts.vmRuntimeKeyGetter ? String(opts.vmRuntimeKeyGetter) : '';
+  // 两个前提：取指在 WASM 模块里的那一档改不了，自动忽略本项；没有编译期密钥就
+  // 没有"正确值"可比，门禁不成立，在 pass 入口直接报错（见 vm()）。
+  const rtGetterText = (!ctx.__vmWasmShared && opts.vmRuntimeKeyGetter)
+    ? String(opts.vmRuntimeKeyGetter) : '';
   // 编码关闭时没有掩码可派生，运行期密钥取值跟着失效（守门守的正是那套掩码）
   const useRtKey = !!rtGetterText && keyed && enc;
   // 运行期派生要用的名字。分块那三个只在 useBlock 时才落进语句，先占名无副作用。
@@ -853,12 +860,12 @@ function compileFunction(fn, ctx) {
   //   M1 寄存器优先 —— 环形寄存器窗口，值优先落寄存器
   //   M2 双栈分立   —— 操作数栈 + 地址栈，GETM/SETM/CALLM 走地址栈
   //   M3 寄存器机   —— 寄存器后端（vmRegisterVM）：指令操作数是显式寄存器号
-  // vmModel 可显式锁定（自测用：M0/M1/M2 三档语义必须等价）。M3 由 vmRegisterVM
-  // 直接决定，不参与抽取。
+  // WASM 解释器内核档对栈模型有硬编码假设，该档强制 M0；vmModel 可显式锁定
+  // （自测用：M0/M1/M2 三档语义必须等价）。M3 由 vmRegisterVM 直接决定，不参与抽取。
   let vmModel = 'M0';
   if (registerVM) {
     vmModel = 'M3';
-  } else {
+  } else if (!ctx.__vmWasmShared) {
     const forced = opts.vmModel;
     if (forced === 'M0' || forced === 'M1' || forced === 'M2') vmModel = forced;
     else vmModel = opts.vmPolymorph ? 'M' + randInt(0, 2) : 'M1';
@@ -899,9 +906,11 @@ function compileFunction(fn, ctx) {
   // P4 分块自解密。块密钥由块号运行期派生：BK(b) = imul(b, BK_A) ^ BK_B，
   // 块长取 2 的幂（BL = 1 << BL_SH），块号 = 字下标 >>> BL_SH。
   // 存储字多异或一项 BK(b(z))，取指必须带上同一项——静态面没有 BK_A/BK_B/BL_SH
-  // 的明文，不知道块长与派生常数就解不出任何字。
-  // 编码关闭时字里没有「加密过的字」可再分层，分块自解密跟着失效。
-  const useBlock = !!opts.vmBlockDecrypt && enc;
+  // 的明文（旧 wasm 档把它们搬进模块数据段），不知道块长与派生常数就解不出任何字。
+  // WASM 解释器内核档（桥接函数没有 JS 取指）自动关闭，产物与不开时逐字节一致。
+  // 编码关闭时字里没有「加密过的字」可再分层，分块自解密跟着失效；
+  // WASM 解释器内核档的桥接函数没有 JS 取指，该档一向关闭本项。
+  const useBlock = !!opts.vmBlockDecrypt && !ctx.__vmWasmShared && enc;
   const BL_SH = useBlock ? krand(4, 6) : 0;              // 块长指数（16/32/64 字）
   const BL = useBlock ? (1 << BL_SH) : 0;                  // 块长（字）
   const BK_A = useBlock ? (krand(0x10001, 0x7ffffffe) | 1) : 0; // 派生乘数，奇数
@@ -1045,7 +1054,7 @@ function compileFunction(fn, ctx) {
     t.arrowFunctionExpression([], t.blockStatement([t.returnStatement(expr)]));
 
   // 片段内的嵌套函数值递归编译
-  const allowAsync = !!opts.vmAsyncExecutor;
+  const allowAsync = !!opts.vmAsyncExecutor && !ctx.__vmWasmShared;
   const compileInnerFns = (node) => {
     if (!node || typeof node !== 'object') return;
     if (Array.isArray(node)) { node.forEach(compileInnerFns); return; }
@@ -1924,7 +1933,8 @@ function compileFunction(fn, ctx) {
   const DISP_Q1 = krand(1, 0xffff);
 
   // 指令集编号空间。真实操作码与干扰项共用一个稠密编号空间 0..N-1，编号来自一次全排列
-  // 抽取，逐函数独立。干扰编号不会进入字节码流，对应处理器
+  // 抽取，逐函数独立。稠密编号让 wasm 档可以按编号直接索引「编号 → 语义序号」表，
+  // 不需要散列或查找；JS 档仍按编号做桶分发。干扰编号不会进入字节码流，对应处理器
   // 都是净无副作用的垃圾体，与真实动作混排进同一桶分布，静态分析无法按结构或位置
   // 区分真假，指令集还原只能逐条求值全部 N 个分支。
   const decoyTarget = Math.max(0,
@@ -1934,8 +1944,26 @@ function compileFunction(fn, ctx) {
   // 自然成为干扰项（它们不进字节码流，与既有干扰项待遇一致）
   if (dynOps) { let p2 = 1; while (p2 < totalSlots) p2 <<= 1; totalSlots = p2; }
   const slotOrder = shuffle(Array.from({ length: totalSlots }, (_, i) => i));
-  const decoys = slotOrder.slice(opKinds.length);
-  opKinds.forEach((k, i) => opNums.set(k, slotOrder[i]));
+  let decoys = slotOrder.slice(opKinds.length);
+  if (ctx.__vmWasmShared) {
+    // WASM 解释器内核档：分发字全程序共享。解释器本体在 WASM 里，逐函数置换不再
+    // 增大静态分析成本，反而要求 WASM 侧按函数查表；共享编号让模块只留一张
+    // 「分发字 → 语义号」表。未被占用的槽位就是干扰字，映射只有模块数据段知道。
+    const sh = ctx.__vmWasmShared;
+    opNums.clear();
+    for (const k of opKinds) {
+      let w = sh.wordOf.get(k);
+      if (w === undefined) {
+        if (sh.next >= sh.slots.length) throw new Error(msg('vmWasmTableFull'));
+        w = sh.slots[sh.next++];
+        sh.wordOf.set(k, w);
+      }
+      opNums.set(k, w);
+    }
+    decoys = [];
+  } else {
+    opKinds.forEach((k, i) => opNums.set(k, slotOrder[i]));
+  }
   // 位置轮换量：rotAt(z) = ((z * DYN_P) ^ DYN_Q) & (N-1)。编译期按 opcode 字的字下标算，
   // 运行期用同一个式子从取指游标还原（npc 取指后等于字下标 + 1）。两侧必须逐位一致，
   // 所以两边都走 Math.imul 语义（运行期那侧由 rtlib.mulCall 落到原生 imul 等价实现）。
@@ -2056,10 +2084,12 @@ function compileFunction(fn, ctx) {
   }
   if (words.some((w) => w === null)) throw new Error(msg('vmChainSolveFailed'));
   // 逐字求链值并生成密文。分块开启时密文多异或一项块密钥（P4）。
+  const chainAt = new Array(words.length);
   const flat = [];
   {
     let c = CHAIN_SEED;
     for (let z = 0; z < words.length; z++) {
+      chainAt[z] = c;
       flat.push(enc
         ? (((words[z] ^ posMask(z + 1)) ^ MASK_M0 ^ c ^ bkOf(z)) | 0)
         : (words[z] | 0)); // 编码关闭：明文落库，链值仍留下一项但无人取用
@@ -2067,7 +2097,45 @@ function compileFunction(fn, ctx) {
     }
   }
 
-  // ---- 解释器 case 生成 ----
+  // ---- WASM 解释器内核档：函数体降级成一句桥接调用，解释循环在共享模块内 ----
+  if (ctx.__vmWasmShared) {
+    if (!ctx.__vmBridgeName) ctx.__vmBridgeName = uniqueName(ctx.usedNames, '_0x');
+    const fIdx = (ctx.__vmWasmCount = (ctx.__vmWasmCount || 0) + 1) - 1;
+    const paramOrder = [];
+    for (const p of fn.params) {
+      for (const nm in t.getBindingIdentifiers(p)) paramOrder.push(nm);
+    }
+    if (paramOrder.length > 64) throw new Error(msg('vmWasmTooManyParams'));
+    const argslots = paramOrder.map((nm) => (slotOf.has(nm) ? slotOf.get(nm) : -1));
+    const dirStmtsW = directiveStmts(origDirectives);
+    fn.__wasmVmMeta = {
+      fIdx, flat, MASK_K1, MASK_K2, MASK_M0, CHAIN_SEED,
+      nSlots: slotOf.size, segLen: flat.length, argslots,
+      kinds: [...usedOps],
+      stringsEnc, STR_P, STR_K1, STR_K2, STR_M0,
+    };
+    // 桥接体：G/H/K/J 仍按调用重建（闭包按词法解析回原作用域），参数经桥接转句柄
+    fn.body = t.blockStatement([
+      t.variableDeclaration('var', [
+        t.variableDeclarator(G, t.arrayExpression(getterNodes)),
+        t.variableDeclarator(H, t.arrayExpression(setterNodes)),
+        t.variableDeclarator(K, t.arrayExpression(consts)),
+        t.variableDeclarator(J, t.arrayExpression(stringsEnc.map((row) =>
+          t.arrayExpression(row.map((n) => t.numericLiteral(n)))))),
+        ...[...captured].map((name) => t.variableDeclarator(t.identifier(name))),
+      ]),
+      t.returnStatement(t.callExpression(t.identifier(ctx.__vmBridgeName), [
+        t.numericLiteral(fIdx), G, H, K, J,
+        t.arrayExpression(paramOrder.map((nm) => t.identifier(nm))),
+      ])),
+    ]);
+    fn.body.body.unshift(...dirStmtsW);
+    if (fn.type === 'ArrowFunctionExpression') fn.expression = false;
+    compiledSet.add(fn);
+    return { real: usedOps.size, decoy: 0 };
+  }
+
+  // 解释器 case 生成。
   // 取指是链式的，B[PC++] 在 PC 已自增为下标加一之后取值，结果再异或位置分量、当前掩码
   // 与链值。链值取前一字的解密值，字 -1 的链值就是 CHAIN_SEED。因为解密要用到前一明文，
   // 没法从任意下标静态解出单字，只能从字 0 顺序推进。跳转目标处的链值在构建期预置，
@@ -2081,7 +2149,8 @@ function compileFunction(fn, ctx) {
   // XOR 操作数树随机化，让解密式的括号结构不固定。解密式是四操作数 XOR，即取指字、
   // 位置分量、掩码与链值。XOR 可交换可结合，任意二叉组合树都语义恒等，所以每函数每个
   // 取指位随机选一棵树，操作数顺序与结合结构逐构建漂移，按固定括号结构做模板匹配或
-  // 归纳的还原规则无法跨构建复用。
+  // 归纳的还原规则无法跨构建复用。wasm 桥接面不受影响，桥接只按子树特征定位
+  // Math.imul 与 B[pc++] 节点，与树形无关。
   const xorTree = (nodes) => {
     if (nodes.length === 1) return nodes[0];
     const cut = randInt(1, nodes.length - 1);
@@ -2743,6 +2812,8 @@ function compileFunction(fn, ctx) {
   //   没有 switch 也没有比较链骨架；
   // C 是嵌套 if，外层桶号 if-else 链加桶内分发字 if-else 链，没有 switch 也没有表，
   //   纯分支树。
+  // 三种形态都经由桶号调度，所以 wasm 档可以按 MUL(dispT,P1) 这一特征统一改写成
+  // BK(f,t) 调用，细节见 wasm。
   const _dispT = uniqueName(ctx.usedNames, '_0x'); // 取指暂存变量
   const _bk = uniqueName(ctx.usedNames, '_0x');    // 本条指令的分发桶号，每指令只求值一次
   // 分发条目由真实操作码与干扰项组成，经同一个桶函数分桶，同桶内乱序混排
@@ -2786,8 +2857,10 @@ function compileFunction(fn, ctx) {
     return chain;
   };
 
-  // 桶号表达式：内联仿射 + 高位右移取桶（自研 imul 内核经 rtlib.mulCall）。
-  // 求值点唯一：每指令一次，结果存 _bk，三形态的分发体只读 _bk
+  // 桶号表达式（wasm 档由 wasm 按 MUL(dispT,P1)（自研 imul 内核）特征
+  // 整体替换为 BK(f,t) 调用，右移留在 JS 侧、仿射常数仍在 wasm 内存；
+  // JS 档为内联仿射 + 高位右移取桶。求值点唯一：每指令一次，结果存 _bk，
+  // 三形态的分发体只读 _bk）
   const bucketExpr = () => t.binaryExpression('>>>',
     t.binaryExpression('+',
       rtlib.mulCall(ctx, t.identifier(_dispT), t.numericLiteral(DISP_P1)),
@@ -3502,6 +3575,32 @@ function compileFunction(fn, ctx) {
   fn.body.body.unshift(...dirStmts);
   if (fn.type === 'ArrowFunctionExpression') fn.expression = false;
 
+  // WASM 档元数据，供 wasm pass 读取；不开启 wasm 时没有消费方
+  fn.__vmMeta = {
+    flat,                 // 加密字节码字数组，含尾部垃圾字
+    nB,                   // 字节码数组变量名，wasm 用来定位声明
+    nM,                   // 掩码变量名，wasm 用来定位 MASK 声明与轮换写回
+    nNM,                  // 轮换掩码临时变量名
+    MASK_K1, MASK_K2, MASK_M0,
+    BL_SH, BL, BK_A, BK_B,   // P4 分块自解密参数，旧 wasm 档 CN 用；关闭时全 0
+    npc,                 // 位置计数变量名，wasm 用它特征匹配取指表达式
+    nCHAIN, nCHN,        // 链状态与暂存名，wasm 据此改写 cr 复位点
+    CHAIN_SEED,           // 链式取指初值，wasm 档可放进 WASM data 段
+    chainAt,              // 每字链值表，wasm 档把 PC 与链状态搬进模块后按目标字复位
+    flatLen: flat.length, // 本函数字节码字数，wasm 档切分数据段用
+    ROT_A, ROT_B,
+    disp: { P1: DISP_P1, Q1: DISP_Q1, nb: nbuckets, SH: DISP_SH }, // 分发桶参数，wasm 档进 data 段
+    ops: { real: opKinds.length, decoy: decoys.length, total: entries.length, buckets: nbuckets }, // 干扰项混淆之后的指令集规模
+    dispT: _dispT,        // 取指暂存变量名，wasm 据此特征匹配并改写
+    dispatchForm,         // 0 为 A(switch)，1 为 B(表驱动)，2 为 C(嵌套 if)
+    opNums,               // kind 到编号的 Map，桥接端按编号分发
+    consts,               // 常量池节点，引用共享，搬运时原样重建 K
+    getterNodes, setterNodes,
+    slots: [...slotOf.entries()], // 名字到槽位的映射
+    captured: [...captured],
+    params: fn.params,    // 参数 pattern，重建拷贝序言时用
+  };
+
   compiledSet.add(fn);
   // 新后端的计数在这里累加（走到这一行说明整条编译流程没抛错、产物已落到 AST 上）；
   // 片段里嵌套的函数走 compileInnerFns 递归调用，也会各自累加，所以统计不会漏报
@@ -3676,8 +3775,16 @@ function vm(ast, options, ctx) {
   }
   // 函数序号按 pass 运行重置：同一份源码 + 同一密钥必须得到同一套密钥材料
   ctx.__vmKeySeq = 0;
-  // 异步执行器（vmAsyncExecutor）总开关，与下面的候选循环共用
-  const allowAsync = !!options.vmAsyncExecutor;
+  // WASM 解释器内核档：建立全程序共享的分发字编号空间（解释器在 WASM 内查表分发）
+  ctx.__vmWasmShared = null;
+  if (options.wasmInterpreter === true) {
+    const space = Math.max(512, ctx.options.vmDecoyOps !== undefined ? ctx.options.vmDecoyOps | 0 : 1024);
+    const slots = shuffle(Array.from({ length: space }, (_, i) => i));
+    ctx.__vmWasmShared = { wordOf: new Map(), slots, next: 0, total: space };
+  }
+  // 异步执行器（vmAsyncExecutor）。WASM 解释器内核档的解释器在模块里、没有 await
+  // 能力，该档整体忽略本项（allowAsync 为 false，async 函数照旧不编译）。
+  const allowAsync = !!options.vmAsyncExecutor && !ctx.__vmWasmShared;
   const mode = options.vmMode === 'comment' || options.vmMode === 'only-string'
     ? options.vmMode
     : 'global';
@@ -3703,7 +3810,8 @@ function vm(ast, options, ctx) {
       directives: (prog && prog.directives) || [],
       sourceType: prog && prog.sourceType,
     };
-    if (!userStmts.length) topWrapReason = 'empty';
+    if (ctx.__vmWasmShared) topWrapReason = 'wasm';
+    else if (!userStmts.length) topWrapReason = 'empty';
     else {
       topWrapReason = topWrapBlocked(userProg, ctx);
       if (!topWrapReason) {
@@ -3803,7 +3911,7 @@ function vm(ast, options, ctx) {
     // vmDynOpcodes：是否真的生效，以及取整后的字空间大小（0 表示本项没生效）
     dyn: { applied: ctx.__vmDyn.applied, space: ctx.__vmDyn.space },
     // vmRegisterVM / vmAsyncExecutor：各自实际处理了多少个函数（0 表示本项没生效，
-    // 例如 async 函数的 await 落进闭包被保守放弃）
+    // 例如寄存器后端被 WASM 解释器内核档挡下、async 函数的 await 落进闭包被保守放弃）
     register: { funcs: ctx.__vmReg.funcs, regs: regsMax },
     asyncExec: { funcs: ctx.__vmAsync.funcs },
     forms: formCount,

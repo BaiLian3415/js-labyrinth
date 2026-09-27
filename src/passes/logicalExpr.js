@@ -46,7 +46,7 @@ export default function logicalExpr(ast, options, ctx) {
   // 命中率默认 0.7，可用 logicalExpressionsThreshold 覆盖
   const threshold = options.logicalExpressionsThreshold !== undefined ? options.logicalExpressionsThreshold : 0.7;
 
-  // VM 解释器骨架是取指与分发的契约面，改写会让桶链比较和取指序列对不上，
+  // VM 解释器骨架是 wasm 桥接的契约面，改写会让桶链比较和取指序列对不上，
   // 用 insideVmFunction 整段跳过。嵌套片段闭包里是用户代码，照常混淆。
   traverse(ast, {
     UnaryExpression(path) {

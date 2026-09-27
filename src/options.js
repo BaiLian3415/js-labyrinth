@@ -171,6 +171,27 @@ export default {
   // **必须与 vmCompileKey 同时设置**，缺编译期密钥时 pass 入口直接报错。
   // 代价：运行契约变了——产物只有在宿主提供该密钥时才能跑；每个函数多带约 1~2 KB。
   "vmRuntimeKeyGetter": "",
+  // ---- WASM 档位（阶段一：恢复能力，默认关闭）----
+  // 这两个档位在 e0d5d32 被整体移除（原因见那次提交：它们与 JS 侧多项 VM 特性互斥，
+  // 且 wasmInterpreter 与 wasm 两档本身也互斥）。此处按"恢复能力、不动默认"的方式接回：
+  // 选项存在、pass 可跑，但**默认全关**，所以既有四个预设的产物逐字节不变。
+  // 照搬历史默认（medium/high/max 的 wasm:true、max 的 wasmInterpreter:true）会让三个
+  // 预设的产物全变，那属于"改默认"而不是"恢复能力"，应当单独评估、单独提交。
+  //
+  // 互斥关系仍然成立，由 obfuscate 的挂载点保证：
+  //   if (options.wasmInterpreter) wasmvm(...); else if (options.wasm) wasm(...);
+  // 即内核档优先接管，旧档不介入。共存要靠"嵌套"（外层 JS VM 保护内层 WASM 解释器），
+  // 那是阶段二的新接口，不是这里把两个开关同时打开就能得到的。
+  //
+  // 宿主约束：workerd 只允许静态导入 .wasm，构建期自检因此走能力探测
+  // （wasm.js 的 wasmCompilable()），不支持就跳过自检、产物照常产出。
+  "wasm": false,
+  /** 只有语句数达到该值的函数才搬进 WASM（0 表示不设限）。 */
+  "wasmThreshold": 1,
+  /** 解释器内核档：把解释循环整体编译进共享 WASM 模块，JS 侧只剩桥接调用。 */
+  "wasmInterpreter": false,
+  /** 自定义运行时深度（只被 WASM 宿主运行时生成器消费）。 */
+  "rtDepth": 2,
   "objectKeyEncoding": true,
   "numberObfuscation": true,
   "numberObfuscationThreshold": 0.6,

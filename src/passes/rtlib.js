@@ -7,7 +7,7 @@
  * 内核名字经 uniqueName 随机化后登记 ctx.rtNames，vm、controlFlow、deadCode、
  * opaquePredicates、callProxy、mangle 以及哨兵和入口校验点对它整函数或整绑定
  * 跳过，因为内核是解释器与解码器的引导层，二次编译会形成引导循环或热路径解释
- * 器嵌套。业务语义层仍由 VMP、stringArray 等全量覆盖，点访问形态另经
+ * 器嵌套。业务语义层仍由 VMP、WASM、stringArray 全量覆盖，点访问形态另经
  * objectKeys 转拆段计算下标。
  */
 import parser from '../ast/parser.js';
@@ -225,7 +225,7 @@ function rtlib(ast, options, ctx) {
   let ins = 0;
   while (ins < program.body.length && program.body[ins].type === 'Directive') ins++;
   program.body.splice(ins, 0, ...parsed.program.body);
-  // 头部锚定按节点身份记录，callProxy 等后续 pass 会在 0 位插语句，下标必然漂移
+  // 头部锚定按节点身份记录，wasm 与 callProxy 后续会在 0 位插语句，下标必然漂移
   ctx.rtKernelStmts = parsed.program.body.slice();
   ctx.earlyStmts = [];
   ctx.headStmts = [];

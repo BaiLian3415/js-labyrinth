@@ -46,7 +46,7 @@ export default function conditionObf(ast, options, ctx) {
   const threshold = options.conditionObfuscationThreshold !== undefined ? options.conditionObfuscationThreshold : 0.5;
 
   // 比较表达式统一走一个 visitor，随机在取反和方向翻转之间二选一。
-  // VM 解释器骨架是取指与分发的契约面，桶链比较和取指序列的结构形态
+  // VM 解释器骨架是 wasm 桥接的契约面，桶链比较和取指序列的结构形态
   // 不能被改写，整段跳过；嵌套片段闭包里是用户代码，照常混淆。
   traverse(ast, {
     BinaryExpression(path) {

@@ -13,6 +13,8 @@ import rtlib from './passes/rtlib.js';
 import simplify from './passes/simplify.js';
 import renameProperties from './passes/renameProperties.js';
 import vm from './passes/vm.js';
+import wasm from './passes/wasm.js';
+import wasmvm from './passes/wasmvm.js';
 import controlFlow from './passes/controlFlow.js';
 import objectKeys from './passes/objectKeys.js';
 import numberObf from './passes/numberObf.js';
@@ -42,7 +44,7 @@ import builtinUpper from './ast/builtin-upper.js';
  * pass 顺序固定，调顺序前确认依赖：
  *   rtlib → vm → numberObf → controlFlow → objectKeys → templateToConcat → stringArray
  *   → logicalExpr → conditionObf → deadCode → opaquePredicates → antiCDP
- *   → debugProtection → envFingerprint → functionWrapper → callProxy
+ *   → debugProtection → envFingerprint → functionWrapper → callProxy → wasm
  *   → mangle → integrityCheck → selfCheck → generate → shell
  */
 
@@ -293,6 +295,10 @@ function obfuscate(code, userOptions) {
   if (options.envFingerprint) applyPass(envFingerprint, 'envFingerprint');
   if (options.functionWrapper) timePass('functionWrapper', () => functionWrapper(ast, options, ctx));
   if (options.callProxy) applyPass(callProxy, 'callProxy');
+  // WASM 解释器内核档与旧 wasm 档互斥：内核档把解释器整体搬进 WASM，旧档只搬
+  // 数据与原语，两者同时开会生成两个模块与两套取指假设，故内核档优先。
+  if (options.wasmInterpreter) timePass('wasmvm', () => wasmvm(ast, options, ctx));
+  else if (options.wasm) timePass('wasm', () => wasm(ast, options, ctx));
   if (options.mangle) timePass('mangle', () => mangle(ast, options, ctx));
   if (options.integrityCheck) timePass('integrityCheck', () => integrityCheck(ast, options, ctx));
 
@@ -335,7 +341,7 @@ function obfuscate(code, userOptions) {
       const bootOpts = Object.assign({}, options, {
         seed: randInt(1, 1000000000),
         shell: false,
-        vmProtection: false,
+        vmProtection: false, wasm: false,
         stringArray: false,
         debugProtection: false, envFingerprint: false,
         antiCDP: false,

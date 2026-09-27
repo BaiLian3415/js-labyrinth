@@ -8,9 +8,8 @@ const { randInt, shuffle, uniqueName } = rand;
  * 表不是构建期常量数组，运行期按时间戳密钥现场重排，掩码不能写成表达式，任何纯
  * 算术式掩码都能被折叠器按运算符代数规则消去。表内混入诱饵槽位，派发表中真假
  * 槽位外观一致，静态阅读难以区分哪些是真实函数。时机放在 functionWrapper 之后，
- * 此时顶层已是 IIFE 体且函数声明稳定；放在 mangle / integrityCheck 之前，因为 VM
- * 函数已编译为解释器，不在重写面内。只重写 callee 为根函数名的普通调用，模块绑定
- * 与 new 不动。
+ * 此时顶层已是 IIFE 体且函数声明稳定；放在 wasm 之前，因为 VM 函数已编译为
+ * 解释器，不在重写面内。只重写 callee 为根函数名的普通调用，模块绑定与 new 不动。
  */
 
 export default function callProxy(ast, options, ctx) {
@@ -48,7 +47,7 @@ export default function callProxy(ast, options, ctx) {
   for (const s of rootBody) {
     if (s.type === 'FunctionDeclaration' && s.id && s.id.name && !exportedNames.has(s.id.name)) {
       // 内核不经派发表，MUL 这类热原语在解释器骨架内被调用，改成槽位查找会
-      // 破坏内核调用点与解释器骨架的结构对应
+      // 让 wasm 按内核名匹配取指与分发子树的桥接失配
       if (ctx.rtNames && ctx.rtNames.has(s.id.name)) continue;
       fnNames.add(s.id.name);
     }
