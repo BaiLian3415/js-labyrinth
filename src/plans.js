@@ -28,7 +28,7 @@ export default {
       "domainLock": [""],
       "simplify": false,
       "nameStyle": [
-        "random"
+        "Mangled"
       ],
       "renameProperties": false,
       "debugPoison": false,

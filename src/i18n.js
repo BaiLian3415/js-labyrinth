@@ -301,7 +301,7 @@ const STRINGS = {
     // 混淆强度对比（十维雷达，max 档 vs obfuscator.io Pro VM）
     cmpOpen: '对比 obfuscator.io',
     cmpTitle: '混淆强度对比 · JsLabyrinth vs obfuscator.io',
-    cmpNote: '双方最强档：JsLabyrinth 用 max 预设，obfuscator.io 用 Pro VM。十维 0–10 分，按公开能力面逐项对照——obfuscator.io 在标识符/属性重命名与成熟度（实战检验、边界用例覆盖）上更优，JsLabyrinth 在调试保护、防篡改、反自动化与 VM 内核上更强；代码压缩一项自 2026-09-25 起可用 simplify（含无用声明消除）+ nameStyle=short 达到真正 minifier 量级：同一输入实测产物为 terser 的 1.18~1.58×，同口径下 obfuscator.io（compact+simplify）为 1.49~1.89×，含死代码的模块化 bundle 上差距更大（3.5 KB 对 13.6 KB）。评分为能力覆盖度，不等于实测破解耗时。',
+    cmpNote: '双方最强档：JsLabyrinth 用 max 预设，obfuscator.io 用 Pro VM。十维 0–10 分，按公开能力面逐项对照——obfuscator.io 在标识符/属性重命名与成熟度（实战检验、边界用例覆盖）上更优，JsLabyrinth 在调试保护、防篡改、反自动化与 VM 内核上更强；代码压缩一项自 2026-09-25 起可用 simplify（含无用声明消除）+ nameStyle=Mangled-shuffled 达到真正 minifier 量级：同一输入实测产物为 terser 的 1.18~1.58×，同口径下 obfuscator.io（compact+simplify）为 1.49~1.89×，含死代码的模块化 bundle 上差距更大（3.5 KB 对 13.6 KB）。评分为能力覆盖度，不等于实测破解耗时。',
     cmpLegendJs: 'JsLabyrinth（max）',
     cmpLegendObf: 'obfuscator.io（Pro VM）',
     cmpDim1: '标识符重命名',
@@ -607,7 +607,7 @@ const STRINGS = {
     // obfuscation strength comparison (ten-dimension radar, max tier vs obfuscator.io Pro VM)
     cmpOpen: 'vs obfuscator.io',
     cmpTitle: 'Obfuscation strength · JsLabyrinth vs obfuscator.io',
-    cmpNote: 'Both at their maximum tier: JsLabyrinth "max" preset vs obfuscator.io Pro VM. Ten dimensions scored 0–10 against public capabilities — obfuscator.io leads in identifier/property renaming and battle-tested maturity (edge-case coverage); JsLabyrinth leads in debug protection, tamper resistance, anti-automation and its VM core. On compression, since 2026-09-25 simplify (now with unused-declaration elimination) + nameStyle=short reach real-minifier territory: measured 1.18–1.58× terser on the same inputs, where obfuscator.io (compact+simplify) measures 1.49–1.89×; on a module bundle with dead code the gap widens (3.5 KB vs 13.6 KB). Scores reflect capability coverage, not measured cracking time.',
+    cmpNote: 'Both at their maximum tier: JsLabyrinth "max" preset vs obfuscator.io Pro VM. Ten dimensions scored 0–10 against public capabilities — obfuscator.io leads in identifier/property renaming and battle-tested maturity (edge-case coverage); JsLabyrinth leads in debug protection, tamper resistance, anti-automation and its VM core. On compression, since 2026-09-25 simplify (now with unused-declaration elimination) + nameStyle=Mangled-shuffled reach real-minifier territory: measured 1.18–1.58× terser on the same inputs, where obfuscator.io (compact+simplify) measures 1.49–1.89×; on a module bundle with dead code the gap widens (3.5 KB vs 13.6 KB). Scores reflect capability coverage, not measured cracking time.',
     cmpLegendJs: 'JsLabyrinth (max)',
     cmpLegendObf: 'obfuscator.io (Pro VM)',
     cmpDim1: 'Identifiers',

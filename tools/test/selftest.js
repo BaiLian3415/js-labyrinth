@@ -2426,7 +2426,7 @@ section('命名策略（nameStyle）与动态 import');
     ok(got === want, '混淆后动态 import / import.meta 行为一致', got);
   }
 
-  // 短名：同输入明显更小、产物可执行、同 seed 可复现
+  // Mangled / Mangled-shuffled：同输入体积接近、产物可执行、各自的可复现性符合约定
   const namey = 'function computeTotals(records) { var runningTotal = 0; var index = 0;\n'
     + '  while (index < records.length) { var currentRecord = records[index];\n'
     + '    runningTotal += currentRecord.weight * (currentRecord.count + 1); index++; }\n'
@@ -2435,16 +2435,17 @@ section('命名策略（nameStyle）与动态 import');
     + 'process.stdout.write(describeResult(computeTotals([{ weight: 2, count: 3 }, { weight: 5, count: 4 }])) + "\\n");';
   {
     const want = runNode(namey, 'namestyle-raw.js').trim();
-    const random = obfuscate(namey, { preset: 'low', shell: false, nameStyle: 'random', seed: 9 });
-    const short = obfuscate(namey, { preset: 'low', shell: false, nameStyle: 'short', seed: 9 });
-    ok(short.code.length < random.code.length * 0.8, '短名产物明显小于随机名',
-      random.code.length + ' → ' + short.code.length);
-    ok(!/computeTotals|describeResult|runningTotal/.test(short.code), '短名把用户标识符全部换掉', '');
+    const mangled = obfuscate(namey, { preset: 'low', shell: false, nameStyle: 'Mangled', seed: 9 });
+    const shuffled = obfuscate(namey, { preset: 'low', shell: false, nameStyle: 'Mangled-shuffled', seed: 9 });
+    ok(Math.abs(shuffled.code.length - mangled.code.length) < mangled.code.length * 0.1,
+      '乱序档与规范档体积相当（只差字母表，名字长度一样）',
+      mangled.code.length + ' → ' + shuffled.code.length);
+    ok(!/computeTotals|describeResult|runningTotal/.test(shuffled.code), '乱序档把用户标识符全部换掉', '');
     let got = 'THREW';
-    try { got = runNode(short.code, 'namestyle-short.js').trim(); } catch (e) { got = 'THREW'; }
-    ok(got === want && want === 'small:33', '短名产物语义不变', got + ' ≠ ' + want);
-    ok(obfuscate(namey, { preset: 'low', shell: false, nameStyle: 'short', seed: 9 }).code === short.code,
-      '短名同 seed 逐字节可复现');
+    try { got = runNode(shuffled.code, 'namestyle-shuffled.js').trim(); } catch (e) { got = 'THREW'; }
+    ok(got === want && want === 'small:33', '乱序档产物语义不变', got + ' ≠ ' + want);
+    ok(obfuscate(namey, { preset: 'low', shell: false, nameStyle: 'Mangled-shuffled', seed: 9 }).code === shuffled.code,
+      '乱序档同 seed 逐字节可复现');
   }
 
   // 未声明的全局引用不能被短名遮蔽（$ / _ 这类）
@@ -2455,16 +2456,16 @@ section('命名策略（nameStyle）与动态 import');
     const want = runNode(src, 'namestyle-globals-raw.js').trim();
     // $ / _ 是未声明的宿主全局（不是内建），所以显式进 extraGlobals 白名单
     const code = obfuscate(src, {
-      preset: 'low', shell: false, nameStyle: 'short', seed: 11, extraGlobals: ['$', '_'],
+      preset: 'low', shell: false, nameStyle: 'Mangled', seed: 11, extraGlobals: ['$', '_'],
     }).code;
     let got = 'THREW';
     try { got = runNode(code, 'namestyle-globals.js').trim(); } catch (e) { got = 'THREW'; }
     ok(got === want && want === 'globals=18', '短名不遮蔽未声明的全局引用', got + ' ≠ ' + want);
   }
 
-  // hex / readable 两档（2026-09-27 新增）。为了能逐个检查发出来的名字长什么样，
-  // 这里把除 mangle 之外的 pass 全关掉：否则 stringArray 之类注入的声明名会混进来，
-  // 那部分按设计是保持原样的（ctx.rtNames / ctx.keepNames），不该算进改名结果。
+  // 四档的发名形状。为了能逐个检查发出来的名字长什么样，这里把除 mangle 之外的 pass
+  // 全关掉：否则 stringArray 之类注入的声明名会混进来，那部分按设计是保持原样的
+  // （ctx.rtNames / ctx.keepNames），不该算进改名结果。
   const NAMEONLY = {
     preset: 'low', shell: false, stringArray: false, controlFlowFlattening: false,
     logicalExpressions: false, conditionObfuscation: false, opaquePredicates: false,
@@ -2478,72 +2479,99 @@ section('命名策略（nameStyle）与动态 import');
     + '  while (idx < records.length) { acc = acc + records[idx] + runningTotal; idx = idx + 1; }\n'
     + '  return acc; }\n'
     + 'console.log(computeTotals + runningTotal + currentRecord + describeResult + collectAll([1, 2]));';
-  // 刻意挑不可能是命名池产物的标识符：`out` 这种短词不行，readable 池里有 output，
-  // 子串匹配会把它误报成"原名残留"
+  // 刻意挑不可能是命名池产物的标识符：`out` 这种短词不行，词典档里有 output，
+  // 子串匹配会把它误报成"原名残留"（实测确认：只有词典档会命中 output）
   const ORIG_NAMES = ['computeTotals', 'runningTotal', 'currentRecord', 'describeResult', 'collectAll', 'records', 'idx', 'acc'];
   const declNames = (code) => [...new Set(
     [...code.matchAll(/(?:var|let|const|function)\s+([A-Za-z_$][A-Za-z0-9_$]*)/g)].map((m) => m[1]),
   )];
   {
+    // Hexadecimal：字母 + 十六进制位，从 2 字符起步
     const want = runNode(shapeSrc, 'namestyle-shape-raw.js').trim();
-    const hex = obfuscate(shapeSrc, { ...NAMEONLY, nameStyle: 'hex', seed: 9 });
+    const hex = obfuscate(shapeSrc, { ...NAMEONLY, nameStyle: 'Hexadecimal', seed: 9 });
     const decls = declNames(hex.code);
-    // 内核注入名（TC2lPuc2m、_0xf1fac5c 这类）不参与形状统计，只看我们发出去的那些
     const hexShaped = decls.filter((n) => /^[A-Za-z][0-9a-f]{1,3}$/.test(n));
-    ok(hexShaped.length >= 8, 'hex 档发出的名字都是"字母+十六进制"形状', hexShaped.length + '/' + decls.length + '：' + hexShaped.slice(0, 8).join(' '));
-    ok(decls.every((n) => n.length >= 2 || !hexShaped.includes(n)), 'hex 档不发 1 字符名（否则退回 short 的序列感）', decls.filter((n) => n.length < 2).join(' '));
-    ok(!ORIG_NAMES.some((n) => hex.code.includes(n)), 'hex 档把用户标识符全部换掉', ORIG_NAMES.filter((n) => hex.code.includes(n)).join(' '));
+    ok(hexShaped.length >= 8, 'Hexadecimal 档发出的名字都是"字母+十六进制"形状', hexShaped.length + '/' + decls.length + '：' + hexShaped.slice(0, 8).join(' '));
+    ok(hexShaped.every((n) => n.length >= 2), 'Hexadecimal 档不发 1 字符名（否则退回 Mangled 的序列感）', hexShaped.filter((n) => n.length < 2).join(' '));
+    ok(!ORIG_NAMES.some((n) => hex.code.includes(n)), 'Hexadecimal 档把用户标识符全部换掉', ORIG_NAMES.filter((n) => hex.code.includes(n)).join(' '));
     let got = 'THREW';
     try { got = runNode(hex.code, 'namestyle-hex.js').trim(); } catch (e) { got = 'THREW'; }
-    ok(got === want, 'hex 档产物语义不变', got + ' ≠ ' + want);
-    ok(obfuscate(shapeSrc, { ...NAMEONLY, nameStyle: 'hex', seed: 9 }).code === hex.code, 'hex 档同 seed 逐字节可复现');
-    ok(obfuscate(shapeSrc, { ...NAMEONLY, nameStyle: 'hex', seed: 10 }).code !== hex.code, 'hex 档换 seed 换一套名字');
+    ok(got === want, 'Hexadecimal 档产物语义不变', got + ' ≠ ' + want);
+    ok(obfuscate(shapeSrc, { ...NAMEONLY, nameStyle: 'Hexadecimal', seed: 9 }).code === hex.code, 'Hexadecimal 档同 seed 逐字节可复现');
+    ok(obfuscate(shapeSrc, { ...NAMEONLY, nameStyle: 'Hexadecimal', seed: 10 }).code !== hex.code, 'Hexadecimal 档换 seed 换一套名字');
   }
   {
+    // Dictionary：固定词表
     const want = runNode(shapeSrc, 'namestyle-shape-raw.js').trim();
-    const readable = obfuscate(shapeSrc, { ...NAMEONLY, nameStyle: 'readable', seed: 9 });
-    const decls = declNames(readable.code);
+    const dict = obfuscate(shapeSrc, { ...NAMEONLY, nameStyle: 'Dictionary', seed: 9 });
+    const decls = declNames(dict.code);
     const words = decls.filter((n) => /^[a-z]{3,8}[0-9]*$/.test(n));
-    ok(words.length >= 8, 'readable 档发出的是可读词名', words.length + '/' + decls.length + '：' + words.slice(0, 8).join(' '));
-    ok(!ORIG_NAMES.some((n) => readable.code.includes(n)), 'readable 档把用户标识符全部换掉', ORIG_NAMES.filter((n) => readable.code.includes(n)).join(' '));
+    ok(words.length >= 8, 'Dictionary 档发出的是可读词名', words.length + '/' + decls.length + '：' + words.slice(0, 8).join(' '));
+    ok(!ORIG_NAMES.some((n) => dict.code.includes(n)), 'Dictionary 档把用户标识符全部换掉', ORIG_NAMES.filter((n) => dict.code.includes(n)).join(' '));
     let got = 'THREW';
-    try { got = runNode(readable.code, 'namestyle-readable.js').trim(); } catch (e) { got = 'THREW'; }
-    ok(got === want, 'readable 档产物语义不变', got + ' ≠ ' + want);
-    ok(obfuscate(shapeSrc, { ...NAMEONLY, nameStyle: 'readable', seed: 9 }).code === readable.code, 'readable 档同 seed 逐字节可复现');
-    ok(obfuscate(shapeSrc, { ...NAMEONLY, nameStyle: 'readable', seed: 10 }).code !== readable.code, 'readable 档换 seed 换一套词');
+    try { got = runNode(dict.code, 'namestyle-dict.js').trim(); } catch (e) { got = 'THREW'; }
+    ok(got === want, 'Dictionary 档产物语义不变', got + ' ≠ ' + want);
+    ok(obfuscate(shapeSrc, { ...NAMEONLY, nameStyle: 'Dictionary', seed: 9 }).code === dict.code, 'Dictionary 档同 seed 逐字节可复现');
+    ok(obfuscate(shapeSrc, { ...NAMEONLY, nameStyle: 'Dictionary', seed: 10 }).code !== dict.code, 'Dictionary 档换 seed 换一套词');
   }
   {
-    // 定位：hex 贴着 short 的体积，readable 明显更大但仍小于 random
+    // Mangled 的定义性质：发名与 seed 无关。用单绑定样本排除干扰——多绑定样本里
+    // stringArray 等注入名逐构建随机，比对整体名字集合会被它们污染。
+    const one = 'var computeTotals = 1; console.log(computeTotals);';
+    const singleName = (style, seed) => {
+      const code = obfuscate(one, { ...NAMEONLY, nameStyle: style, seed }).code;
+      const m = /var\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*1/.exec(code);
+      return m ? m[1] : '';
+    };
+    const m9 = singleName('Mangled', 9);
+    const m10 = singleName('Mangled', 10);
+    ok(m9 !== '' && m9 === m10 && m9 === singleName('Mangled', 11),
+      'Mangled 档发名与 seed 无关（决定性，可跨构建 diff）', 'seed9=' + m9 + ' seed10=' + m10);
+    const s9 = singleName('Mangled-shuffled', 9);
+    const s10 = singleName('Mangled-shuffled', 10);
+    ok(s9 !== s10 || s9 !== singleName('Mangled-shuffled', 11),
+      'Mangled-shuffled 档发名随 seed 变（不留字母表指纹）', 'seed9=' + s9 + ' seed10=' + s10);
+  }
+  {
+    // 体积定位。必须用 NAMEONLY（其它 pass 全关）：Mangled 的命名池不打乱、不消耗
+    // 随机数，Mangled-shuffled 要消耗，两者的随机流位置因此不同，完整预设下后续 pass
+    // 的产物会有零点几个百分点的差异——那不是名字的功劳，是随机状态的副作用。
+    // 关掉其它 pass 后，差异就只剩名字本身。
     const size = {};
-    for (const style of ['random', 'short', 'hex', 'readable']) {
-      size[style] = obfuscate(namey, { preset: 'low', shell: false, nameStyle: style, seed: 9 }).code.length;
+    for (const style of ['Mangled', 'Mangled-shuffled', 'Hexadecimal', 'Dictionary']) {
+      size[style] = obfuscate(namey, { ...NAMEONLY, nameStyle: style, seed: 9 }).code.length;
     }
-    ok(size.hex < size.random && size.hex < size.short * 1.15,
-      'hex 档体积贴近 short（远小于 random）', size.short + ' → hex ' + size.hex + ' / random ' + size.random);
-    ok(size.readable < size.random && size.readable > size.hex,
-      'readable 档比 hex 大但仍小于 random（可读性换体积）', 'hex ' + size.hex + ' → readable ' + size.readable + ' / random ' + size.random);
+    ok(size.Mangled === size['Mangled-shuffled'],
+      'Mangled 与 Mangled-shuffled 体积逐字节相同（名字长度一样，只差字母）',
+      size.Mangled + ' vs ' + size['Mangled-shuffled']);
+    ok(size.Hexadecimal > size.Mangled,
+      'Hexadecimal 更大（从 2 字符起步，没有 1 字符名）', size.Mangled + ' → ' + size.Hexadecimal);
+    ok(size.Dictionary > size.Hexadecimal, 'Dictionary 档体积最大（词名换可读性）',
+      size.Hexadecimal + ' → ' + size.Dictionary);
   }
   {
-    // 未知档名退回 random，且不能因为 nameStyle 来自调用方就命中
-    // Object.prototype 上的 'constructor'（命名池是 Map，就是为了这个）
+    // 未知档名（旧档名 random/short、大小写写错、拼错）一律回落到默认值，且不能因为
+    // nameStyle 来自调用方就命中 Object.prototype 上的 'constructor'（命名池用 Map）
+    const mangled = obfuscate(namey, { preset: 'low', shell: false, nameStyle: 'Mangled', seed: 9 });
     const fallback = obfuscate(namey, { preset: 'low', shell: false, nameStyle: 'constructor', seed: 9 });
-    const randomRef = obfuscate(namey, { preset: 'low', shell: false, nameStyle: 'random', seed: 9 });
-    ok(fallback.code === randomRef.code, '未知 nameStyle 退回 random 而不是抛异常',
-      fallback.code.length + ' vs ' + randomRef.code.length);
+    const legacy = obfuscate(namey, { preset: 'low', shell: false, nameStyle: 'short', seed: 9 });
+    ok(fallback.code === mangled.code, '未知 nameStyle 回落到默认档而不是抛异常',
+      fallback.code.length + ' vs ' + mangled.code.length);
+    ok(legacy.code === mangled.code, '旧档名（short/random）也回落到默认档，不会静默出一份没约定的产物');
   }
 
   // 闸门与默认值
-  ok(plan.violations({ nameStyle: 'short' }, 'free').length === 1, 'free 档 nameStyle=short 被闸门锁死');
-  ok(plan.violations({ nameStyle: 'random' }, 'free').length === 0, 'free 档 nameStyle=random 放行');
-  ok(plan.violations({ nameStyle: 'short' }, 'plus').length === 0, 'plus 档 nameStyle=short 放行');
-  ok(plan.violations({ nameStyle: 'hex' }, 'free').length === 1, 'free 档 nameStyle=hex 被闸门锁死');
-  ok(plan.violations({ nameStyle: 'hex' }, 'plus').length === 0, 'plus 档 nameStyle=hex 放行');
-  ok(plan.violations({ nameStyle: 'readable' }, 'free').length === 1, 'free 档 nameStyle=readable 被闸门锁死');
-  ok(plan.violations({ nameStyle: 'readable' }, 'plus').length === 0, 'plus 档 nameStyle=readable 放行');
-  ok(obfuscateMod.DEFAULTS.nameStyle === 'random', 'nameStyle 默认 random');
+  ok(obfuscateMod.DEFAULTS.nameStyle === 'Mangled', 'nameStyle 默认 Mangled');
+  for (const style of optionsMeta.VALUE_OPTIONS.nameStyle.values) {
+    const v = plan.violations({ nameStyle: style }, 'free').length;
+    const p = plan.violations({ nameStyle: style }, 'plus').length;
+    const wantFree = style === 'Mangled' ? 0 : 1;
+    ok(v === wantFree && p === 0,
+      '闸门 ' + style + '：free ' + (v === 0 ? '放行' : '锁死') + ' / plus 放行', 'free=' + v + ' plus=' + p);
+  }
   // 元数据枚举与实际实现必须同步：界面上能选、闸门放行，但 mangle 里没有对应池的档位
-  // 会静默退回 random（选项存在但无效），这类漂移要有断言兜住
-  ok(optionsMeta.VALUE_OPTIONS.nameStyle.values.join(',') === 'random,short,hex,readable',
+  // 会静默回落到默认档（选项存在但无效），这类漂移要有断言兜住
+  ok(optionsMeta.VALUE_OPTIONS.nameStyle.values.join(',') === 'Mangled,Mangled-shuffled,Hexadecimal,Dictionary',
     'nameStyle 枚举与实现同步', optionsMeta.VALUE_OPTIONS.nameStyle.values.join(','));
   for (const style of optionsMeta.VALUE_OPTIONS.nameStyle.values) {
     const r = obfuscate(namey, { preset: 'low', shell: false, nameStyle: style, seed: 9 });

@@ -7,15 +7,16 @@ export default {
   "simplify": false,
   "identifierPrefix": "_0x",
   "mangle": true,
-  // 命名策略（Paid 档，plus+；free 档闸门锁死 random）。四档：
-  //   random   随机混族长名（防指纹优先，默认）
-  //   short    minifier 式短名池：长度递增、字母逐构建打乱、按引用次数分配，
-  //             实测把"纯压缩"产物体积从 2.40× terser 降到 1.18~1.58×
-  //   hex      摘要式短名：长度与 short 相当，但每个名都是"字母+十六进制"，
-  //             肉眼看不出发放顺序，留不下字母表指纹
-  //   readable 固定词表的可读名：调试与审计友好，产物比 short 大、词表可枚举
-  //             抗指纹弱，定位是调试档不是发布档
-  "nameStyle": "random",
+  // 命名策略（Paid 档，plus+；free 档闸门锁死 Mangled）。四档，与 obfuscator.io 的
+  // identifierNamesGenerator 同一套命名：
+  //   Mangled           规范短名（a、b、c…），决定性、与 seed 无关、可逐字节 diff，
+  //                     体积最小，但产物里必然出现发名顺序，指纹最强
+  //   Mangled-shuffled  同样形状，字母表逐构建打乱——体积相当且不留字母表指纹，
+  //                     混淆发布用这档
+  //   Hexadecimal       字母 + 十六进制位（a7 / f30），一样短但完全无规律
+  //   Dictionary        固定 64 词表的可读名，调试友好；产物更大、词表可枚举
+  //                     故抗指纹弱，定位是调试档不是发布档
+  "nameStyle": "Mangled",
   // 属性名重命名（renameProperties，safe 模式）：改成员访问 obj.foo / 对象键
   // {foo:1} / 方法名 / 类方法·类属性名的属性名。只改「程序内定义 ∩ 访问」的
   // 属性，叠加高风险名白名单。与外部代码共享属性可能被破坏（safe 模式固有局限）。

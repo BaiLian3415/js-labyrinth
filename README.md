@@ -281,66 +281,69 @@ pass 无冲突。Paid 档（plus+）可显式开启，free 档闸门锁死 `fals
 
 ### 压缩能力：真的能当 minifier 用（`simplify` + `nameStyle`）
 
-默认 `mangle` 走的是**随机混族长名**（`_0x7e925a43e`、CJK 字形、`c0…` 前缀），命名
-本身就是一层防指纹设计——代价是它会把产物撑大，实测比不改名还大 4.9 KB/16 KB。
-把命名策略切到 `nameStyle: 'short'` 就换成 minifier 的取法：长度递增（a…Z\$\_ → aa…）、
-每档字母顺序逐构建打乱（同 seed 可复现、换 seed 换一套字母）、**按引用次数从多到少
-发放**（最常出现的绑定拿最短的名）、已占用的名字与关键字一律跳过。
+`mangle` 默认走 `Mangled`（`nameStyle` 的默认档）：`a`…`Z$_` → `aa`… 的规范短名，长度
+递增、**按引用次数从多到少发放**（最常出现的绑定拿最短的名字），已占用的名字与关键字
+一律跳过。叠加 `compact`（去空白）就是"当 minifier 用"的完整配置。
 
-两者叠加 `compact`（去空白）就是"当 minifier 用"的完整配置。同输入实测（相对 terser
-`compress+mangle` 的倍数，越小越好；`npm run bench:minify` 可复现，两个参考实现都是
-`npm install --no-save` 临时装的）：
+同输入实测（相对 terser `compress+mangle` 的倍数，越小越好；`npm run bench:minify`
+可复现，两个参考实现都是 `npm install --no-save terser javascript-obfuscator` 临时装的）：
 
-| 输入 | 原始 | terser | 我们（random 名） | 我们（short+DCE） | obfuscator.io（compact+simplify） |
+| 输入 | 原始 | terser | 我们（默认 Mangled） | 我们（Mangled-shuffled+DCE） | obfuscator.io（compact+simplify） |
 | --- | --- | --- | --- | --- | --- |
-| `src/obfuscate.js` | 15.8 KB | 7.8 KB | 2.40× | **1.58×** | 1.64× |
-| `src/passes/vm.js` | 93.0 KB | 44.5 KB | 1.95× | **1.19×** | 1.89× |
-| `src/ast/parser.js` | 58.0 KB | 34.1 KB | 1.56× | **1.18×** | 1.49× |
-| bundle 式模块（含死代码） | 9.9 KB | 0.3 KB | 68.3× | **3.5 KB** | 13.6 KB |
+| `src/obfuscate.js` | 15.5 KB | 7.6 KB | 12.1 KB（1.59×） | **12.1 KB（1.59×）** | 12.5 KB（1.63×） |
+| `src/passes/vm.js` | 145.2 KB | 64.1 KB | 75.3 KB（1.18×） | **75.1 KB（1.17×）** | 123.2 KB（1.92×） |
+| `src/ast/parser.js` | 58.0 KB | 34.1 KB | 40.0 KB（1.18×） | **40.0 KB（1.18×）** | 50.8 KB（1.49×） |
+| bundle 式模块（含死代码） | 9.9 KB | 0.3 KB | 10.3 KB | **3.5 KB** | 13.6 KB |
 
-读法与边界：真实源码上我们落在 terser 的 1.18~1.58×，同口径压过 obfuscator.io
-（他们不做无用声明消除，也没有短名）；bundle 那行的倍数被 terser 的内联能力拉大
-（它把整段折成 0.3 KB），可比的是绝对体积 3.5 KB 对 13.6 KB。短名不复用作用域
-（本 pass 直接改节点、不维护作用域图），所以密集小作用域的代码会比 terser 略胖；
-terser 的表达式级优化（内联、序列化、丢空 `if`）本工具不做，这是"1.1~1.6× 而不是
-1.0×"的主因。
+（2026-09-27 实测：Node 24 + terser 5.51.2 + javascript-obfuscator 5.8.0。）
 
-排序与开关：`nameStyle` 默认 `random`（不动既有产物基线），free 档闸门锁死 random，
-Plus 及以上可切 `short`；`simplify` 同样 plus+ 可开。混淆档不建议切短名——随机长名
-是给"防指纹"用的，切短等于把混族命名这层设计丢掉。四档的取舍见下节。
+读法与边界：真实源码上我们落在 terser 的 1.18~1.59×；bundle 那行的倍数被 terser 的内联
+能力拉大（它把整段折成 0.3 KB），可比的是绝对体积 3.5 KB 对 13.6 KB——obfuscator.io 不
+做无用声明消除。短名不复用作用域（本 pass 直接改节点、不维护作用域图），所以密集小作用域
+的代码会比 terser 略胖；terser 的表达式级优化（内联、序列化、丢空 `if`）本工具不做，这是
+"1.2~1.6× 而不是 1.0×"的主因。
+
+排序与开关：`nameStyle` 默认 `Mangled`，free 档闸门只放行它，Plus 及以上可切其余三档；
+`simplify` 同样 plus+ 可开。四档的取舍见下节。
 
 ### 四档命名策略（`--name-style`）
 
-`short` / `hex` / `readable` 三档共用同一套发放机制——长度递增、每档字符顺序逐构建
-打乱（同 seed 可复现、换 seed 换一套）、**按引用次数从多到少发放**（最常出现的绑定
-拿最短的名）、已占用的名字与关键字一律跳过、不复用作用域。区别只在池子里装的是什么：
+四档与 obfuscator.io 的 `identifierNamesGenerator` 同一套命名，便于横向对比产物。共用
+同一套发放机制——长度递增、**按引用次数从多到少发放**、跳过已占用名与关键字、不复用
+作用域、池空退回随机名。区别在池子里装的是什么，以及发名顺序固不固定：
 
-| 档位 | 样子 | 定位 |
-| --- | --- | --- |
-| `random`（默认） | `_0x7e925a43e`、`c0…`、CJK 字形混排 | 防指纹优先，体积最差。free 档唯一放行值 |
-| `short` | `a`…`Z$_` → `aa`…，字母表逐构建打乱 | 体积最小，压缩档用 |
-| `hex` | `a7`、`f30`、`0e91`（一个字母 + 十六进制位） | 长度与 `short` 相当，但肉眼看不出发放顺序，不留可辨识的字母表 |
-| `readable` | `value`、`index`、`result1` | 调试 / 审计档：栈和断点里还认得出变量 |
+| 档位 | 样子 | 发名顺序 | 定位 |
+| --- | --- | --- | --- |
+| `Mangled`（默认） | `a`…`Z$_` → `aa`… | 固定 | 体积最小；**与 seed 无关**，两次构建可逐字节 diff、跨机器结果一致。代价是产物里必然出现 a、b、c… 的发名顺序，指纹最强 |
+| `Mangled-shuffled` | 同上，字母表换一套 | 随 seed | 体积与 `Mangled` 完全相同（名字长度一样），但产物里没有一套可辨识的字母表。**混淆发布用这档** |
+| `Hexadecimal` | `a7`、`f30`、`0e91` | 随 seed | 一个字母 + 十六进制位，从 **2 字符**起步。一样短但完全无规律。`if`（`i`+`f`）这类正好落在该形状里的关键字由关键字表跳过 |
+| `Dictionary` | `value`、`index`、`result1` | 随 seed | 固定 64 词表。栈和断点里还认得出变量，调试成本最低；产物最大，且**词表可枚举**，认的人拿同一份词表就能把改名批量还原。发布产物别用 |
 
-体积对照（`npm run bench:minify` 可复现；Node 24 + terser 5.51.2，2026-09-27；同一
-seed 只换 `nameStyle`，其余用上面那套"当 minifier 用"的配置，不开 DCE。倍数是相对
-terser `compress+mangle` 的同输入产物体积，越小越好）：
+体积对照（`npm run bench:minify` 可复现；Node 24 + terser 5.51.2 + javascript-obfuscator
+5.8.0，2026-09-27；同一 seed 只换 `nameStyle`，其余用上面那套"当 minifier 用"的配置，
+不开 DCE。倍数是相对 terser 同输入产物的体积，越小越好）：
 
-| 输入 | terser | random | short | hex | readable |
+| 输入 | terser | Mangled | Mangled-shuffled | Hexadecimal | Dictionary |
 | --- | --- | --- | --- | --- | --- |
-| `src/obfuscate.js` | 7.6 KB | 18.4 KB（2.41×） | 12.1 KB（1.59×） | 12.5 KB（1.63×） | 14.2 KB（1.86×） |
-| `src/passes/vm.js` | 64.1 KB | 123.9 KB（1.93×） | 75.3 KB（1.18×） | 76.8 KB（1.20×） | 95.9 KB（1.50×） |
-| `src/ast/parser.js` | 34.1 KB | 53.0 KB（1.56×） | 40.0 KB（1.18×） | 40.5 KB（1.19×） | 45.2 KB（1.33×） |
-| bundle 式模块（含死代码） | 0.3 KB | 19.9 KB | 10.3 KB | 10.5 KB | 14.1 KB |
+| `src/obfuscate.js` | 7.6 KB | 12.1 KB（1.59×） | 12.1 KB（1.59×） | 12.5 KB（1.63×） | 14.2 KB（1.86×） |
+| `src/passes/vm.js` | 64.1 KB | 75.3 KB（1.18×） | 75.3 KB（1.18×） | 76.8 KB（1.20×） | 95.9 KB（1.50×） |
+| `src/ast/parser.js` | 34.1 KB | 40.0 KB（1.18×） | 40.0 KB（1.18×） | 40.5 KB（1.19×） | 45.2 KB（1.33×） |
+| bundle 式模块（含死代码） | 0.3 KB | 10.3 KB | 10.3 KB | 10.5 KB | 14.1 KB |
 
-`hex` 比 `short` 大 1~3%，换来的是产物里没有一套能被认出来的字母表——`short` 的
-`a…Z$_` 虽然逐构建打乱，看多了仍是"一套 54 字符的字母表按序发名"，而 `hex` 每个名
-都像摘要片段。它从 **2 字符**起步而不是 1 字符，正是为了不退回那种序列感；`if`
-（`i`+`f`）这类正好落在"字母+十六进制"形状里的关键字由关键字表跳过。
+`Mangled` 与 `Mangled-shuffled` 的名字长度分布完全相同，所以在"当 minifier 用"的配置下
+产物**逐字节等长**（三份真实输入实测 12433/77147/41006 字节，两档完全一致）——"要不要
+打乱"是纯粹的抗指纹取舍，不花体积。`Hexadecimal` 大 1~3%，`Dictionary` 大 13~27%。
 
-`readable` 是固定 64 词表逐构建打乱后发名，一轮发完接"词+序号"，上限四千个名字后
-退回随机名。它比 `short` 大 13~37%，而且**词表是可枚举的，抗指纹弱于 `random` 混族名**
-（那种名字一个词表都拼不出来）——定位是调试和代码审计，发布产物别用。
+一个容易踩的细节：`Mangled` 的命名池不打乱，**不消耗随机数**，而 `Mangled-shuffled` 要消
+耗。开着其它 pass 时两档的随机流位置不同，后续 pass（字符串池密钥、注入名等）的产物会有
+零点几个百分点的差异——那不是名字的功劳。想比较命名本身的体积差异，把其它 pass 关掉再量。
+
+选档：要最小体积、且产物要能跨构建逐字节复现（回归对比、两版 diff）用 `Mangled`；
+对外发布用 `Mangled-shuffled`；要产物里完全找不到规律用 `Hexadecimal`；调试与代码
+审计用 `Dictionary`。
+
+档名**大小写敏感**。旧档名（`random` / `short`）或拼错的档名会回落到默认档 `Mangled`，
+既不抛异常，也不会静默出一份没约定的产物。
 
 ## 增强保护系统（横幅 / 碎片化 / Anti-LLM）
 
