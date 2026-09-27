@@ -16,11 +16,17 @@
  */
 // 授权链路与选项元数据是公开的：未激活用户也要能打开界面、填卡密、激活。
 //
-// 混淆核心（index.js → obfuscate/pipeline/html → passes/ast）改成**激活后动态引入**
-// （见下面的 loadCore）。这样那部分模块可以按设备鉴权下发——匿名请求拿到 403，
-// 顺着首页 modulepreload 清单整包爬走的路就断了。代价是首次执行混淆要等模块下载，
-// 所以激活成功后会提前预热一次。
-// 云端执行（cloudOnly）构建里根本没有这批模块，loadCore 会直接拒绝，见 cloudBuilt。
+// 混淆核心（index.js → obfuscate/pipeline/html → passes/ast）**不在静态 import 链上**。
+// 两种部署形态下它的下场不同：
+//   - 云端执行（cloudOnly，Vercel 部署的默认）：产物里根本没有这批模块，
+//     loadCore 直接拒绝，界面把源码 POST 给 /api/obfuscate。
+//   - 浏览器内执行（build:web 不带 --cloud，自建/离线）：核心在 dist/src/** 里，
+//     但受保护模块只剩密文载荷 + 明文 stub，由 __jslb_core.js 在浏览器里解密成
+//     Blob URL 动态 import 物化（见 tools/build/enc-loader.js）。
+//
+// 不要再按"激活后按设备鉴权下发核心、匿名请求拿到 403"来理解这里的接线：那条
+// JSLB_GATE_CORE 机制已随迁 Vercel 整体删除，产物里既没有门控也没有 403 可言。
+// 真正的边界是"云端执行构建根本不下发核心"，由 verify-deploy.js 断言它们一律 404。
 import optionsMeta from './src/options-meta.js';
 import optionsGate from './src/options-gate.js';
 import plan from './src/plan.js';
@@ -43,17 +49,15 @@ const runtimeInfo = {
 /**
  * 混淆核心按需加载。缓存 promise，避免每次执行都重新 import。
  *
- * 部署方开启核心鉴权下发后，/src/** 由服务端按设备 cookie 判定给不给。模块请求
- * 是浏览器自己发的普通 GET，带不了自定义头，身份全靠 cookie；cookie 由
- * /api/license 种下，但**前提是服务端认得这台设备**——只在本机验过卡密、没同步
- * 给服务端的话，cookie 指向的是一台"未授权设备"，模块请求照样 403。
+ * 两种形态：
+ *   - 云端执行：核心不在产物里，importCore 直接抛（见 cloudOnly）。
+ *   - 浏览器内执行：核心以密文载荷 + 明文 stub 的形式下发，由 __jslb_core.js
+ *     解密成 Blob URL 动态 import 物化（tools/build/enc-loader.js）。
  *
- * 所以 403 要先补登记（pushLicense）再重试一次，而不是直接把一句 TypeError
- * 甩给用户。重试必须换 URL：模块图会记住同一个 URL 的失败结果，同一个地址
- * 第二次 import 不会再发请求。
+ * 失败分两类，用一次普通 fetch 拿真实状态码区分：404 = 产物形态不对（构建与
+ * 部署不匹配），0 = 连不上。两者给用户的后续动作完全不同，所以值得多探一次。
  */
 let corePromise = null;
-let coreRetried = false;
 function loadCore() {
   if (!corePromise) corePromise = importCore();
   return corePromise;
@@ -68,34 +72,21 @@ async function importCore() {
     return await import('./src/index.js');
   } catch (e) {
     status = await probeCoreStatus();
-    if (status === 403 && !coreRetried) {
-      coreRetried = true;
-      corePromise = null;
-      await pushLicense();
-      // 重试本身也必须包在 try 里，否则它抛的原生 TypeError 会直接冒到
-      // run() 的 catch，被 `f.error = e.message` 原样显示成
-      // "Failed to fetch dynamically imported module"——用户看到的是浏览器
-      // 的黑话，而不是下面那句能指导操作的提示。
-      try {
-        return await import('./src/index.js?retry=' + Date.now());
-      } catch (e2) {
-        // 重试后又失败，原因可能已经变了（比如补登记仍被拒、或此刻断网），
-        // 所以重新取一次状态码，别沿用第一次的结论去选文案。
-        status = await probeCoreStatus();
-      }
-    }
-    // 失败不缓存：重新激活后再点一次就能直接重试，不必刷新页面
+    // 失败不缓存：改配置 / 重新激活后再点一次就能直接重试，不必刷新页面
     corePromise = null;
-    throw new Error(t(status === 403 ? 'guiCoreBlocked' : 'guiCoreUnreachable', { code: status }));
+    // 不再有"403 → 补登记 → 换 URL 重试"那一支：按设备鉴权下发核心的机制
+    // （JSLB_GATE_CORE）已随迁 Vercel 整体删除，静态产物里既没有门控也没有 403
+    // 可言，留着只会让人以为核心还受鉴权保护。code 一并带进文案，404 与 0
+    // 指向的动作不同（前者是构建/部署不匹配，后者是网络或服务没起）。
+    throw new Error(t('guiCoreUnreachable', { code: status }));
   }
 }
 
 /**
  * 取核心模块的真实 HTTP 状态码。
  *
- * 动态 import 失败时浏览器只抛一句 TypeError，403（鉴权）与 404（资源缺失）、
- * 断网长得一模一样，没法据此给用户建议。这里补一次普通 fetch 拿状态码；
- * 连不上返回 0。
+ * 动态 import 失败时浏览器只抛一句 TypeError，404（资源缺失）与断网长得一模一样，
+ * 没法据此给用户建议。这里补一次普通 fetch 拿状态码；连不上返回 0。
  * @returns {Promise<number>} 状态码，取不到时为 0
  */
 async function probeCoreStatus() {

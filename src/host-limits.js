@@ -14,8 +14,9 @@
  * 所以回执走流式（见 vercel/entry.js），单次回执只在 `maxResponseBytes` 处设一道
  * 自家护栏，防止某个 87× 膨胀的 max 预设把带宽跑飞。
  *
- * 免费档真正的瓶颈是 CPU：混淆的耗时可实测（`tools/build/cloud-budget.js`），
- * 与预设强相关。所以这里给每个预设记一组**实测成本**，用来：
+ * 免费档真正的瓶颈是 CPU：混淆的耗时可实测（`npm run bench`，即 `tools/test/bench.js`
+ * ——按预设 × 规模给出中位耗时，膨胀比另见 `npm run bench:minify`），与预设强相关。
+ * 所以这里给每个预设记一组**实测成本**，用来：
  *   - 反推每个预设的单文件上限（`presetInputCap`），
  *   - 在服务端做预算记账（`estimateCost`），全网每日 CPU 预算用尽就拒绝新任务。
  *
@@ -50,8 +51,8 @@ export const HOST = {
 };
 
 /**
- * 各预设的**实测成本**。数字来自本机 Node 24 的实测（`tools/build/cloud-budget.js`
- * 可复现，同一份合成输入、同一 seed）：
+ * 各预设的**实测成本**。数字来自本机 Node 24 的实测（`npm run bench` 可复现，
+ * 即 `tools/test/bench.js`：同一份合成输入、同一个 seed、超过 3 s 的用例只测一次）：
  *
  *   预设     膨胀比      CPU
  *   low      3.7~3.9×    2.0~2.5 ms/KB

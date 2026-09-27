@@ -208,6 +208,10 @@ class Generator {
       case 'NullLiteral': this._s('null'); break;
       case 'RegExpLiteral': this._s('/' + node.pattern + '/' + (node.flags || '')); break;
       case 'BigIntLiteral': this._s(node.value + 'n'); break;
+      // Decimal（提案阶段的十进制字面量，1.5m 那种）。parser 不产出它，
+      // keys.js / types.js 声明了它，所以谁要是真拿 t.decimalLiteral() 造一个，
+      // 这里必须能打印出来——原先漏了这个 case，节点会落到 default 静默打印成空串。
+      case 'DecimalLiteral': this._s(node.extra && node.extra.raw ? node.extra.raw : String(node.value) + 'm'); break;
       case 'TemplateLiteral': this._templateLiteral(node); break;
       case 'TaggedTemplateExpression': this._taggedTemplate(node); break;
       case 'ThisExpression': this._s('this'); break;
@@ -251,7 +255,11 @@ class Generator {
       case 'ImportNamespaceSpecifier': this._s('* as ' + node.local.name); break;
       case 'ExportSpecifier': this._exportSpecifier(node); break;
       default:
-        break;
+        // **不静默吞掉未知节点类型**。原先是 break，于是任何没写 case 的节点都会
+        // 打印成空串：产物仍能解析、仍能跑，只是少了一块代码——正是本项目最怕的
+        // 那类「静默产出错代码」缺陷（README「已知问题」里记的两个都是这一类）。
+        // 抛出来能让它在构建期就变成一次明确的失败。
+        throw new Error('generator: 未实现的节点类型 ' + node.type);
     }
   }
 

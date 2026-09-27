@@ -7,8 +7,9 @@
  *   node tools/issue/selfdigest.js --write  改写 src/license-secret.js 里的表
  *   node tools/issue/selfdigest.js --check  校验表与源码是否一致，CI 使用
  *
- * 摘要规则和 src/license.js 保持一致，digest_i 取 normalize(text_i) 的 sha256，
- * 结果是 64 位 hex，stored_i 再用 HMAC-SHA256(CODE_KEY, 'JSLB/SELF/' + i) 做异或掩码。
+ * 摘要规则见 src/license-secret.js 的头注释：digest_i 取 sha256(相对路径 + '\n' +
+ * normalize(text_i))，结果是 64 位 hex，stored_i 再用 HMAC-SHA256(CODE_KEY,
+ * 'JSLB/SELF/' + i) 做异或掩码。**路径参与摘要**，所以移动这几个文件同样要重算。
  * 掩码密钥是卡密密钥（随源码公开），所以这张表只挡随手改动，不挡有心人——见 license-secret.js。
  * normalize 会把文本里所有 64 位 hex 串抹成 0，为的是避免摘要表引用自身，
  * 不然每写一次表摘要就变一次，永远收敛不了。
@@ -35,16 +36,26 @@ const SELF_FILES = [
   'src/plans.js',
 ];
 
-/** @see license.js normalizeForHash */
+/** 把文本里所有 64 位 hex 串抹成 0，消除摘要表对自身的引用。 */
 function normalizeForHash(text) {
   return text.replace(/\b[0-9a-f]{64}\b/g, '0'.repeat(64));
 }
 
 function fileDigest(rel) {
   const text = fs.readFileSync(path.join(ROOT, rel), 'utf8');
-  return crypto.createHash('sha256').update(normalizeForHash(text), 'utf8').digest('hex');
+  // 路径参与摘要：移动文件位置必须重算，否则换了位置的源码仍能通过校验。
+  return crypto.createHash('sha256').update(rel + '\n' + normalizeForHash(text), 'utf8').digest('hex');
 }
 
+/**
+ * 逐 nibble 异或两个等长 hex 串，结果仍是等长 hex。
+ *
+ * **不要给每一 nibble 补零**：a[i] / b[i] 是单个 hex 字符，异或结果必然落在
+ * [0,0xF]，toString(16) 恒为一位，输出恒等于入参长度（64）。加 padStart(2,'0')
+ * 反而会把每条撑成 128 字符——那样 normalizeForHash 的 /\b[0-9a-f]{64}\b/ 就再也
+ * 匹配不上，license-secret.js 的归一化文本随表值变动，--write 的不动点迭代直接
+ * 不收敛。
+ */
 function xorHex(a, b) {
   let out = '';
   for (let i = 0; i < a.length; i++) out += (parseInt(a[i], 16) ^ parseInt(b[i], 16)).toString(16);

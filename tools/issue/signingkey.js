@@ -7,7 +7,7 @@
  *   node tools/issue/signingkey.js                    # 生成一把新密钥并打印
  *   node tools/issue/signingkey.js --out ./keys       # 同时落盘到指定目录
  *   node tools/issue/signingkey.js --json             # 以 JSON 输出
- *   node tools/issue/signingkey.js --key <b64>        # 校验一把密钥的格式
+ *   node tools/issue/signingkey.js -c, --check <b64>  # 校验一把密钥的格式并打印指纹
  *   -h, --help                                       帮助
  *
  * 与另外两个工具的分工，别搞混：

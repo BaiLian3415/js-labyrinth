@@ -364,11 +364,10 @@ export default function stringArray(ast, options, ctx) {
         carrierNames.push(nm2);
         const stmt = parse("var " + nm2 + "=" + listLiteral(carriers[cf]) + ";", { sourceType: "script" }).program.body[0];
         markMachinery(stmt);
-        if (options.stringArrayCallsTransform === true) {
-          iifeStatements.push(stmt);
-        } else {
-          iifeStatements.push(stmt);
-        }
+        // 载体数组是 stringScatter 的运行时必需物（关闭调用点包装时也要在），
+        // 所以这里无条件进共享 IIFE——原先写了个 stringArrayCallsTransform 的
+        // 分支但两臂完全相同，是个留下的死分支。
+        iifeStatements.push(stmt);
       }
       const ps = [];
       for (let cf = 0; cf < fragCount; cf++) ps.push("a" + cf);

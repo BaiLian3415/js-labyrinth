@@ -46,7 +46,7 @@ Vercel 部署走云端执行，构建命令是 `npm run build:web:cloud`（见 `
     "JSLB_WEB_CONFIG": "{\"requireLicense\":true,\"trialPreset\":\"low\",\"trialMaxFileBytes\":524288,\"trialRunsPerDay\":10}"
   },
   "functions": {
-    "api/obfuscate.js": { "maxDuration": 300 },  // Hobby 上限是 60s，写大了会被平台夹住
+    "api/obfuscate.js": { "maxDuration": 300 },  // 与 src/host-limits.js 的 functionMaxSeconds 一致
     "api/license.js":   { "maxDuration": 60 },
     "api/machine.js":   { "maxDuration": 30 },
     "api/plans.js":     { "maxDuration": 30 },
@@ -184,7 +184,7 @@ npm run verify -- https://<你的域名>
 | 单次上传上限 | 2 MiB（`JSLB_MAX_UPLOAD_BYTES`） | 入口预检回 413 + 建议拆分 |
 | 每日 CPU 预算 | 300 s（`JSLB_DAILY_CPU_SECONDS`） | 用尽即 503（`hostBudgetExhausted`），明日恢复 |
 | 单次回执上限 | 64 MiB（`JSLB_MAX_RESPONSE_BYTES`） | 超过回 413；正常回执走**流式**，不受 4.5 MB 限制 |
-| 函数时长 | Hobby 硬上限 60 s | `maxDuration` 写多少都会被平台夹住 |
+| 函数时长 | Hobby 硬上限 300 s | `vercel.json` 的 `maxDuration: 300` 与 `src/host-limits.js` 的 `functionMaxSeconds` 必须一致；单任务 CPU 预算留 60 s 余量（`perRunCpuSeconds: 240`） |
 
 常见现象与原因：
 

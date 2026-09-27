@@ -190,7 +190,12 @@ export default {
   "honeyStrings": true,
   "decoyFunctions": true,
   "debugProtection": true,
-  "debugProtectionInterval": 1,
+  // 反调试自检间隔（ms）。debugProtection 读 `options.debugProtectionInterval || 4000`，
+  // 所以这里的默认值必须是非 0 的真值——原先写 1 会让兜底永不触发，实际按
+  // perTd = max(200, interval/2 × 系数) 退化成每 200ms 一次时间差检测，比本值贵 20 倍。
+  // 四个预设都显式给了这项（low/medium 4000、high 1、max 2000），所以这只影响
+  // 不带 preset 的手写选项集；改这里不影响任何预设的产物字节。
+  "debugProtectionInterval": 4000,
   // Anti-CDP：Chrome DevTools Protocol / 自动化框架检测。console 序列化探针
   // （Runtime.enable 特征）、navigator.webdriver、驱动注入属性扫描；命中与
   // 反调试共链投毒。用 Puppeteer/Playwright 做端到端测试时请关掉本项。

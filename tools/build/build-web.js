@@ -132,7 +132,21 @@ function collectModules(entryAbs, outDirAbs) {
     seen.add(file);
     let text;
     try { text = fs.readFileSync(file, 'utf8'); } catch (e) { continue; }
-    const re = /(?:^|[\s;{(])(?:import|export)\s+(?:[^'"]*?\sfrom\s*)?['"]([^'"]+)['"]/g;
+    // import/export 说明符扫描。
+    //
+    // 前瞻用 [^\w$.] 而不是枚举几个标点：**必须能匹配到 `}`**。自混淆 + compact
+    // 之后，注入的 RT 内核以函数声明结尾，紧跟其后的第一个 import 前面正好是 `}`；
+    // 早前的字符类 [\s;{(] 不含 `}`，于是每个「第一个 import 紧跟内核」的文件都
+    // 漏掉（实测 dist/src/plan.js 与 dist/src/license-web.js 各漏一个，对应
+    // plans.js 与 license-codec.js 少了 preload，退回串行 ESM 往返）。
+    //
+    // `\s*`（不是 `\s+`）是为了同时吃下压缩后的无空格形态 `import{a as b}from"..."`。
+    // 排除 \w $ . 保证 `important` / `foo.import` 之类不会误命中。
+    //
+    // 残留误报：字符串字面量里出现 `export from './x.js'` 会被扫到。但候选还要过
+    // `dep 在 outDir 内` + `fs.existsSync` 两道闸，代价最多是一条无用 preload，
+    // 而漏报是实打实的往返开销——所以这里要的是召回率不是精确率。
+    const re = /(?:^|[^\w$.])(?:import|export)\s*(?:[^'"]*?\sfrom\s*)?['"]([^'"]+)['"]/g;
     let m;
     while ((m = re.exec(text)) !== null) {
       const spec = m[1];
@@ -169,7 +183,45 @@ function injectIndex(outDir, cloud) {
     + (cloud ? '\n<meta name="jslabyrinth-cloud" content="1">' : '');
   html = html.replace('<!--JSLB_PRELOAD-->', links ? links + '\n' + stamp : stamp);
   fs.writeFileSync(indexPath, html);
+  warnMissingPreloads(outDir, mods);
   return mods.length;
+}
+
+/**
+ * 兜底告警：产物里存在、但没进 modulepreload 清单的**公开模块**。
+ *
+ * collectModules 是正则扫源码，漏扫只会表现为「首屏多几轮串行往返」——不报错、
+ * 不影响功能，所以光靠人看产物发现不了。这里把「已下发但未预载」显式喊出来，
+ * 让扫描器的漏报当场暴露而不是静默劣化。
+ *
+ * 只查公开模块（isGatedModuleId 为 false 的）：受保护模块在非 --cloud 构建里是
+ * **运行时才物化**的 stub（__jslb_core.js 的 materialize() 走 Blob URL 动态
+ * import），刻意不进静态图——预载它们等于首屏把 42 个 stub 全拉一遍，正好抵消
+ * 按需加载的意义。公开模块才是 app.js 静态 import 链上的那批，理应全部预载。
+ */
+function warnMissingPreloads(outDir, mods) {
+  const have = new Set(mods);
+  const missed = [];
+  const walk = (dir) => {
+    let entries;
+    try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch (e) { return; }
+    for (const ent of entries) {
+      const p = path.join(dir, ent.name);
+      if (ent.isDirectory()) { walk(p); continue; }
+      if (!ent.name.endsWith('.js')) continue;
+      const rel = '/' + path.relative(outDir, p).split(path.sep).join('/');
+      const id = rel.replace(/^\/src\//, '');
+      if (id.startsWith('__')) continue;              // 构建期生成的引导层，按需加载
+      if (isGatedModuleId(id)) continue;              // 受保护模块，运行时才物化
+      if (!have.has(rel)) missed.push(rel);
+    }
+  };
+  walk(path.join(outDir, 'src'));
+  if (missed.length) {
+    console.warn('  ⚠ 以下公开模块已下发但没进 modulepreload（首屏会多几轮串行往返）：'
+      + missed.join('、'));
+    console.warn('    多半是 collectModules 的 import 扫描没覆盖到该文件的写法。');
+  }
 }
 
 /**

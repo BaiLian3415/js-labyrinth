@@ -14,8 +14,16 @@
  * 名单怎么来的：不是拍脑袋列的，是**从 web/app.js 的静态 import 链做可达性分析**
  * 算出来的。起点是 app.js 顶部那批静态 import（options-meta / options-gate / plan /
  * license-web / i18n / platform / utils-zip / version / options / presets），跟随相对
- * 说明符展开，60 个模块里 15 个必须公开，其余 45 个全部受保护。改动 app.js 的静态
- * import 或这几处的依赖后必须重算，否则就是上面那种漂移。
+ * 说明符展开。截至 2026-09-27：src/ 下 58 个模块里 16 个必须公开，其余 42 个受保护。
+ * 改动 app.js 的静态 import 或这几处的依赖后必须重算，否则就是上面那种漂移。
+ * 复核方法（不需要解析器，与 build-web.js 的 collectModules 同一套正则思路）：
+ *   遍历 src 下的 .js（id 相对 src/，如 "passes/vm.js"），逐个喂给
+ *   isGatedModuleId，确认 public 数与 dist/src/ 实际下发的文件数一致。
+ *   注意写法：路径里不要出现双星号斜杠的 glob（那会提前关掉本块注释）。
+ *
+ * 下面 GATED_EXEMPT 的两项（utils/hash.js、utils/zip.js）在 utils/ 前缀内却是公开的
+ * ——它们在未激活页面的静态 import 链上（app.js → license-web → license-codec →
+ * utils/hash，以及 app.js → utils/zip），挡住会死锁激活表单。别当成漏网之鱼删掉。
  *
  * 放在 tools/build/ 而不是 src/：src/ 下的每个文件都会进 dist 并被混淆，这份策略
  * 只在构建期用得到，不该作为模块发给浏览器。

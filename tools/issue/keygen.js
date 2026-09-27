@@ -16,9 +16,22 @@
  *   --machine          打印本机机器码后退出（仅供开发调试；线上"一卡一机"由
  *                      服务端赎回登记实现，卡密不再绑定机器）
  *   --plans            打印套餐权益对照表，不签发
- *   --check <code>     只校验一段卡密，不签发
+ *   --check <code>     只校验一段卡密，不签发。用与签发同源的密钥（CODE_KEY）：
+ *                      环境变量 JSLB_CODE_KEY → JSLABYRINTH_CODE_KEY_FILE 指向的
+ *                      文件 → 内置 B64_CODE_KEY。内置密钥也复核一遍，所以"两把
+ *                      密钥都发过卡"的部署不会误杀。
+ *   --date YYYY-MM-DD  指定签发日（补发历史卡）。签发日进卡密载荷，到期时间由
+ *                      「签发日 + 天数」推出，所以补一张标着 2026-01-01 的 30 天卡
+ *                      有效期到 2026-01-31，而不是"今天 + 30 天"
+ *   --issue-day <n>    直接指定签发日（距 2020-01-01 的天数，上限 32767，约到 2109）
+ *   --table            对齐表格输出（CJK 宽度对齐）
+ *   --csv              CSV 输出（表头 code,plan,planName,days,issueDay,issuedAt,id）
+ *   --ledger <file>    追加进台账 CSV（首次写表头）
  *   --json             以 JSON 输出
  *   -h, --help         帮助
+ *
+ * 已废除：--bind / -b（v5 起卡密不再携带机器绑定段，"一卡一机"由服务端 KV 赎回
+ * 登记实现）。传了会直接报错并提示解绑办法，不会静默忽略。
  *
  * 卡密格式 v5: JSLB-<编号段8>-<信息段16>-<校验码4>
  *   例: node tools/issue/keygen.js --plan plus --days 30 --count 3
@@ -83,7 +96,7 @@ const CODE_KEY = (() => {
   return B64_CODE_KEY;
 })();
 
-/** 密钥是否可用。缺失时不能签发，只能校验（校验用内置 B64_CODE_KEY 即可）。 */
+/** 密钥是否可用。缺失时不能签发；--check 不依赖它（无密钥时只按内置密钥复核）。 */
 const KEY_OK = (() => {
   if (!CODE_KEY) return false;
   try {
@@ -428,10 +441,26 @@ function main(argv) {
   }
 
   if (check !== null) {
-    const res = codec.parseCode(B64_CODE_KEY, check);
+    // 用 **CODE_KEY**（与签发同源的那把），不是写死的 B64_CODE_KEY。
+    // CODE_KEY 在没有任何覆盖时本来就回退到 B64_CODE_KEY，所以内置密钥部署的行为
+    // 与从前完全一致；而用自定义密钥（JSLB_CODE_KEY / .jslb-code-key）发过卡时，
+    // 写死内置密钥会把每张卡都报成无效——签发与校验不同源，工具在最该可靠的时候
+    // 骗人。下面再补一次内置密钥的复核，让"两把密钥都发过卡"的部署不至于误杀。
+    let res = codec.parseCode(CODE_KEY, check);
+    let viaBuiltin = false;
+    if (!res.ok && CODE_KEY !== B64_CODE_KEY) {
+      const alt = codec.parseCode(B64_CODE_KEY, check);
+      if (alt.ok) { res = alt; viaBuiltin = true; }
+    }
     if (!res.ok) {
       if (asJson) console.log(JSON.stringify({ valid: false, reason: res.reason }));
-      else console.error(`卡密无效（原因: ${res.reason}）`);
+      else {
+        console.error(`卡密无效（原因: ${res.reason}）`);
+        if (CODE_KEY !== B64_CODE_KEY) {
+          console.error('提示：当前生效的签发密钥来自 JSLB_CODE_KEY / .jslb-code-key，'
+            + '内置密钥已复核过仍不通过——确认这张卡是不是另一把密钥签的。');
+        }
+      }
       process.exit(1);
     }
     const info = {
@@ -443,6 +472,7 @@ function main(argv) {
       days: res.days,
       perpetual: res.days === 0,
       issueDay: res.issueDay,
+      viaBuiltinKey: viaBuiltin,
     };
     if (asJson) console.log(JSON.stringify(info));
     else {
@@ -452,6 +482,7 @@ function main(argv) {
       console.log(`  有效期: ${res.days === 0 ? '永久' : res.days + ' 天'}`);
       console.log(`  签发日: ${dateFromDay(res.issueDay)}`);
       console.log('  绑定: 不绑定（v5 一卡一机由服务端赎回登记实现）');
+      if (viaBuiltin) console.log('  注: 这张卡由内置密钥签发（当前生效的是自定义密钥）');
     }
     return;
   }
