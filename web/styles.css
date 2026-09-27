@@ -170,8 +170,8 @@ body {
 .topbar {
   display: flex;
   align-items: center;
-  gap: 12px;
-  padding: 14px 20px;
+  gap: 10px;
+  padding: 7px 12px;
   background: transparent;
   border-bottom: 0;
   flex: 0 0 auto;
@@ -228,8 +228,8 @@ body {
 .mainbar {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 12px 14px 0;
+  gap: 6px;
+  padding: 4px 10px 0;
   flex: 0 0 auto;
 }
 
@@ -270,7 +270,7 @@ button.mini, select.mini {
   color: var(--fg);
   border: 1px solid var(--line);
   border-radius: 8px;
-  padding: 5px 10px;
+  padding: 4px 9px;
   font: inherit;
   font-size: 13px;
   cursor: pointer;
@@ -324,8 +324,8 @@ input.text:focus, select.mini:focus, button:focus-visible, textarea:focus {
   min-height: 0;
   display: grid;
   grid-template-columns: 1fr 1fr;
-  gap: 10px;
-  padding: 10px;
+  gap: 6px;
+  padding: 6px;
 }
 
 .pane {
@@ -337,22 +337,28 @@ input.text:focus, select.mini:focus, button:focus-visible, textarea:focus {
   background-image: var(--grad-pane);
   border: 1px solid var(--line);
   /* 官网的卡片几乎不投影，只有 1px 浅边 + 一丝贴地感；圆角 12px。
-     面板是页面里唯一有实体感的面（面板色比页面亮一档），其余区域都是平的。 */
+     面板是页面里唯一有实体感的面（面板色比页面亮一档），其余区域都是平的。
+     那道上边内高光让面板与选项卡片读起来是同一种 Win 磁贴。 */
   border-radius: var(--radius-lg);
-  box-shadow: var(--shadow-pane);
+  box-shadow: var(--shadow-pane), inset 0 1px 0 rgba(255, 255, 255, .045);
   overflow: hidden;
 }
+html.light .pane { box-shadow: var(--shadow-pane), inset 0 1px 0 rgba(255, 255, 255, .8); }
 
 .pane.dragover { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
 
 .pane-head {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 8px 10px;
+  gap: 6px;
+  padding: 4px 8px;
   border-bottom: 1px solid var(--line-soft);
   flex: 0 0 auto;
+  /* 面板头是拖动把手（app.js 的 enableReorder 起拖点），所以给抓手光标 */
+  cursor: grab;
+  touch-action: none;
 }
+.pane-head:active { cursor: grabbing; }
 
 .pane-head h2 {
   font-size: 12.5px;
@@ -371,8 +377,8 @@ input.text:focus, select.mini:focus, button:focus-visible, textarea:focus {
   border: 0;
   background: transparent;
   color: var(--fg);
-  font: 12.5px/1.55 var(--mono);
-  padding: 10px;
+  font: 12.5px/1.5 var(--mono);
+  padding: 7px 8px;
   tab-size: 2;
   white-space: pre;
   overflow: auto;
@@ -383,9 +389,9 @@ input.text:focus, select.mini:focus, button:focus-visible, textarea:focus {
 
 .pane-foot {
   display: flex;
-  gap: 10px;
+  gap: 8px;
   align-items: center;
-  padding: 5px 10px;
+  padding: 3px 8px;
   border-top: 1px solid var(--line-soft);
   font-size: 12px;
   flex: 0 0 auto;
@@ -397,8 +403,8 @@ input.text:focus, select.mini:focus, button:focus-visible, textarea:focus {
   display: flex;
   flex-wrap: wrap;
   gap: 4px;
-  padding: 8px 10px 0;
-  max-height: 78px;
+  padding: 5px 8px 0;
+  max-height: 64px;
   overflow: auto;
   flex: 0 0 auto;
 }
@@ -423,6 +429,60 @@ input.text:focus, select.mini:focus, button:focus-visible, textarea:focus {
 .files button.err { border-color: var(--err); color: var(--err); }
 .files button.ok { border-color: var(--ok); color: var(--ok); }
 
+/* ---------- 拖动重排（2026-09-27）---------- */
+
+/* 区块可拖动重排：选项卡片（.opt-card）与输入/输出面板（.pane）。
+   逻辑在 app.js 的 enableReorder()，这里只管三件事的外观：
+     · 把手光标（写在 .opt-card-head / .pane-head 上）
+     · 被拎起来的那一块：抬亮 + 描边强调
+     · 落点提示：插入线
+   位移只走 transform/opacity（见文末动效层的硬规则），不碰 width/height/margin——
+   一次拖动会连续触发几十次 pointermove，动布局属性等于每帧重排。 */
+.dragging {
+  position: relative;
+  z-index: 40;
+  opacity: .92;
+  border-color: var(--accent);
+  box-shadow: var(--shadow-pane), 0 8px 22px rgba(0, 0, 0, .34);
+  cursor: grabbing;
+}
+html.light .dragging { box-shadow: var(--shadow-pane), 0 8px 22px rgba(20, 20, 19, .16); }
+
+/* 落点插入线。用 ::after 画在目标块的某一侧，横向网格下就是一条竖线。
+   落在最后（追加到末尾）时没有"后继"可依附，改用容器的 ::after 兜底。 */
+.drop-mark::after {
+  content: '';
+  position: absolute;
+  top: 6px;
+  bottom: 6px;
+  width: 2px;
+  border-radius: 2px;
+  background: var(--accent);
+  pointer-events: none;
+}
+.drop-mark.drop-before::after { left: -5px; }
+.drop-mark.drop-after::after { right: -5px; }
+.panes > .drop-mark.drop-before::after { left: -4px; }
+.panes > .drop-mark.drop-after::after { right: -4px; }
+
+/* 兜底落点（追加到末尾）：贴在容器右缘内侧 */
+.panes.drop-end::after,
+.opt-groups.drop-end::after {
+  content: '';
+  position: absolute;
+  top: 4px;
+  bottom: 4px;
+  right: 2px;
+  width: 2px;
+  border-radius: 2px;
+  background: var(--accent);
+  pointer-events: none;
+}
+.panes, .opt-groups { position: relative; }
+
+/* 抽屉关闭时卡片不做入场动画的错位——重排后 nth-child 延迟会跟着新顺序跳，
+   观感上是"抖一下"。重排只影响 DOM 顺序，内容本身不变，所以收掉这段即可。 */
+
 /* ---------- 统计 ---------- */
 
 .stats {
@@ -435,11 +495,11 @@ input.text:focus, select.mini:focus, button:focus-visible, textarea:focus {
 
 .stats summary {
   cursor: pointer;
-  padding: 6px 10px;
+  padding: 4px 8px;
   color: var(--fg-dim);
 }
 
-.stats-body { padding: 0 10px 10px; }
+.stats-body { padding: 0 8px 8px; }
 
 .stats-body table {
   border-collapse: collapse;
@@ -472,8 +532,8 @@ input.text:focus, select.mini:focus, button:focus-visible, textarea:focus {
 
 .drawer-cols {
   display: grid;
-  grid-template-columns: 260px 1fr;
-  gap: 18px;
+  grid-template-columns: 240px 1fr;
+  gap: 12px;
   align-items: start;
 }
 
@@ -482,7 +542,7 @@ input.text:focus, select.mini:focus, button:focus-visible, textarea:focus {
   color: var(--fg-dim);
   font-weight: 600;
   letter-spacing: .01em;
-  margin: 10px 0 6px;
+  margin: 6px 0 4px;
 }
 
 .drawer h3:first-child { margin-top: 0; }
@@ -491,26 +551,34 @@ input.text:focus, select.mini:focus, button:focus-visible, textarea:focus {
    结构对齐参考图，网格自适应，窄屏自动收成一列。 */
 .opt-groups {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(258px, 1fr));
-  gap: 12px;
+  grid-template-columns: repeat(auto-fill, minmax(232px, 1fr));
+  gap: 8px;
   align-items: start;
 }
 
+/* 磁贴：圆角取 --radius-lg，与面板同一档，于是卡片与面板读起来是同一种"块"。
+   顶部那道上边内高光模仿 Win 磁贴受光面——只 1px、极淡，不喧宾夺主。 */
 .opt-card {
   min-width: 0;
-  padding: 10px 12px 12px;
+  padding: 7px 9px 8px;
   background-color: var(--bg-pane);
   background-image: var(--grad-pane);
   border: 1px solid var(--line);
-  border-radius: 10px;
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-pane), inset 0 1px 0 rgba(255, 255, 255, .045);
 }
+html.light .opt-card { box-shadow: var(--shadow-pane), inset 0 1px 0 rgba(255, 255, 255, .8); }
 
 .opt-card-head {
   display: flex;
   align-items: center;
-  gap: 7px;
-  margin-bottom: 7px;
+  gap: 6px;
+  margin-bottom: 5px;
+  /* 卡片头是拖动把手 */
+  cursor: grab;
+  touch-action: none;
 }
+.opt-card-head:active { cursor: grabbing; }
 
 .opt-card-head svg { width: 15px; height: 15px; flex: 0 0 auto; color: var(--fg-dim); }
 
@@ -527,14 +595,14 @@ input.text:focus, select.mini:focus, button:focus-visible, textarea:focus {
 .row {
   display: flex;
   align-items: center;
-  gap: 6px;
-  padding: 2px 0;
+  gap: 5px;
+  padding: 1px 0;
   font-size: 12.5px;
 }
 
-.row.field { justify-content: space-between; gap: 10px; }
+.row.field { justify-content: space-between; gap: 8px; }
 .row.field > span { color: var(--fg-dim); white-space: nowrap; }
-.row.btns { gap: 6px; margin-top: 6px; }
+.row.btns { gap: 5px; margin-top: 4px; }
 
 .row input[type="checkbox"] { accent-color: var(--accent); }
 
@@ -544,9 +612,9 @@ input.text:focus, select.mini:focus, button:focus-visible, textarea:focus {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
-  gap: 6px;
+  gap: 5px;
   font-size: 12.5px;
-  padding: 3px 0;
+  padding: 1px 0;
   min-width: 0;
 }
 
@@ -694,21 +762,24 @@ input.text:focus, select.mini:focus, button:focus-visible, textarea:focus {
 .opt-row input.dirty, .opt-row select.dirty { border-color: var(--accent); }
 .opt-row input[type="checkbox"].dirty { outline: 1px solid var(--accent); outline-offset: 1px; }
 
-.hint { color: var(--fg-dim); font-size: 12px; margin: 4px 0; }
+.hint { color: var(--fg-dim); font-size: 12px; margin: 2px 0; }
 
 .drawer-foot {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
   border-top: 1px solid var(--line-soft);
-  margin-top: 10px;
-  padding-top: 8px;
+  margin-top: 6px;
+  padding-top: 6px;
 }
 
 .drawer-foot .hint { margin: 0; }
-.drawer-foot button { margin-left: auto; }
+.drawer-foot button { flex: 0 0 auto; }
+/* 提示文字吃掉剩余宽度并允许换行，两个按钮钉在右端不被挤走 */
+.drawer-foot #presetHint,
+.drawer-foot #layoutHint { flex: 0 1 auto; min-width: 0; }
 
-.lic-box { display: flex; flex-direction: column; gap: 4px; }
+.lic-box { display: flex; flex-direction: column; gap: 3px; }
 #licInfo { font-size: 12px; line-height: 1.45; }
 #licDevice { font-size: 11px; word-break: break-all; opacity: .75; }
 
@@ -718,13 +789,13 @@ input.text:focus, select.mini:focus, button:focus-visible, textarea:focus {
   flex: 0 0 auto;
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 6px 20px;
+  gap: 8px;
+  padding: 3px 12px;
   /* 与顶条同一套语言：没有底板，只用一条发丝线把它与主区分开 */
   border-top: 1px solid var(--line-soft);
   background: transparent;
   font-size: 12px;
-  min-height: 30px;
+  min-height: 26px;
 }
 
 .status:empty::before { content: "—"; color: var(--fg-dim); }
@@ -886,12 +957,12 @@ button.primary:hover:not(:disabled) { opacity: .88; }
 .drawer > .drawer-inner {
   min-height: 0;
   overflow: hidden;
-  padding: 0 14px;
+  padding: 0 10px;
   transition: padding var(--dur-slow) var(--ease-in-out);
 }
 
 .drawer[data-open="1"] > .drawer-inner {
-  padding: 10px 14px 6px;
+  padding: 6px 10px 4px;
 }
 
 /* 打开态允许滚动（内容可能高于 42vh）。滚动必须落在能滚的那一层上，
@@ -1068,9 +1139,15 @@ button.primary:hover:not(:disabled) { opacity: .88; }
 @media (max-width: 900px) {
   /* 窄屏：单列布局已在基础 .shell 写好；顶条内容一行放得下——
      品牌居左，语言/主题靠右（#lang 的 margin-left:auto 在基础规则里）。
-     强度预设 chips 已移除，预设选择在选项抽屉「基础」组里。 */
-  .shell { grid-template-columns: 1fr; grid-template-rows: auto 1fr; }
-  .topbar { flex-wrap: wrap; padding: 8px 10px; gap: 8px; }
+     强度预设 chips 已移除，预设选择在选项抽屉「基础」组里。
+
+     ⚠️ 这里原来写的是 grid-template-rows: auto 1fr，是左导航还在时的遗留（导航占
+     auto 行、.main 占 1fr 行）。导航 2026-09-23 整块移除后 .shell 只剩 .main
+     一个子元素，于是它掉进**第一个 auto 行**——行高按内容算，.main 不再被拉满，
+     .panes 的 flex:1 也就无处可涨。结果是：省下来的内边距全变成页面底部的空
+     白，而不是还给编辑器。改成单行 1fr 让 .main 始终被拉满。 */
+  .shell { grid-template-columns: 1fr; grid-template-rows: 1fr; }
+  .topbar { flex-wrap: wrap; padding: 6px 10px; gap: 8px; }
   .topbar .brand { flex: 1 1 auto; min-width: 0; }
   .topbar #lang,
   .topbar #themeBtn { flex: 0 0 auto; }
@@ -1129,11 +1206,11 @@ button.primary:hover:not(:disabled) { opacity: .88; }
 @media (max-width: 640px) {
   /* 极窄屏：顶条更紧，品牌字保持 15px（再小就辨不清"JsLabyrinth"了）。
      预设横滚条规则已在 ≤900px 那组里覆盖，无需重复。 */
-  .topbar { gap: 6px 8px; padding: 8px 10px; }
+  .topbar { gap: 6px 8px; padding: 6px 10px; }
   .topbar .brand h1 { font-size: 15px; }
 
-  .mainbar { padding: 8px 10px 0; }
-  .panes { padding: 8px; gap: 8px; }
+  .mainbar { padding: 4px 8px 0; }
+  .panes { padding: 5px; gap: 5px; }
 
   /* 面板头：标题一行、工具一行。工具均分撑满整行（大目标好按），
      主按钮双倍宽——手机上的主操作必须是最显眼的那个。 */
@@ -1142,7 +1219,7 @@ button.primary:hover:not(:disabled) { opacity: .88; }
   .pane-tools > * { flex: 1 1 auto; }
   #outputPane #runBtn { flex: 2.2 1 auto; }
 
-  .editor { padding: 10px 12px; }
+  .editor { padding: 8px 10px; }
 
   /* 抽屉改成底部浮层：留在文档流里它会与两个面板抢高度——62vh 的抽屉一展开，
      面板区被压到不足一行，输出面板的按钮拦腰截断。浮层脱离文档流后，面板保持

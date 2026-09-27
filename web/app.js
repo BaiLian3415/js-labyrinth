@@ -117,6 +117,10 @@ const state = {
   serverLicense: null,  // 服务端认定的授权（部署方覆盖根密钥时，本地验不了签）
   seed: '',
   touched: new Map(),   // 选项键 → 用户显式设定的值
+  // 拖动重排的结果（2026-09-27）。存的是 id 列表而不是 DOM 引用：选项卡每次
+  // 切语言/换预设都会整块重建，只有 id 能跨重建活下来。
+  cardOrder: [],         // 选项卡片的分组 id 顺序
+  paneOrder: [],         // 输入/输出面板的 id 顺序
   files: [],            // {name, code, out, status, stats, info, warnings, error}
   active: 0,
 };
@@ -230,12 +234,25 @@ function renderOptions() {
     byGroup.get(opt.group).push(opt);
   }
 
-  for (const g of OPTION_GROUPS) {
+  // 渲染顺序 = 存档里的拖动结果优先。存档里没有的新分组追加到末尾而不是被丢掉，
+  // 否则日后往选项表加一个分组，老用户的页面上就会凭空少一张卡。
+  const saved = Array.isArray(state.cardOrder) ? state.cardOrder : [];
+  const ordered = OPTION_GROUPS.slice().sort((a, b) => {
+    const ia = saved.indexOf(a.id);
+    const ib = saved.indexOf(b.id);
+    if (ia === -1 && ib === -1) return 0;
+    if (ia === -1) return 1;
+    if (ib === -1) return -1;
+    return ia - ib;
+  });
+
+  for (const g of ordered) {
     const list = byGroup.get(g.id) || [];
     if (!list.length) continue;
     // 每个分组渲染成一张卡片：标题栏是「图标 + 组名」，下面是选项行。
     const card = document.createElement('section');
     card.className = 'opt-card';
+    card.dataset.group = g.id;
 
     const head = document.createElement('header');
     head.className = 'opt-card-head';
@@ -252,6 +269,14 @@ function renderOptions() {
     groups.appendChild(card);
   }
   host.appendChild(groups);
+  // 卡片可拖动重排：按住卡片头拖。order 落进存档，下次打开仍是这个顺序。
+  enableReorder(groups, '.opt-card', {
+    handle: '.opt-card-head',
+    onCommit: (cards) => {
+      state.cardOrder = cards.map((c) => c.dataset.group).filter(Boolean);
+      saveState();
+    },
+  });
   refreshGateStyles();
 }
 
@@ -404,6 +429,125 @@ function mark(key, value, ctl) {
   refreshGateStyles();
   // 预设提示里含 consoleStub 的告警，逐项改动也要跟着刷新
   updatePresetHint();
+}
+
+/**
+ * 让容器里的直属子元素可以拖动重排。零依赖，鼠标与触屏同一条代码路径。
+ *
+ * 不用 HTML5 拖放（dragstart/dragover/drop）：它在触屏上根本不触发，而本项目
+ * 明确照顾手指输入（styles.css 有 @media (pointer: coarse) 整节）。
+ *
+ * 三处刻意的取舍：
+ *  1. **pointerdown 只记意图，不立刻起拖**。等指针真挪过 5px 才算拖动，否则
+ *     点开关、点按钮这类普通点击会被误判成拖动（容器里全是这类控件）。
+ *  2. **不用 setPointerCapture**。在 pointerdown 上抢捕获会吞掉子元素的 click，
+ *     而容器里恰好全是可点控件。改成拖动真正开始后再往 window 挂 move/up，
+ *     指针移出容器范围照样跟得住。
+ *  3. **被拖的块不脱流**，只是加 .dragging 的观感；顺序变化靠把它插到兄弟节点
+ *     前后实现，布局自己回流。省掉算位移、影子副本与"拖完位置对不上"的一整类问题。
+ */
+function enableReorder(container, itemSel, opts) {
+  if (!container) return;
+  const o = opts || {};
+  const handleSel = o.handle || itemSel;
+  let drag = null;  // { el, pid, x, y }
+  let live = false; // 是否已越过阈值、进入真正的拖动
+  let bound = false; // window 监听是否已挂上（renderOptions 会反复重建容器，
+                      // 在 enableReorder 时就挂会一次比一次多，且没拖动时摘不掉）
+
+  const kids = () => Array.prototype.filter.call(container.children, (c) => c.matches(itemSel));
+
+  /** node 在 container 里的直属祖先。Element.closest 不支持 ":scope >"，只能自己往上走。 */
+  function childOf(node) {
+    let n = node;
+    while (n && n.parentElement) {
+      if (n.parentElement === container) return n;
+      n = n.parentElement;
+    }
+    return null;
+  }
+
+  function clearMarks() {
+    for (const c of kids()) c.classList.remove('drop-mark', 'drop-before', 'drop-after');
+    container.classList.remove('drop-end');
+  }
+
+  /**
+   * 指针是否落在 sib 之前。横向网格里同一行要按 x 判，跨行才按 y 判——
+   * 只按 y 判的话，在同一行左右移动永远不会换位。
+   */
+  function isBefore(sib, e) {
+    const r = sib.getBoundingClientRect();
+    if (e.clientY < r.top) return true;
+    if (e.clientY > r.bottom) return false;
+    return e.clientX < r.left + r.width / 2;
+  }
+
+  function place(e) {
+    clearMarks();
+    for (const s of kids()) {
+      if (s === drag.el) continue;
+      if (isBefore(s, e)) {
+        container.insertBefore(drag.el, s);
+        s.classList.add('drop-mark', 'drop-before');
+        return;
+      }
+    }
+    // 没有"后继"可依附（要追加到末尾），落点线改挂在容器右缘
+    container.appendChild(drag.el);
+    container.classList.add('drop-end');
+  }
+
+  function onMove(e) {
+    if (!drag || e.pointerId !== drag.pid) return;
+    if (!live) {
+      if (Math.abs(e.clientX - drag.x) + Math.abs(e.clientY - drag.y) < 5) return;
+      live = true;
+      drag.el.classList.add('dragging');
+    }
+    place(e);
+    e.preventDefault(); // 拖动中别选中文本
+  }
+
+  function bind() {
+    if (bound) return;
+    bound = true;
+    window.addEventListener('pointermove', onMove, { passive: false });
+    window.addEventListener('pointerup', onUp);
+    window.addEventListener('pointercancel', onUp);
+  }
+
+  function unbind() {
+    if (!bound) return;
+    bound = false;
+    window.removeEventListener('pointermove', onMove);
+    window.removeEventListener('pointerup', onUp);
+    window.removeEventListener('pointercancel', onUp);
+  }
+
+  function onUp(e) {
+    if (!drag || e.pointerId !== drag.pid) return;
+    unbind();
+    clearMarks();
+    if (live) {
+      drag.el.classList.remove('dragging');
+      if (o.onCommit) o.onCommit(kids());
+    }
+    drag = null;
+    live = false;
+  }
+
+  container.addEventListener('pointerdown', (e) => {
+    if (e.button != null && e.button !== 0) return;
+    // 交互控件上不起拖：点开关/下拉/按钮是操作，不是拖动
+    if (e.target.closest('button, input, select, textarea, a, summary, [contenteditable]')) return;
+    if (!e.target.closest(handleSel)) return;
+    const el = childOf(e.target);
+    if (!el) return;
+    drag = { el, pid: e.pointerId, x: e.clientX, y: e.clientY };
+    live = false;
+    bind();
+  });
 }
 
 /** --flag 形式的选项名，给提示用。 */
@@ -1291,6 +1435,8 @@ function saveState() {
       apiBase: state.apiBase,
       seed: state.seed,
       touched: [...state.touched],
+      cardOrder: state.cardOrder,
+      paneOrder: state.paneOrder,
     }));
   } catch (e) { /* 隐私模式下写不了，不影响使用 */ }
 }
@@ -1308,6 +1454,8 @@ function loadState() {
       if (typeof s.apiBase === 'string') state.apiBase = s.apiBase;
       if (typeof s.seed === 'string') state.seed = s.seed;
       if (Array.isArray(s.touched)) state.touched = new Map(s.touched);
+      if (Array.isArray(s.cardOrder)) state.cardOrder = s.cardOrder.filter((x) => typeof x === 'string');
+      if (Array.isArray(s.paneOrder)) state.paneOrder = s.paneOrder.filter((x) => typeof x === 'string');
     }
     // 授权模块自己也要知道服务地址：机器码是向它要的，界面在 A、机器码去 B 取
     // 就会出现"激活前后两个机器码"。
@@ -1317,11 +1465,53 @@ function loadState() {
 
 // ---------- 初始化 ----------
 
+/** 输入/输出面板在文档里的默认先后。恢复默认布局按它摆回去。 */
+const PANE_ORDER_DEFAULT = ['inputPane', 'outputPane'];
+
+/**
+ * 恢复输入/输出面板的顺序，并启用拖动重排。
+ *
+ * 面板是静态 HTML（不像选项卡片那样由 renderOptions 重建），所以顺序要在这里
+ * 按存档重排一次；之后拖动产生的新顺序由 onCommit 写回存档。
+ */
+function initPaneOrder() {
+  const host = document.querySelector('.panes');
+  if (!host) return;
+  for (const id of state.paneOrder) {
+    const el = document.getElementById(id);
+    // 只搬仍在容器里的面板：id 是存档里的旧数据，HTML 改过就会指向不存在的元素
+    if (el && el.parentElement === host) host.appendChild(el);
+  }
+  enableReorder(host, '.pane', {
+    handle: '.pane-head',
+    onCommit: (panes) => {
+      state.paneOrder = panes.map((p) => p.id).filter(Boolean);
+      saveState();
+    },
+  });
+}
+
+/** 布局复位：卡片顺序与面板顺序都回到默认，再重渲染一次。 */
+function resetLayout() {
+  state.cardOrder = [];
+  state.paneOrder = [];
+  saveState();
+  const host = document.querySelector('.panes');
+  if (host) {
+    for (const id of PANE_ORDER_DEFAULT) {
+      const el = document.getElementById(id);
+      if (el) host.appendChild(el);
+    }
+  }
+  renderOptions();
+}
+
 async function init() {
   for (const id of ['lang', 'themeBtn', 'optsBtn', 'mode', 'openBtn', 'clearBtn',
     'fileInput', 'files', 'input', 'inInfo', 'output', 'outInfo', 'outSize', 'statsBox',
     'statsBody', 'runBtn', 'copyBtn', 'dlBtn', 'zipBtn', 'drawer', 'apiBase', 'apiHint',
     'licKey', 'actBtn', 'deactBtn', 'licInfo', 'licDevice', 'licBadge', 'seed', 'presetHint',
+    'layoutHint', 'layoutResetBtn',
     'resetBtn', 'status', 'quota', 'ver', 'inputPane', 'outputPane', 'apiState', 'shortcutHint',
     'compareBtn', 'compareModal', 'compareClose', 'compareBackdrop']) {
     els[id] = $(id);
@@ -1339,6 +1529,7 @@ async function init() {
   applyI18n();
   renderThemeBtn();   // 必须在 applyI18n() 之后：见 renderThemeBtn 的说明
   renderOptions();
+  initPaneOrder();
 
   // 事件绑定
   els.lang.addEventListener('change', async () => {
@@ -1420,6 +1611,8 @@ async function init() {
     saveState();
     updatePresetHint();
   });
+
+  els.layoutResetBtn.addEventListener('click', resetLayout);
 
   // 拖放
   for (const pane of [els.inputPane, els.outputPane]) {
