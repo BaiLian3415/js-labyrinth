@@ -193,6 +193,21 @@ async function handleObfuscate(request, env) {
   const body = await readBody(request);
   if (body === null) return json({ ok: false, message: 'invalid JSON body' }, 400);
 
+  // 客户端手里的签名记录先补登记，与 /api/license 的补登记是**同一个** licenseWeb
+  // .importRecord（验签 + 自锚定机器码 + 赎回登记，一项都不少），只是把两步合成一步。
+  //
+  // 为什么必须有这一步：Vercel 函数是跨实例无状态的，没接云存储时授权记录只活在
+  // 处理激活的那台实例的内存里。下一次请求换一台实例，服务端就"不认识"这台设备了，
+  // 用户看到的是点「运行」时冒出一句 `激活失败: 未找到许可证文件`——明明刚激活过。
+  // 记录在浏览器里、且带签名，服务端据此即可自助恢复；不补这一刀的话，这个部署形态
+  // 下界面几乎不可用（只能靠用户反复重激活碰运气）。
+  //
+  // 失败不在这里报错：交给下面的 ensure() 统一判定（无效记录不会被写入，
+  // 也就不可能因此放行任何东西）。
+  if (body.record && typeof body.record === 'object') {
+    await licenseWeb.importRecord(body.record);
+  }
+
   // 卡密也可以放在请求体里，方便不熟请求头的调用方
   const key = request.headers.get('X-JSLB-Key') || body.key;
   if (key) {

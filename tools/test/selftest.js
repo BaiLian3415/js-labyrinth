@@ -1064,6 +1064,46 @@ section('服务端路由（/api/*）');
   });
   ok(tampered.status === 401, '篡改校验码的卡密被拒（401）');
 
+  // 跨实例补登记：服务端换了实例（没接云存储时记录只活在处理激活的那台的内存里）
+  // 就认不出这台设备，用户点「运行」会收到一句"激活失败: 未找到许可证文件"。
+  // 界面因此把本机那份签名记录一并附在 /api/obfuscate 的请求体里，服务端用与
+  // /api/license 补登记**同一个** importRecord 采纳（验签 + 自锚定机器码 + 赎回
+  // 登记，一项不少）。下面这条环境没有 JSLB_KV，每个请求的存储都是新的，正好等价
+  // 于"冷实例"，是这条自愈路径最直接的回归测试。
+  {
+    const freshKey = codec.issueCode(TEST_CODE_KEY, 'plus', 30, '97531');
+    const local = await licenseWeb.activate(freshKey);
+    ok(local.ok, '本机本地激活新卡（构造客户端记录）', local.reason || '');
+    const rec = await licenseWeb.exportRecord();
+    ok(!!rec && !!rec.plan, '导出可交给服务端的签名记录');
+
+    const noRec = await call('/api/obfuscate', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'X-JSLB-Device': 'c'.repeat(32) },
+      body: JSON.stringify({ code: SAMPLE, options: { preset: 'low' } }),
+    });
+    ok(noRec.status === 402, '冷实例上不带记录 → 402（复现用户症状）', 'status=' + noRec.status);
+
+    const withRec = await call('/api/obfuscate', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'X-JSLB-Device': 'c'.repeat(32) },
+      body: JSON.stringify({ record: rec, code: SAMPLE, options: { preset: 'low' } }),
+    });
+    const withJson = await withRec.json();
+    ok(withRec.status === 200 && withJson.ok === true,
+      '冷实例上带签名记录 → 补登记后照常执行（跨实例自愈）',
+      'status=' + withRec.status + ' ' + String(withJson.message || '').slice(0, 60));
+
+    // 反向：伪造的记录不能让服务端放行（改一个字节即验签失败）。
+    const broken = { ...rec, plan: 'business' };
+    const badRec = await call('/api/obfuscate', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'X-JSLB-Device': 'c'.repeat(32) },
+      body: JSON.stringify({ record: broken, code: SAMPLE, options: { preset: 'low' } }),
+    });
+    ok(badRec.status === 402, '篡改过的记录不被采纳（仍 402）', 'status=' + badRec.status);
+  }
+
   // 严格一次性 + KV 赎回登记：激活写入 {卡密, 机器码, 时间戳}；同机重复请求靠
   // restore 复用不被误伤，异机再用同一卡密即 401。
   {

@@ -596,6 +596,11 @@ function explicitOptions() {
 async function runCloudJob(code, options) {
   const base = (state.apiBase || '').replace(/\/+$/, '');
   const device = await licenseWeb.deviceCode();
+  // 连同本机那份签名记录一起发：服务端跨实例无状态（没接云存储时记录只活在处理
+  // 激活的那台实例内存里），换一台实例就认不出这台设备，用户会看到点「运行」却
+  // 报"未找到许可证文件"。记录带签名，服务端用现有补登记路径自校验采纳，两边都
+  // 不额外信任任何东西。没有记录时（未激活/已清站点数据）就不带，让服务端给 402。
+  const record = await licenseWeb.exportRecord();
   let res;
   try {
     res = await fetch(base + '/api/obfuscate', {
@@ -605,7 +610,9 @@ async function runCloudJob(code, options) {
         'X-JSLB-Device': device,
         ...langHeader(),
       },
-      body: JSON.stringify({ code, options, type: state.mode }),
+      body: JSON.stringify({
+        code, options, type: state.mode, ...(record ? { record } : {}),
+      }),
     });
   } catch (e) {
     // 断网 / CORS 拒绝：连不上服务时浏览器里没有备用核心可跑
