@@ -335,6 +335,11 @@ function renderOption(opt) {
   if (opt.kind === 'bool') {
     const cb = document.createElement('input');
     cb.type = 'checkbox';
+    // 行是 <div>、控件不在 <label> 里，点名与控件的关联只能靠 for/id。
+    // 这一支原先直接 return，id 与 htmlFor 都没接——于是"点选项名切换开关"对
+    // 全部布尔项失效（点那一小块轨道才行），读屏也关联不上。
+    cb.id = 'opt-' + opt.key;
+    name.htmlFor = cb.id;
     cb.checked = state.touched.has(opt.key) ? !!state.touched.get(opt.key) : !!presetValue(opt.key);
     cb.addEventListener('change', () => mark(opt.key, cb.checked, cb));
     row.append(cb, name);
@@ -1552,25 +1557,182 @@ function loadState() {
   } catch (e) { /* 存档损坏就按默认值起 */ }
 }
 
+// ---------- 配置导入 / 下载 ----------
+
+/** 导出格式的魔数与版本。版本只增不改，读的时候按版本分支做兼容。 */
+const CFG_FORMAT = 'jslabyrinth.config';
+const CFG_VERSION = 1;
+
+/**
+ * 导出当前配置。
+ *
+ * 选项口径直接复用 explicitOptions()——那份正是提交给核心的显式选项。导出与实跑
+ * 共用同一份定义，才不会出现"导出的配置导入后跑出另一种结果"。
+ *
+ * **刻意不带的东西**（导出文件是要能发出去的）：
+ *   · 卡密 state.apiKey —— 付费凭据，进了 JSON 就等于公开出去；
+ *   · 服务地址 state.apiBase —— 环境相关，不是防护配置的一部分。导出它会在换
+ *     机器/换站点时带着旧地址走，纯添乱。
+ * 布局顺序一并带走：那也是"我的工作台"的一部分。
+ */
+function buildConfig() {
+  return {
+    format: CFG_FORMAT,
+    version: CFG_VERSION,
+    savedAt: new Date().toISOString(),
+    mode: state.mode,
+    options: explicitOptions(),
+    layout: { cardOrder: state.cardOrder, paneOrder: state.paneOrder },
+  };
+}
+
+/** 按 kind 把值收敛成合法形状；装不下返回 undefined，由调用方计入"忽略"。 */
+function coerceOption(kind, value) {
+  switch (kind) {
+    case 'bool':
+      if (typeof value === 'boolean') return value;
+      if (value === 'true') return true;
+      if (value === 'false') return false;
+      return undefined;
+    case 'int':
+    case 'count': {
+      const n = Number(value);
+      return Number.isFinite(n) ? Math.round(n) : undefined;
+    }
+    case 'percent': {
+      const n = Number(value);
+      if (!Number.isFinite(n)) return undefined;
+      return Math.min(1, Math.max(0, n));
+    }
+    case 'string':
+      return typeof value === 'string' ? value : String(value);
+    default:
+      return undefined;   // enum 要对着 values 校验，交给调用方
+  }
+}
+
+/**
+ * 解析并校验一份配置文件，返回要落到 state 上的东西。
+ *
+ * **未知键必须丢掉，不能塞进 state.touched** —— 那份 map 的内容会被原样 POST 到
+ * /api/obfuscate，来源不明的键不该有机会走到服务端请求体里。值也一律按选项元数据
+ * 的 kind 收敛（bool 真假、int/count 取整、percent 夹到 0..1、enum 对 values），
+ * 免得手改的 JSON 塞进一个后面会让核心抛异常的值。
+ *
+ * 顺带报出"应用了几条、忽略了几条"，UI 才能给一句有用的话。
+ */
+function readConfig(raw) {
+  if (!raw || typeof raw !== 'object' || raw.format !== CFG_FORMAT) throw new Error('format');
+  const v = Number(raw.version);
+  if (!Number.isFinite(v) || v < 1) throw new Error('version');
+  if (v > CFG_VERSION) throw new Error('newer');
+
+  const meta = new Map(guiOptions().map((o) => [o.key, o]));
+  const src = (raw.options && typeof raw.options === 'object') ? raw.options : {};
+
+  const entries = new Map();
+  let skipped = 0;
+  for (const [k, val] of Object.entries(src)) {
+    if (k === 'preset' || k === 'seed') continue;   // 各自单独处理
+    const o = meta.get(k);
+    if (!o) { skipped++; continue; }
+    if (o.kind === 'enum') {
+      const vals = Array.isArray(o.values) ? o.values : [];
+      if (!vals.includes(val)) { skipped++; continue; }
+      entries.set(k, val);
+      continue;
+    }
+    const cv = coerceOption(o.kind, val);
+    if (cv === undefined) { skipped++; continue; }
+    entries.set(k, cv);
+  }
+
+  const preset = PRESET_NAMES.includes(src.preset) ? src.preset : state.preset;
+  const seedNum = Number(src.seed);
+  const seed = (src.seed === undefined || src.seed === '' || !Number.isFinite(seedNum))
+    ? '' : String(Math.round(seedNum));
+  const mode = ['auto', 'js', 'html'].includes(raw.mode) ? raw.mode : state.mode;
+
+  const l = (raw.layout && typeof raw.layout === 'object') ? raw.layout : {};
+  const strs = (x) => (Array.isArray(x) ? x.filter((v2) => typeof v2 === 'string') : null);
+
+  return {
+    preset, entries, seed, mode,
+    cardOrder: strs(l.cardOrder),
+    paneOrder: strs(l.paneOrder),
+    applied: entries.size,
+    skipped,
+  };
+}
+
+/** 把校验过的配置落到界面上。 */
+function applyConfig(cfg) {
+  state.preset = cfg.preset;
+  state.touched = cfg.entries;
+  state.seed = cfg.seed;
+  state.mode = cfg.mode;
+  if (cfg.cardOrder) state.cardOrder = cfg.cardOrder;
+  if (cfg.paneOrder) state.paneOrder = cfg.paneOrder;
+  els.seed.value = state.seed;
+  els.mode.value = state.mode;
+  renderOptions();     // 卡片按新顺序重建，并重新挂上拖动
+  applyPaneOrder();    // 面板是静态 DOM，得自己摆回去
+  saveState();
+  updatePresetHint();
+}
+
+/** 导出成一个 JSON 文件下载。文件名带预设与日期，一堆导出时能一眼分清。 */
+function downloadConfig() {
+  const cfg = buildConfig();
+  const blob = new Blob([JSON.stringify(cfg, null, 2)], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = 'jslabyrinth-' + cfg.options.preset + '-' + new Date().toISOString().slice(0, 10) + '.json';
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  // 不撤销的话这份 blob 会一直挂在文档上（内存泄漏）；下一帧再撤，给点击留出余量
+  setTimeout(() => URL.revokeObjectURL(url), 0);
+  setStatus(t('guiCfgExported', { name: a.download }), 'ok');
+}
+
+async function importConfig(file) {
+  let cfg;
+  try {
+    cfg = readConfig(JSON.parse(await file.text()));
+  } catch (e) {
+    setStatus(t('guiCfgBad'), 'err');
+    return;
+  }
+  applyConfig(cfg);
+  setStatus(t('guiCfgImported', { n: cfg.applied, skipped: cfg.skipped }), 'ok');
+}
+
 // ---------- 初始化 ----------
 
 /** 输入/输出面板在文档里的默认先后。恢复默认布局按它摆回去。 */
 const PANE_ORDER_DEFAULT = ['inputPane', 'outputPane'];
 
-/**
- * 恢复输入/输出面板的顺序，并启用拖动重排。
- *
- * 面板是静态 HTML（不像选项卡片那样由 renderOptions 重建），所以顺序要在这里
- * 按存档重排一次；之后拖动产生的新顺序由 onCommit 写回存档。
- */
-function initPaneOrder() {
+/** 按存档摆好输入/输出面板的先后。面板是静态 HTML，只有这里能改它们的顺序。 */
+function applyPaneOrder() {
   const host = document.querySelector('.panes');
   if (!host) return;
   for (const id of state.paneOrder) {
     const el = document.getElementById(id);
-    // 只搬仍在容器里的面板：id 是存档里的旧数据，HTML 改过就会指向不存在的元素
+    // 只搬仍在容器里的面板：id 来自存档，HTML 改过就会指向不存在的元素
     if (el && el.parentElement === host) host.appendChild(el);
   }
+}
+
+/**
+ * 恢复输入/输出面板的顺序，并启用拖动重排。
+ * enableReorder 只在这里调一次——重复调用会再挂一遍 pointerdown 监听。
+ */
+function initPaneOrder() {
+  const host = document.querySelector('.panes');
+  if (!host) return;
+  applyPaneOrder();
   enableReorder(host, '.pane', {
     handle: '.pane-head',
     onCommit: (panes) => {
@@ -1580,11 +1742,15 @@ function initPaneOrder() {
   });
 }
 
-/** 布局复位：卡片顺序与面板顺序都回到默认，再重渲染一次。 */
+/**
+ * 布局复位：卡片顺序与面板顺序都回到默认，再重渲染一次。
+ *
+ * 面板必须**显式**按默认顺序摆回去，不能只把 state.paneOrder 清空就完事：
+ * applyPaneOrder() 的循环体在空数组下根本不执行，面板会保持拖动后的顺序。
+ */
 function resetLayout() {
   state.cardOrder = [];
   state.paneOrder = [];
-  saveState();
   const host = document.querySelector('.panes');
   if (host) {
     for (const id of PANE_ORDER_DEFAULT) {
@@ -1592,6 +1758,7 @@ function resetLayout() {
       if (el) host.appendChild(el);
     }
   }
+  saveState();
   renderOptions();
 }
 
@@ -1600,7 +1767,7 @@ async function init() {
     'fileInput', 'files', 'input', 'inInfo', 'output', 'outInfo', 'outSize', 'statsBox',
     'statsBody', 'runBtn', 'copyBtn', 'dlBtn', 'zipBtn', 'drawer', 'apiBase', 'apiHint',
     'licKey', 'actBtn', 'deactBtn', 'licInfo', 'licDevice', 'licBadge', 'seed', 'presetHint',
-    'layoutHint', 'layoutResetBtn',
+    'layoutHint', 'layoutResetBtn', 'cfgImportBtn', 'cfgExportBtn', 'cfgFile',
     'resetBtn', 'status', 'quota', 'ver', 'inputPane', 'outputPane', 'apiState', 'shortcutHint',
     'compareBtn', 'compareModal', 'compareClose', 'compareBackdrop']) {
     els[id] = $(id);
@@ -1702,6 +1869,15 @@ async function init() {
   });
 
   els.layoutResetBtn.addEventListener('click', resetLayout);
+
+  els.cfgExportBtn.addEventListener('click', downloadConfig);
+  els.cfgImportBtn.addEventListener('click', () => els.cfgFile.click());
+  els.cfgFile.addEventListener('change', async () => {
+    const f = els.cfgFile.files && els.cfgFile.files[0];
+    // 先清空：连着两次选同一个文件不会再触发 change，导入就静默失灵了
+    els.cfgFile.value = '';
+    if (f) await importConfig(f);
+  });
 
   // 拖放
   for (const pane of [els.inputPane, els.outputPane]) {

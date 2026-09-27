@@ -801,9 +801,10 @@ html.light .opt-card { box-shadow: var(--shadow-pane), inset 0 1px 0 rgba(255, 2
 
 .drawer-foot .hint { margin: 0; }
 .drawer-foot button { flex: 0 0 auto; }
-/* 提示文字吃掉剩余宽度并允许换行，两个按钮钉在右端不被挤走 */
+/* 提示文字吃掉剩余宽度并允许换行，按钮组钉在右端不被挤走 */
 .drawer-foot #presetHint,
 .drawer-foot #layoutHint { flex: 0 1 auto; min-width: 0; }
+.drawer-foot .acts { display: flex; gap: 6px; flex: 0 0 auto; flex-wrap: wrap; justify-content: flex-end; }
 
 .lic-box { display: flex; flex-direction: column; gap: 3px; }
 #licInfo { font-size: 12px; line-height: 1.45; }

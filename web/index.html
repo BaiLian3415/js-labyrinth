@@ -172,8 +172,13 @@
         <div class="drawer-foot">
           <span class="hint" id="layoutHint" data-i18n="guiLayoutDrag">按住卡片标题或面板标题可拖动重排。</span>
           <span class="hint" id="presetHint" data-i18n="guiPresetHint">预设只提供默认值，下面的显式选项逐字段覆盖它。</span>
-          <button id="layoutResetBtn" class="mini" type="button" data-i18n="guiLayoutReset">恢复默认布局</button>
-          <button id="resetBtn" class="mini" type="button" data-i18n="guiReset">恢复默认选项</button>
+          <span class="acts">
+            <button id="cfgImportBtn" class="mini" type="button" data-i18n="guiCfgImport">导入配置</button>
+            <button id="cfgExportBtn" class="mini" type="button" data-i18n="guiCfgExport">下载配置</button>
+            <button id="layoutResetBtn" class="mini" type="button" data-i18n="guiLayoutReset">恢复默认布局</button>
+            <button id="resetBtn" class="mini" type="button" data-i18n="guiReset">恢复默认选项</button>
+          </span>
+          <input id="cfgFile" type="file" accept=".json,application/json" hidden>
         </div>
       </div>
     </section>
