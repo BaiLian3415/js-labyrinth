@@ -1071,20 +1071,29 @@ section('服务端路由（/api/*）');
   // 登记，一项不少）。下面这条环境没有 JSLB_KV，每个请求的存储都是新的，正好等价
   // 于"冷实例"，是这条自愈路径最直接的回归测试。
   {
+    // 这三条必须在部署的真实策略下断言：requireLicense=true 时无记录才会回 402，
+    // 否则走**试用**分支回 200，断言会"假绿"（第一版就踩了这个坑）。
+    const callRl = async (pathname, init) => {
+      const req = new Request('https://example.com' + pathname, init);
+      return worker.fetch(req, {
+        JSLB_WEB_CONFIG: '{"requireLicense":true,"trialPreset":"low","trialMaxFileBytes":65536}',
+        JSLB_CODE_KEY: TEST_CODE_KEY,
+      }, {});
+    };
     const freshKey = codec.issueCode(TEST_CODE_KEY, 'plus', 30, '97531');
     const local = await licenseWeb.activate(freshKey);
     ok(local.ok, '本机本地激活新卡（构造客户端记录）', local.reason || '');
     const rec = await licenseWeb.exportRecord();
     ok(!!rec && !!rec.plan, '导出可交给服务端的签名记录');
 
-    const noRec = await call('/api/obfuscate', {
+    const noRec = await callRl('/api/obfuscate', {
       method: 'POST',
       headers: { 'content-type': 'application/json', 'X-JSLB-Device': 'c'.repeat(32) },
       body: JSON.stringify({ code: SAMPLE, options: { preset: 'low' } }),
     });
     ok(noRec.status === 402, '冷实例上不带记录 → 402（复现用户症状）', 'status=' + noRec.status);
 
-    const withRec = await call('/api/obfuscate', {
+    const withRec = await callRl('/api/obfuscate', {
       method: 'POST',
       headers: { 'content-type': 'application/json', 'X-JSLB-Device': 'c'.repeat(32) },
       body: JSON.stringify({ record: rec, code: SAMPLE, options: { preset: 'low' } }),
@@ -1094,11 +1103,13 @@ section('服务端路由（/api/*）');
       '冷实例上带签名记录 → 补登记后照常执行（跨实例自愈）',
       'status=' + withRec.status + ' ' + String(withJson.message || '').slice(0, 60));
 
-    // 反向：伪造的记录不能让服务端放行（改一个字节即验签失败）。
+    // 反向：伪造的记录不能让服务端放行（改一个字节即验签失败）。**换一台设备码**——
+    // 否则上一条已把有效记录写进这台实例的存储，restore() 会先命中它，压根测不到
+    // "篡改记录会不会被采纳"这件事（第一版的探针就因此误判过一次）。
     const broken = { ...rec, plan: 'business' };
-    const badRec = await call('/api/obfuscate', {
+    const badRec = await callRl('/api/obfuscate', {
       method: 'POST',
-      headers: { 'content-type': 'application/json', 'X-JSLB-Device': 'c'.repeat(32) },
+      headers: { 'content-type': 'application/json', 'X-JSLB-Device': '9'.repeat(32) },
       body: JSON.stringify({ record: broken, code: SAMPLE, options: { preset: 'low' } }),
     });
     ok(badRec.status === 402, '篡改过的记录不被采纳（仍 402）', 'status=' + badRec.status);
