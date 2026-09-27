@@ -9,7 +9,6 @@
  * 覆盖范围：
  *   核心       三个预设各跑一遍，产物可执行、固定 seed 可复现、跨运行一致
  *   HTML       内联脚本被替换、外部脚本与非 JS type 不被碰、跨块共享给出警告
- *   目录模式   递归混淆、镜像目录结构、非 JS 文件按开关复制或跳过
  *   闸门       试用/低档卡密的预设上限与逐项闸门按预期拦截
  *   外壳形态   jsfuck 形态编解码往返、产物可执行、多层叠加与横幅互锁、超限构建失败
  *   压缩能力   simplify 的无用声明消除边界、四档 nameStyle 的形状/体积/语义/闸门、动态 import 解析
@@ -2154,9 +2153,9 @@ process.stdout.write(a + '|' + b + '\\n');
   ok(stDl2 && stDl2.result.entries === 2 && stDl2.result.exact === 1 && stDl2.result.suffix === 1,
     '多条目（精确+后缀）计数正确', JSON.stringify(stDl2 && stDl2.result));
 
-  // 授权主机放行（2 seed × 4 形态）：精确 / 后缀含顶点 / 后缀深层子域 / 端口精确
+  // 授权主机放行（5 seed × 4 形态）：精确 / 后缀含顶点 / 后缀深层子域 / 端口精确
   let dlAuthBad = '';
-  for (let seed = 1; seed <= 2 && !dlAuthBad; seed++) {
+  for (let seed = 1; seed <= 5 && !dlAuthBad; seed++) {
     const o = { preset: 'high', shell: false, seed };
     const cases = [
       [obfuscate(dlSample, { ...o, domainLock: 'example.com' }).code, 'example.com', null],
@@ -2170,6 +2169,43 @@ process.stdout.write(a + '|' + b + '\\n');
     }
   }
   ok(dlAuthBad === '', '授权主机放行（精确/后缀含顶点/深层子域/端口精确）', dlAuthBad);
+
+  // 回归（2026-09-27 修）：早带即调用的函数不得被注入交叉校验闩锁。
+  //
+  // 症状：domainLock + integrityCheck 同时开（= coupled 模式的唯一组合）时，
+  // 授权主机上产物跑出乱码。原因是 domainLock 的校验函数由 insertHeadEarly 注入、
+  // 在头部**立即调用**，而 integrityCheck 随后给根级函数体注入
+  // `if(!latchObj[key])…`，其 `var latchObj={}` 却要等 integrityCheck 自己的早带块
+  // 才赋值——那个块排在 domainLock 之后。此刻 latchObj 还是提升后的 undefined，
+  // 读 undefined[key] 抛 TypeError，被外层 `catch(e){}` 吞掉：+Q 永不落位，
+  // 字符串池偏移停在非零，整池静默乱码，产物不报任何错。
+  //
+  // 修法：domainLock 登记 __earlyInvoked，integrityCheck 据此把它排除出入口校验点
+  // 候选（它仍在哈希面内，只是不当"被调用时顺手校验 peer"的宿主）。
+  // 下面两条分别钉住"不再被注入闩锁"与"仍在哈希面内"，少任何一条都会让
+  // 这类缺陷以"少一层交叉检查"或"重新自损坏"的形式退化回来。
+  {
+    const rDlEarly = obfuscate(dlSample, { preset: 'high', shell: false, seed: 3, domainLock: 'example.com' });
+    const stIc = rDlEarly.stats.find((s) => s.pass === 'integrityCheck');
+    const hostFnName = rDlEarly.stats.find((s) => s.pass === 'domainLock').result.hostFn;
+    // hostFn 会被 mangle 改名，按函数体特征定位：domainLock 的校验函数是唯一
+    // 读 location.hostname 的根级函数。
+    const probeAt = rDlEarly.code.indexOf('location.hostname');
+    ok(probeAt > 0, 'domainLock 校验函数在产物里可定位（读 location.hostname）');
+    if (probeAt > 0) {
+      // 函数体首字符 '{' 之后紧跟的闩锁引用即交叉校验闩锁；被排除后不应再有它
+      const brace = rDlEarly.code.lastIndexOf('{', probeAt);
+      const head = rDlEarly.code.slice(brace + 1, brace + 120);
+      ok(!/^if\(![A-Za-z_$一-鿿][\w$]*\["__f/.test(head),
+        '早带即调用的 domainLock 函数未被注入交叉校验闩锁', head.slice(0, 60));
+      // 仍在哈希面内：改动函数体文本必须让整池腐蚀
+      const patched = rDlEarly.code.slice(0, brace + 1) + '0;' + rDlEarly.code.slice(brace + 1);
+      ok(dlRun(patched, 'example.com', 'early-tamper') !== dlWant,
+        'domainLock 校验函数仍受完整性哈希覆盖（改函数体即投毒）');
+    }
+    ok(stIc && stIc.result && stIc.result.checked > 0,
+      'integrityCheck 哈希面非空', JSON.stringify(stIc && stIc.result));
+  }
 
   // 非授权主机 fail-closed（2 seed × 4 形态）：错域 / 后缀点边界 / 错端口 /
   // 无 location。coupled 模式静默腐蚀整池，不应有可定位的抛错

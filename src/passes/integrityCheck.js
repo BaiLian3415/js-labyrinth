@@ -227,8 +227,17 @@ export default function integrityCheck(ast, options, ctx) {
 
   // 入口校验点抽样，从根函数里挑非 VM 编译且有块体的，每个在入口注入
   // 对 peer 函数的交叉校验调用，优先覆盖体量大的函数，最多 10 个。
+  //
+  // 排除「早带即调用」的函数（domainLock 的授权校验函数，见该 pass 的注释）：
+  // 闩锁对象 var latchObj={} 是在本 pass 自己的早带块里才赋值，而那个块排在
+  // domainLock 早带块**之后**。给这种函数注入闩锁，函数体首行 `if(!latchObj[k])`
+  // 会在 latchObj 还是提升后的 undefined 时执行 → TypeError 被外层 catch 吞掉 →
+  // domainLock 的 +Q 永不落位 → 字符串池偏移非零 → 整池静默乱码。
+  // 被排除的函数**仍在哈希面内**（头部循环照常校验它），只是不作为入口校验点，
+  // 也就是不获得"被调用时顺手校验一个 peer"这层交叉检查。
   const entryCandidates = targets.filter((fn) =>
-    !isVMCompiled(fn) && !rtlib.isRtFn(ctx, fn) && fn.body && fn.body.type === 'BlockStatement');
+    !isVMCompiled(fn) && !rtlib.isRtFn(ctx, fn) && fn.body && fn.body.type === 'BlockStatement'
+    && !fn.__earlyInvoked);
   const sampleSize = Math.min(entryCandidates.length, 10);
   const sorted = [...entryCandidates].sort((a, b) =>
     (b.body ? b.body.body.length : 0) - (a.body ? a.body.body.length : 0));

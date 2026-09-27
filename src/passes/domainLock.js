@@ -197,6 +197,19 @@ export default function domainLock(ast, options, ctx) {
     stmts = [];
   }
   if (!stmts.length) throw new Error('domainLock: internal template parse failure');
+  // 标记「早带即调用」的函数：integrityCheck 随后会给根级函数体注入交叉校验闩锁，
+  // 而闩锁对象（var latchObj={}）是在 integrityCheck 自己的早带块里才赋值的，
+  // 位置在本块**之后**（早带按调用顺序追加，本 pass 先跑）。于是这个函数一旦被
+  // 挑成入口校验点，函数体首行就是 `if(!latchObj[key])`，此刻 latchObj 还是
+  // 提升后的 undefined —— 读 undefined[key] 抛 TypeError，而外层 catch(e){}
+  // 把它吞掉：+Q 永不落位，偏移停在非零，整池字符串静默乱码，产物不报任何错。
+  // coupled 模式必然带 integrityCheck（couple 的创建条件），所以这条路径是 100% 触发。
+  // 这里显式登记，integrityCheck 据此把这些函数排除出入口校验点候选——它们仍然
+  // 在哈希面内（被头部循环校验），只是不再被注入闩锁。宁可少覆盖一处，也不拿
+  // 假失配/自损坏的产物去换覆盖率。
+  for (const s of stmts) {
+    if (s && s.type === 'FunctionDeclaration') s.__earlyInvoked = true;
+  }
   // 早带：内核之后、晚带全部头部与字符串池 IIFE 之前。授权贡献必须在任何
   // 池访问之前落位；早带里池访问器尚未定义，不存在窗口期访问
   rtlib.insertHeadEarly(ctx, program, stmts);
