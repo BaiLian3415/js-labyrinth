@@ -3045,6 +3045,34 @@ section('WASM 档位（阶段一恢复）');
   }
   ok(tierBad === '', '各预设默认 wasm 档位正确且语义保持（low 关 / medium·high 旧档 / max 内核档）', tierBad);
 
+  // 回归：函数声明**嵌套在函数体内**。编译外层函数时，体内语句位置的函数声明会
+  // 作为内层闭包被一并编译，随后被 toFunctionExpression 换成新的函数表达式节点。
+  // 桥接体随 body 一起搬走了，__wasmVmMeta 也必须一起搬——否则 wasmvm 按 fIdx
+  // 落位时撞上「fIdx 空洞」直接构建失败。上一段用的 fib 是顶层声明，碰不到这个
+  // 形态，所以当时自测全绿也没暴露。输出仍走 process.stdout.write（见上方注释）。
+  {
+    const nested = '(function(){'
+      + 'function rev(s){return s.split("").reverse().join("");}'
+      + 'function pal(s){var c=s.toLowerCase().replace(/[^a-z]/g,"");return c===rev(c);}'
+      + 'var w=["radar","hello","level","world"];var o=[];'
+      + 'w.forEach(function(x){o.push(x+":"+pal(x));});'
+      + 'process.stdout.write(o.join("|")+"\\n");'
+      + '})();';
+    const nWant = runNode(nested, 'wasm-nested-orig.js').trim();
+    let nestBad = '';
+    for (const preset of ['high', 'max']) {
+      let got;
+      try {
+        const r = obfuscate(nested, { preset, seed: 5, shell: false });
+        got = runNode(r.code, 'wasm-nested-' + preset + '.js').trim();
+      } catch (e) {
+        got = 'THREW:' + String(e && e.message ? e.message : e).slice(0, 70);
+      }
+      if (got !== nWant) { nestBad = preset + ' → ' + got.slice(0, 80); break; }
+    }
+    ok(nestBad === '', '嵌套函数声明在各 wasm 档下可构建且语义正确', nestBad);
+  }
+
   // 显式关闭：隔离测试依赖"关掉就没有 wasm pass"
   {
     const r = obfuscate(src, { preset: 'max', seed: 5, shell: false, wasm: false, wasmInterpreter: false });

@@ -402,6 +402,8 @@ function mark(key, value, ctl) {
   if (ctl) ctl.classList.add('dirty');
   saveState();
   refreshGateStyles();
+  // 预设提示里含 consoleStub 的告警，逐项改动也要跟着刷新
+  updatePresetHint();
 }
 
 /** --flag 形式的选项名，给提示用。 */
@@ -454,9 +456,17 @@ function limitsText(ent) {
 function updatePresetHint() {
   const ent = currentEntitlements();
   const base = t('guiPresetHint');
-  els.presetHint.textContent = ent
+  let txt = ent
     ? base + ' ' + t('guiPresetCeiling', { preset: ent.preset }) + ' · ' + limitsText(ent)
     : base;
+  // consoleStub 会把 console.* 全部置空且永久生效，选中后产物运行时的**任何**
+  // console 输出都不会出现。这极易被当成"产物坏了"（在 Node 下跑脚本时表现为
+  // 静默退出、一行输出都没有）。只有 max 预设默认开着它，所以选到时必须显式提示。
+  const stub = state.touched.has('consoleStub')
+    ? !!state.touched.get('consoleStub')
+    : !!presetValue('consoleStub');
+  if (stub) txt += ' ⚠ ' + t('guiConsoleStubWarn');
+  els.presetHint.textContent = txt;
 }
 
 // ---------- 输入文件 ----------

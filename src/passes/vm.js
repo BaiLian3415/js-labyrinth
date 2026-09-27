@@ -598,7 +598,13 @@ function prepareFn(fn) {
 
 /** 语句位置的函数声明转成函数表达式，保留 id 以支持自身递归引用。 */
 function toFunctionExpression(decl) {
-  return t.functionExpression(decl.id, decl.params, decl.body, decl.generator, decl.async);
+  const fe = t.functionExpression(decl.id, decl.params, decl.body, decl.generator, decl.async);
+  // 编译外层函数时，体内语句位置的函数声明会作为内层闭包被一并编译，元数据（含
+  // fIdx）登记在 decl 上。此处新建节点替换 decl，必须把元数据一并搬过去：桥接体
+  // 本身随 decl.body 走了（body 在换节点前就已改写成含 fIdx 的调用），缺的只是这份
+  // 登记表。少了它，WASM 解释器内核档按 fIdx 落位时会撞上「fIdx 空洞」而构建失败。
+  if (decl.__wasmVmMeta) fe.__wasmVmMeta = decl.__wasmVmMeta;
+  return fe;
 }
 
 /**
