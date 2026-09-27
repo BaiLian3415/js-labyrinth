@@ -192,10 +192,10 @@
       <h2 id="compareTitle" data-i18n="cmpTitle">混淆强度对比 · JsLabyrinth vs obfuscator.io</h2>
       <button id="compareClose" class="mini" type="button" data-i18n-aria="cmpAriaClose" aria-label="close">✕</button>
     </div>
-    <p class="compare-note" data-i18n="cmpNote">双方最强档：JsLabyrinth 用 max 预设，obfuscator.io 用 Pro VM。十维 0–10 分，按公开能力面逐项对照——obfuscator.io 在标识符/属性重命名与成熟度（实战检验、边界用例覆盖）上更优，JsLabyrinth 在调试保护、防篡改、反自动化与 VM 内核上更强；代码压缩两者都偏弱（都不是真正的 minifier）。评分为能力覆盖度，不等于实测破解耗时。</p>
+    <p class="compare-note" data-i18n="cmpNote">双方最强档：JsLabyrinth 用 max 预设，obfuscator.io 用 Pro VM。十维 0–10 分，按公开能力面逐项对照——obfuscator.io 在标识符/属性重命名与成熟度上更优，JsLabyrinth 在调试保护、防篡改、反自动化与 VM 内核上更强；代码压缩可用 simplify（含无用声明消除）+ nameStyle=Mangled-shuffled 达到真正 minifier 量级：同一输入实测产物为 terser 的 1.18~1.58×，同口径下 obfuscator.io 为 1.49~1.89×。2026-09-27 按代码审查结果下调两项：VM 虚拟化 9.0→8.5、自防御/防篡改 9.5→9.0。评分为能力覆盖度，不等于实测破解耗时；十维也不覆盖全部能力（例如域名锁定未列入）。</p>
 
     <div class="compare-legend">
-      <span class="lg-item"><span class="lg-dot lg-js"></span><span data-i18n="cmpLegendJs">JsLabyrinth（max）</span><strong class="lg-mean lg-js-text">8.7</strong></span>
+      <span class="lg-item"><span class="lg-dot lg-js"></span><span data-i18n="cmpLegendJs">JsLabyrinth（max）</span><strong class="lg-mean lg-js-text">8.6</strong></span>
       <span class="lg-item"><span class="lg-dot lg-obf"></span><span data-i18n="cmpLegendObf">obfuscator.io（Pro VM）</span><strong class="lg-mean lg-obf-text">7.2</strong></span>
     </div>
 
@@ -221,7 +221,7 @@
           <line x1="360" y1="250" x2="260.1" y2="112.5"/>
         </g>
         <g class="cmp-data">
-          <polygon class="js-series" points="360.0,114.0 449.9,126.2 497.4,205.3 489.3,292.0 449.9,373.8 360.0,386.0 270.1,373.8 206.4,299.9 222.6,205.3 270.1,126.2"/>
+          <polygon class="js-series" points="360.0,114.0 449.9,126.2 497.4,205.3 489.3,292.0 449.9,373.8 360.0,386.0 275.1,366.9 214.5,297.3 222.6,205.3 270.1,126.2"/>
           <polygon class="obf-series" points="360.0,97.0 444.9,133.1 489.3,208.0 481.3,289.4 429.9,346.3 360.0,360.5 275.1,366.9 254.9,284.1 238.7,210.6 330.0,208.7"/>
         </g>
         <g class="cmp-labels">
@@ -250,8 +250,8 @@
         <tr><td data-i18n="cmpDim4">死代码注入</td><td class="win-js">8.0</td><td>7.5</td></tr>
         <tr><td data-i18n="cmpDim5">调试保护</td><td class="win-js">9.0</td><td>7.0</td></tr>
         <tr><td data-i18n="cmpDim6">代码压缩</td><td class="win-js">8.0</td><td>6.5</td></tr>
-        <tr><td data-i18n="cmpDim7">VM 虚拟化</td><td class="win-js">9.0</td><td>8.5</td></tr>
-        <tr><td data-i18n="cmpDim8">自防御/防篡改</td><td class="win-js">9.5</td><td>6.5</td></tr>
+        <tr><td data-i18n="cmpDim7">VM 虚拟化</td><td>8.5</td><td>8.5</td></tr>
+        <tr><td data-i18n="cmpDim8">自防御/防篡改</td><td class="win-js">9.0</td><td>6.5</td></tr>
         <tr><td data-i18n="cmpDim9">常量/数字混淆</td><td class="win-js">8.5</td><td>7.5</td></tr>
         <tr><td data-i18n="cmpDim10">反自动化/反LLM</td><td class="win-js">9.0</td><td>3.0</td></tr>
       </tbody>
