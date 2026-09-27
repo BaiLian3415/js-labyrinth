@@ -319,6 +319,38 @@ function obfuscate(code, userOptions) {
   }
   // WASM 解释器内核档与旧 wasm 档互斥：内核档把解释器整体搬进 WASM，旧档只搬
   // 数据与原语，两者同时开会生成两个模块与两套取指假设，故内核档优先。
+  //
+  // ---- 阶段二「嵌套 VM」的设计决策（2026-09-27，未实现）----
+  //
+  // 目标：让外层轻量 JS VM 保护内层 WASM 主解释器，即上一条互斥不再必要。
+  //
+  // 为什么"同时打开两个开关"永远得不到共存：不是接线问题，是**两者都想独占同一层**。
+  // 内核档把解释循环整体编译进模块，于是所有改变「指令如何取指/编码/分发」的 JS 侧
+  // 特性（vmRegisterVM / vmJumpsEncoding / vmStackEncoding / vmMacroOps / vmDynOpcodes /
+  // vmRuntimeKeyGetter / vmPolymorph / vmBlockDecrypt / vmAsyncExecutor）在模块里都被
+  // 硬编码假设挡住——这是"同一层里两种模式"，无论怎么接线都互斥。
+  //
+  // 分层才是解：外层是**独立的一台字节码机**，它不共享内层的分发器，于是两侧各自的
+  // 编码/分发特性互不干涉：
+  //
+  //   L1 外壳（shell / shellForm，已有）
+  //   L2 外层轻量 VM（JS 字节码）——小、快，负责装载与解密 L3
+  //   L3 内层主解释器（WASM，即现有 wasmvm）
+  //
+  // 三个待定的接口决策，按下面的方向走（自行决定，不再挂起）：
+  //   · 句柄表归属：放 **L2**。L2 已是字节码机，句柄即它的槽位值；放 L3 会让 L3 的
+  //     数据段承担可变状态，破坏"模块只读"这点（现实现靠只读数据段做模块级位置散列）。
+  //   · 异常回传：L3 捕获后写成**带标签的返回值**（tagged result），由 L2 检查标签并
+  //     转成 L2 的 THR 指令；不让异常穿越 WASM 边界（wasm 侧异常处理在各宿主上行为
+  //     不一，且会打断 L2 的字节码栈一致性）。
+  //   · 返回值表示：L3 返回**句柄**，原始值留在 L2 槽位；L2 的 CALLW 指令操作数就是
+  //     桥接句柄（与现有 wasmvm 的 per-function bridge 同构，可复用）。
+  //
+  // 落地顺序（每步独立可验收）：
+  //   ① L2 字节码集加一条 CALLW，先只支持"无参、返回句柄"的函数，跑通 L2 调 L3；
+  //   ② 补参数传递与 tagged result 的异常回传；
+  //   ③ 把 wasmvm 的挂载从"接管整个程序"改成"只编译被 L2 引用的函数"，让 L2 真正在
+  //      外层包住 L3，而不是二选一。
   if (options.wasmInterpreter) timePass('wasmvm', () => wasmvm(ast, options, ctx));
   else if (options.wasm) timePass('wasm', () => wasm(ast, options, ctx));
   if (options.mangle) timePass('mangle', () => mangle(ast, options, ctx));
