@@ -1292,6 +1292,77 @@ button.primary:hover:not(:disabled) { opacity: .88; }
   .statusbar { padding-bottom: calc(6px + env(safe-area-inset-bottom, 0px)); }
 }
 
+/* ---------- 不混淆项挑选器（2026-09-29）---------- */
+
+.excl-modal { position: fixed; inset: 0; z-index: 60; display: flex; align-items: center; justify-content: center; }
+.excl-modal[hidden] { display: none; }
+.excl-backdrop { position: absolute; inset: 0; background: rgba(0, 0, 0, .55); }
+.excl-card {
+  position: relative;
+  width: min(760px, 92vw);
+  max-height: 82vh;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px 14px;
+  background-color: var(--bg-pane);
+  background-image: var(--grad-pane);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  box-shadow: 0 18px 46px rgba(0, 0, 0, .45), inset 0 1px 0 rgba(255, 255, 255, .05);
+}
+html.light .excl-card { box-shadow: 0 18px 46px rgba(20, 20, 19, .18), inset 0 1px 0 rgba(255, 255, 255, .8); }
+
+.excl-head { display: flex; align-items: center; gap: 8px; }
+.excl-head h2 { margin: 0; font-size: 14px; font-weight: 600; }
+.excl-head button { margin-left: auto; }
+.excl-note { margin: 0; font-size: 12px; color: var(--fg-dim); line-height: 1.5; }
+.excl-bar { display: flex; align-items: center; gap: 8px; }
+.excl-bar .text { flex: 1 1 auto; }
+.excl-bar .dim { flex: 0 0 auto; white-space: nowrap; font-size: 12px; }
+
+.excl-cols {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(210px, 1fr));
+  gap: 8px;
+  align-items: start;
+  user-select: none;
+}
+.excl-group {
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background-color: var(--bg-soft);
+  background-image: var(--grad-well);
+  padding: 6px 8px;
+}
+.excl-group h3 {
+  margin: 0 0 4px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--fg-dim);
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+}
+.excl-group h3 em { font-style: normal; font-size: 11px; opacity: .7; }
+.excl-group ul { margin: 0; padding: 0; list-style: none; max-height: 168px; overflow: auto; }
+.excl-group li { display: flex; align-items: center; gap: 6px; padding: 1px 0; font: 12px var(--mono); }
+.excl-group li span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.excl-group input[type="checkbox"] { accent-color: var(--accent); flex: 0 0 auto; }
+.excl-empty { font-size: 12px; color: var(--fg-dim); padding: 2px 0; }
+
+.excl-foot { display: flex; align-items: center; gap: 6px; flex: 0 0 auto; flex-wrap: wrap; }
+.excl-foot .spacer { flex: 1 1 auto; }
+
+@media (pointer: coarse) {
+  .excl-group input[type="checkbox"] { width: 18px; height: 18px; }
+  .excl-group li { padding: 4px 0; }
+}
+
 /* ---------- 混淆强度对比弹窗（十维雷达，零依赖手绘 SVG） ---------- */
 
 /* 对比弹窗专用配色：JsLabyrinth 用站点主强调 terracotta，obfuscator.io 用品牌规范里的

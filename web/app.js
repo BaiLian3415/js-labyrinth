@@ -1522,6 +1522,293 @@ async function entriesFromDrop(dt) {
   return out;
 }
 
+// ---------- 标识符扫描（供「不混淆项」挑选器用）----------
+//
+// 不用解析器：src/ast/parser.js 在 build 的 GATED_PREFIXES 里，受保护、不下发浏览器。
+// 把它加进公开白名单等于把 63 KB 解析器发给客户端，会直接毁掉「核心不在产物里」这条
+// 保护（部署形态的核心压根不下发，正是靠这条）。所以界面侧自建词法扫描。
+//
+// 类别只是**界面便利**：引擎侧 excludedIdentifiers 在 mangle / objectKeys /
+// renameProperties 三处都是全名等值比较，所以类别标错不会导致排除错——最坏是这个名字
+// 被列在错误的那一栏。
+
+const SCAN_KINDS = ['func', 'class', 'param', 'prop', 'var'];
+
+const ID_START = /[A-Za-z_$ -￿]/;
+const ID_PART = /[A-Za-z0-9_$ -￿]/;
+
+const SCAN_KEYWORDS = new Set(('break case catch class const continue debugger default delete do else export extends '
+  + 'finally for function if import in instanceof let new return super switch this throw try typeof var void '
+  + 'while with yield static async await enum null true false of get set arguments').split(' '));
+
+const SCAN_GLOBALS = new Set(['Array', 'Object', 'String', 'Number', 'Boolean', 'Math', 'JSON', 'Date', 'RegExp',
+  'Error', 'TypeError', 'RangeError', 'Map', 'Set', 'WeakMap', 'WeakSet', 'Promise', 'Symbol', 'Proxy',
+  'Reflect', 'BigInt', 'console', 'document', 'window', 'globalThis', 'process', 'require', 'module',
+  'exports', 'global', 'undefined', 'NaN', 'Infinity', 'parseInt', 'parseFloat', 'isNaN', 'isFinite',
+  'encodeURIComponent', 'decodeURIComponent', 'setTimeout', 'setInterval', 'clearTimeout', 'clearInterval',
+  'fetch', 'Buffer', 'WebAssembly', 'Int8Array', 'Uint8Array', 'Int32Array', 'Uint32Array', 'Float32Array',
+  'Float64Array', 'ArrayBuffer', 'DataView', 'URL', 'URLSearchParams', 'TextEncoder', 'TextDecoder', 'Intl',
+  'queueMicrotask', 'structuredClone', 'crypto', 'performance', 'navigator', 'location', 'history',
+  'localStorage', 'sessionStorage', 'eval', 'Function']);
+
+/**
+ * 扫出源码里出现的标识符，按上下文推断类别。
+ * @param {string} code 源码
+ * @returns {{func:string[],class:string[],param:string[],prop:string[],var:string[]}}
+ */
+function scanIdentifiers(code) {
+  const found = new Map();
+  const add = (name, kind) => {
+    if (!name || SCAN_KEYWORDS.has(name) || SCAN_GLOBALS.has(name)) return;
+    let s = found.get(name);
+    if (!s) { s = new Set(); found.set(name, s); }
+    s.add(kind);
+  };
+
+  const n = code.length;
+  let i = 0;
+  let afterDot = false;
+  let pendingWord = '';
+  let expectParams = false;
+  // 每层圆括号一个缓冲：先按常规推断暂存，等这层收尾才知道是不是形参表
+  const levels = [{ items: [], isParams: false }];
+  const top = () => levels[levels.length - 1];
+  const isSpace = (c) => c === ' ' || c === '\t' || c === '\n' || c === '\r';
+
+  while (i < n) {
+    const c = code[i];
+
+    if (c === '/' && code[i + 1] === '/') { while (i < n && code[i] !== '\n') i++; continue; }
+    if (c === '/' && code[i + 1] === '*') {
+      i += 2;
+      while (i < n && !(code[i] === '*' && code[i + 1] === '/')) i++;
+      i += 2; continue;
+    }
+
+    if (c === '"' || c === "'" || c === '`') {
+      const q = c; const start = i;
+      i++;
+      while (i < n) {
+        if (code[i] === '\\') { i += 2; continue; }
+        if (code[i] === q) { i++; break; }
+        if (q !== '`' && code[i] === '\n') break;
+        i++;
+      }
+      // 对象字面量的字符串键：'strKey': 1
+      let j = i;
+      while (j < n && isSpace(code[j])) j++;
+      if (code[j] === ':') add(code.slice(start + 1, i - 1), 'prop');
+      afterDot = false; pendingWord = '';
+      continue;
+    }
+
+    if (ID_START.test(c)) {
+      let j = i + 1;
+      while (j < n && ID_PART.test(code[j])) j++;
+      const w = code.slice(i, j);
+      if (w === 'function' || w === 'class' || w === 'async') {
+        pendingWord = w; expectParams = true;
+      } else if (w === 'get' || w === 'set') {
+        pendingWord = 'prop';            // 访问器：get val() 的 val 是属性名
+      } else if (afterDot) {
+        top().items.push({ name: w, kind: 'prop' });
+      } else if (pendingWord) {
+        top().items.push({ name: w, kind: pendingWord === 'class' ? 'class' : (pendingWord === 'prop' ? 'prop' : 'func') });
+        pendingWord = '';
+        expectParams = true;             // 名字之后紧跟的 '(' 是形参表
+      } else {
+        top().items.push({ name: w, kind: 'var' });
+      }
+      afterDot = false;
+      i = j;
+      continue;
+    }
+
+    if (c === '.') { afterDot = true; pendingWord = ''; i++; continue; }
+
+    if (c === '(') {
+      levels.push({ items: [], isParams: expectParams || pendingWord !== '' });
+      expectParams = false; afterDot = false; i++;
+      continue;
+    }
+
+    if (c === ')') {
+      const lv = levels.length > 1 ? levels.pop() : levels[0];
+      // 箭头函数：')' 之后是 '=>'，这层即便没被标记成形参表也要按形参收
+      let j = i + 1;
+      while (j < n && isSpace(code[j])) j++;
+      if (code[j] === '=' && code[j + 1] === '>') lv.isParams = true;
+      for (const it of lv.items) add(it.name, (lv.isParams && it.kind === 'var') ? 'param' : it.kind);
+      afterDot = false; i++;
+      continue;
+    }
+
+    if (c === '{' || c === '[' || c === ';' || c === ',') pendingWord = '';
+    if (!isSpace(c)) { afterDot = false; if (c !== '(') pendingWord = ''; }
+    i++;
+  }
+  // 未闭合的括号（源码有语法错误时）：把残留条目按 var 收掉，别丢
+  for (const lv of levels) for (const it of lv.items) add(it.name, it.kind);
+
+  // 同名多身份（同名形参又当变量用）归到**最具体**的一类，免得散在几栏、勾选打架
+  const order = ['class', 'func', 'param', 'prop', 'var'];
+  const out = {};
+  for (const k of SCAN_KINDS) out[k] = [];
+  for (const [nm, kinds] of found) {
+    let best = 'var';
+    for (const k of order) if (kinds.has(k)) { best = k; break; }
+    out[best].push(nm);
+  }
+  for (const k of SCAN_KINDS) out[k].sort();
+  return out;
+}
+
+// ---------- 不混淆项挑选器 ----------
+
+/** 挑选器的临时状态：本次打开时的扫描结果与勾选集。 */
+let exclScan = null;
+let exclPicked = new Set();
+
+/** 从当前名单里读出已选项（逗号分隔的字面名）。 */
+function exclCurrent() {
+  const v = state.touched.get('excludedIdentifiers');
+  if (v === undefined || v === null) return [];
+  return String(v).split(',').map((s) => s.trim()).filter(Boolean);
+}
+
+/** 类别 → 文案键。 */
+const EXCL_KIND_KEY = {
+  func: 'guiExclKindFunc', class: 'guiExclKindClass',
+  param: 'guiExclKindParam', prop: 'guiExclKindProp', var: 'guiExclKindVar',
+};
+
+function renderExclPicker() {
+  const host = els.exclCols;
+  host.textContent = '';
+  const q = els.exclSearch.value.trim();
+  const lower = q.toLowerCase();
+  let shown = 0;
+  let pickedVisible = 0;
+
+  for (const kind of SCAN_KINDS) {
+    const all = (exclScan && exclScan[kind]) || [];
+    const list = lower ? all.filter((n) => n.toLowerCase().includes(lower)) : all;
+    const group = document.createElement('section');
+    group.className = 'excl-group';
+    const h = document.createElement('h3');
+    h.textContent = t(EXCL_KIND_KEY[kind]);
+    const em = document.createElement('em');
+    // 有筛选时同时给出「筛选后 / 总数」，否则只给总数
+    em.textContent = lower ? (list.length + ' / ' + all.length) : String(all.length);
+    h.appendChild(em);
+    group.appendChild(h);
+
+    if (!list.length) {
+      const p = document.createElement('div');
+      p.className = 'excl-empty';
+      p.textContent = t('guiExclNone');
+      group.appendChild(p);
+    } else {
+      const ul = document.createElement('ul');
+      for (const name of list) {
+        shown++;
+        const li = document.createElement('li');
+        const cb = document.createElement('input');
+        cb.type = 'checkbox';
+        cb.checked = exclPicked.has(name);
+        cb.dataset.exclName = name;
+        cb.addEventListener('change', () => {
+          if (cb.checked) exclPicked.add(name); else exclPicked.delete(name);
+          updateExclCount();
+        });
+        const sp = document.createElement('span');
+        sp.textContent = name;
+        sp.title = name;
+        li.append(cb, sp);
+        ul.appendChild(li);
+        if (cb.checked) pickedVisible++;
+      }
+      group.appendChild(ul);
+    }
+    host.appendChild(group);
+  }
+  els.exclCount.textContent = t('guiExclCount', { shown, picked: exclPicked.size });
+  return { shown, pickedVisible };
+}
+
+function updateExclCount() {
+  els.exclCount.textContent = t('guiExclCount', { shown: exclVisibleCount(), picked: exclPicked.size });
+}
+function exclVisibleCount() {
+  const q = els.exclSearch.value.trim().toLowerCase();
+  let n = 0;
+  for (const kind of SCAN_KINDS) {
+    for (const name of (exclScan && exclScan[kind]) || []) {
+      if (!q || name.toLowerCase().includes(q)) n++;
+    }
+  }
+  return n;
+}
+
+/** 取当前输入的源码。多个文件时用当前选中那个，与运行/复制的口径一致。 */
+function exclSource() {
+  const f = state.files[state.active];
+  if (f) return f.code;
+  return els.input.value;
+}
+
+function openExclPicker() {
+  const code = exclSource();
+  if (!code || !code.trim()) {
+    setStatus(t('guiExclNoInput'), 'warn');
+    return;
+  }
+  exclScan = scanIdentifiers(code);
+  exclPicked = new Set(exclCurrent());
+  els.exclSearch.value = '';
+  renderExclPicker();
+  els.exclModal.hidden = false;
+  els.exclSearch.focus();
+}
+
+function closeExclPicker() {
+  els.exclModal.hidden = true;
+}
+
+/**
+ * 把勾选写进 excludedIdentifiers。
+ *
+ * 只在**值真的变了**时才 mark —— 否则点开弹窗再确定也会把这一项标成"用户改过"，
+ * 于是它在选项栏里显示为 dirty，导出配置时也会带上，看起来像用户动过它。
+ * 写法上刻意**排序后再写**：扫描结果本身是排序的，集合迭代序跟随插入序，
+ * 不排序的话同一个选择在不同构建里会产出不同顺序的字符串。
+ */
+function applyExclPicker() {
+  const names = [...exclPicked].sort();
+  if (!names.length) {
+    if (!state.touched.has('excludedIdentifiers')) { closeExclPicker(); return; }
+    state.touched.delete('excludedIdentifiers');
+    renderOptions();
+    saveState();
+    setStatus(t('guiExclCleared'), 'ok');
+    closeExclPicker();
+    return;
+  }
+  const value = names.join(',');
+  const before = state.touched.get('excludedIdentifiers');
+  if (before === value) { closeExclPicker(); return; }
+  mark('excludedIdentifiers', value, null);
+  closeExclPicker();
+  setStatus(t('guiExclApplied', { n: names.length }), 'ok');
+}
+
+/** 遍历当前可见（即符合筛选）的复选框。全选/清空都只作用于筛选结果。 */
+function forEachVisible(fn) {
+  for (const cb of els.exclCols.querySelectorAll('input[type="checkbox"]')) {
+    if (cb.dataset.exclName) fn(cb.dataset.exclName, cb);
+  }
+}
+
 // ---------- 持久化 ----------
 
 function saveState() {
@@ -1773,6 +2060,8 @@ async function init() {
     'statsBody', 'runBtn', 'copyBtn', 'dlBtn', 'zipBtn', 'drawer', 'apiBase', 'apiHint',
     'licKey', 'actBtn', 'deactBtn', 'licInfo', 'licDevice', 'licBadge', 'seed', 'presetHint',
     'layoutHint', 'layoutResetBtn', 'cfgImportBtn', 'cfgExportBtn', 'cfgFile',
+    'exclBtn', 'exclModal', 'exclBackdrop', 'exclClose', 'exclCols', 'exclSearch',
+    'exclCount', 'exclAll', 'exclNone', 'exclApply',
     'resetBtn', 'status', 'quota', 'ver', 'inputPane', 'outputPane', 'apiState', 'shortcutHint',
     'compareBtn', 'compareModal', 'compareClose', 'compareBackdrop']) {
     els[id] = $(id);
@@ -1883,6 +2172,27 @@ async function init() {
     els.cfgFile.value = '';
     if (f) await importConfig(f);
   });
+
+  // 不混淆项挑选器
+  els.exclBtn.addEventListener('click', openExclPicker);
+  els.exclClose.addEventListener('click', closeExclPicker);
+  els.exclBackdrop.addEventListener('click', closeExclPicker);
+  els.exclApply.addEventListener('click', applyExclPicker);
+  els.exclSearch.addEventListener('input', renderExclPicker);
+  els.exclAll.addEventListener('click', () => {
+    forEachVisible((name, cb) => { exclPicked.add(name); cb.checked = true; });
+    updateExclCount();
+  });
+  els.exclNone.addEventListener('click', () => {
+    forEachVisible((name, cb) => { exclPicked.delete(name); cb.checked = false; });
+    updateExclCount();
+  });
+  els.exclModal.addEventListener('keydown', (e) => {
+    // Esc 关闭，但别吞掉输入框里的 Esc 之外的行为
+    if (e.key === 'Escape') { e.stopPropagation(); closeExclPicker(); }
+  });
+  // 输入内容变了就重扫。文件被清掉/换掉时排除名单仍保留（那是用户显式选的，与当前
+  // 输入无关），但下次打开弹窗拿到的是新源码的清单。
 
   // 拖放
   for (const pane of [els.inputPane, els.outputPane]) {

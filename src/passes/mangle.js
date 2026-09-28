@@ -273,10 +273,16 @@ export default function mangle(ast, options, ctx) {
   const { traverse } = ctx;
   const used = new Set(ctx.usedNames);
   const prefix = options.identifierPrefix || '_0x';
-  // reservedNames：匹配的绑定名不改名（正则，供跨库 / 外部契约保留）
-  const reservedRe = (options.reservedNames || [])
-    .map((s) => { try { return new RegExp(s); } catch (e) { return null; } })
-    .filter(Boolean);
+  // 排除名单，两类来源并成一个匹配器：
+  //   reservedNames        —— 用户手写的**正则**文本（^__webpack 之类）
+  //   excludedIdentifiers  —— 界面「不混淆项」挑选器写进来的**精确名**
+  // 字面名必须逐个转义后当正则跑，否则名字里的 $ ^ . | 等字符会被当元字符解释，
+  // 轻则匹配不到（用户以为排除了其实没排除），重则误匹配一批别的标识符。
+  const reEsc = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const reservedRe = [
+    ...(options.reservedNames || []).map((s) => { try { return new RegExp(s); } catch (e) { return null; } }),
+    ...(options.excludedIdentifiers || []).map((s) => { try { return new RegExp('^' + reEsc(s) + '$'); } catch (e) { return null; } }),
+  ].filter(Boolean);
 
   // 预处理，先展开解构 pattern 里的 shorthand。parser 对简写会生成 key 与
   // value 指向同一节点的情况，直接改 value 名会连带污染属性名，先分离成

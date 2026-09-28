@@ -67,6 +67,11 @@ export default function objectKeys(ast, options, ctx) {
   let changed = 0;
   let dotToComputed = 0;
 
+  // 界面「不混淆项」挑选器写进来的精确名：这些属性名保持**字面形态**，不进字符串池、
+  // 也不转计算下标。与 mangle 那边是同一个名单（excludedIdentifiers），但作用对象不同：
+  // 那边管绑定名（变量/函数/参数），这边管属性名（键与点访问）。
+  const keepProps = new Set(options.excludedIdentifiers || []);
+
   traverse(ast, {
     // VM 解释器骨架跳过，判断见 vmBoundary.js。B[pc++]、S.pop() 这类成员访问
     // 属于取指和栈操作的结构代码，改成下标形态会破坏 wasm 的特征匹配。
@@ -92,6 +97,7 @@ export default function objectKeys(ast, options, ctx) {
         // 计算形态不触发原型设置。
         const name = n.key.name;
         if (name === '__proto__') return;
+        if (keepProps.has(name)) return;   // 挑选器排除了这个属性名，保持字面形态
         const expr = makeConcat(name);
         if (!expr) return;
         if (n.shorthand) {
@@ -117,6 +123,7 @@ export default function objectKeys(ast, options, ctx) {
         // 点访问转计算下标，顺带拆段
         if (!t.isIdentifier(n.property)) return;
         const name = n.property.name;
+        if (keepProps.has(name)) return;   // 同上：点访问也保持字面形态
         // obj.#x 这类私有名进不到这里，parser 给出的是 PrivateName 节点，
         // 这个分支只会遇到公共标识符
         const expr = makeConcat(name);

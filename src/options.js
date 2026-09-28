@@ -254,6 +254,11 @@ export default {
   // 不收费门控）。
   "reservedNames": [],
   "reservedStrings": [],
+  // excludedIdentifiers：**精确名**排除名单（界面「不混淆项」挑选器写这个）。
+  // 与 reservedNames 分开而不是合并，是为了不和用户手写的正则混在一起——那边是
+  // 正则文本、这边是字面名，语义不同，合并后无法判断某一条是"用户写的 ^__webpack"
+  // 还是"挑选器选的 myFunc"。引擎侧把两者并成一个匹配器，字面名逐个转义。
+  "excludedIdentifiers": [],
   "stringScatter": false,
   "antiLLM": false,
   "bannerText": ""

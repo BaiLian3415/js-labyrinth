@@ -158,7 +158,8 @@ function obfuscate(code, userOptions) {
   }
 
   // reservedNames / reservedStrings 归一化：字符串（逗号分隔）→ 正则文本数组
-  for (const key of ['reservedNames', 'reservedStrings']) {
+  // excludedIdentifiers 同形，但它装的是**字面名**不是正则，语义差别在 mangle 里处理。
+  for (const key of ['reservedNames', 'reservedStrings', 'excludedIdentifiers']) {
     if (typeof options[key] === 'string') {
       options[key] = options[key].split(',').map((s) => s.trim()).filter(Boolean);
     } else if (!Array.isArray(options[key])) {

@@ -175,6 +175,7 @@
           <span class="acts">
             <button id="cfgImportBtn" class="mini" type="button" data-i18n="guiCfgImport">导入配置</button>
             <button id="cfgExportBtn" class="mini" type="button" data-i18n="guiCfgExport">下载配置</button>
+            <button id="exclBtn" class="mini" type="button" data-i18n="guiExclOpen">不混淆项…</button>
             <button id="layoutResetBtn" class="mini" type="button" data-i18n="guiLayoutReset">恢复默认布局</button>
             <button id="resetBtn" class="mini" type="button" data-i18n="guiReset">恢复默认选项</button>
           </span>
@@ -263,6 +264,30 @@
         <tr><td data-i18n="cmpDim10">反自动化/反LLM</td><td class="win-js">9.0</td><td>3.0</td></tr>
       </tbody>
     </table>
+  </div>
+</div>
+
+<!-- 不混淆项挑选器（2026-09-29）。类别由词法扫描按上下文推断，只影响清单分栏，
+     真正的排除由引擎按精确名等值匹配完成，所以类别标错不会导致排除错。 -->
+<div class="excl-modal" id="exclModal" hidden role="dialog" aria-modal="true" aria-labelledby="exclTitle">
+  <div class="excl-backdrop" id="exclBackdrop"></div>
+  <div class="excl-card">
+    <div class="excl-head">
+      <h2 id="exclTitle" data-i18n="guiExclTitle">选择不混淆的标识符</h2>
+      <button id="exclClose" class="mini" type="button" data-i18n-aria="cmpAriaClose" aria-label="close">✕</button>
+    </div>
+    <p class="excl-note" data-i18n="guiExclNote">勾选的标识符在产物中保持原样，不改名、不拆进字符串池。类别由源码上下文推断，仅用于分栏；排除按精确名生效。</p>
+    <div class="excl-bar">
+      <input id="exclSearch" class="text" type="search" data-i18n-ph="guiExclSearchPh" placeholder="筛选名称…">
+      <span class="dim" id="exclCount"></span>
+    </div>
+    <div class="excl-cols" id="exclCols"></div>
+    <div class="excl-foot">
+      <button id="exclAll" class="mini" type="button" data-i18n="guiExclSelectAll">全选筛选结果</button>
+      <button id="exclNone" class="mini" type="button" data-i18n="guiExclSelectNone">清空</button>
+      <span class="spacer"></span>
+      <button id="exclApply" class="primary" type="button" data-i18n="guiExclApply">应用</button>
+    </div>
   </div>
 </div>
 

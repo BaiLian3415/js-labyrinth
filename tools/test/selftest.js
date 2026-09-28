@@ -3141,6 +3141,65 @@ section('WASM 档位（阶段一恢复）');
   }
   ok(tierBad === '', '各预设默认 wasm 档位正确且语义保持（low 关 / medium·high 旧档 / max 内核档）', tierBad);
 
+  // 排除混淆（excludedIdentifiers）：界面「不混淆项」挑选器写进来的**精确名**。
+  // 与 reservedNames（正则）分开：那边是正则文本、这边是字面名，引擎把两者并成同一个
+  // 匹配器，字面名逐个转义。类别（函数/类/参数/属性/变量）由界面扫描器推断，只影响
+  // 清单分栏——真正的排除在下面三处都是全名等值比较，所以类别标错不会导致排除错。
+  {
+    // 名字带正则元字符的更要紧：若不转义，$ ^ . | 会被当元字符解释，轻则匹配不到
+    // （用户以为排除了其实没排除），重则误匹配一批别的标识符。
+    const srcE = 'function keepFn(keepParam, dropParam) {\n'
+      + '  var keepVar = keepParam + 1;\n'
+      + '  var a = { keepProp: 7 };\n'
+      + '  return keepVar + dropParam + a.keepProp;\n'
+      + '}\n'
+      + 'process.stdout.write(String(keepFn(1,2))+"\\n");';
+    const wantE = runNode(srcE, 'excl-want.js').trim();
+
+    // 关闭时这些名字应当被改名
+    const offE = obfuscate(srcE, { preset: 'medium', seed: 5, shell: false });
+    const offCode = offE.code;
+    const offGone = ['keepFn', 'keepParam', 'keepVar'].every((n) => !offCode.includes(n));
+
+    // 开启后：标识符原样留存，属性名不进字符串池（保持字面形态）
+    const onE = obfuscate(srcE, {
+      preset: 'medium', seed: 5, shell: false,
+      excludedIdentifiers: 'keepFn,keepParam,keepVar,keepProp',
+    });
+    const onCode = onE.code;
+    const onKept = ['keepFn', 'keepParam', 'keepVar'].every((n) => onCode.includes(n));
+    const propKept = onCode.includes('keepProp');
+    // 没被勾的仍然要改名——不勾等于没选
+    const dropGone = !onCode.includes('dropParam');
+
+    ok(offGone, '未设置 excludedIdentifiers 时标识符被改名', JSON.stringify({ offGone }));
+    ok(onKept, 'excludedIdentifiers 让标识符在产物中保持原样', JSON.stringify({ onKept }));
+    ok(propKept, '被排除的属性名不进字符串池、保持字面形态', JSON.stringify({ propKept }));
+    ok(dropGone, '未被排除的标识符仍被改名', JSON.stringify({ dropGone }));
+    ok(runNode(onE.code, 'excl-on.js').trim() === wantE, '排除后语义不变');
+
+    // 精确匹配：排除 keepVar 不得连带排除 keepVariable
+    const srcP = 'function f(){var keepVariable = 1; return keepVariable;}\n'
+      + 'process.stdout.write(String(f())+"\\n");';
+    const wantP = runNode(srcP, 'excl-p-want.js').trim();
+    const rP = obfuscate(srcP, { preset: 'medium', seed: 5, shell: false, excludedIdentifiers: 'keepVar' });
+    ok(!rP.code.includes('keepVariable'), '排除 keepVar 不误伤 keepVariable（精确匹配）');
+    ok(runNode(rP.code, 'excl-p.js').trim() === wantP, '精确匹配用例语义不变');
+
+    // 与 reservedNames（正则）共存
+    const rB = obfuscate(srcE, {
+      preset: 'medium', seed: 5, shell: false,
+      reservedNames: '^drop', excludedIdentifiers: 'keepFn',
+    });
+    ok(rB.code.includes('keepFn') && rB.code.includes('dropParam'),
+      'excludedIdentifiers 与 reservedNames 正则同时生效');
+    ok(runNode(rB.code, 'excl-b.js').trim() === wantE, '两者共存时语义不变');
+
+    // mangle 关闭时排除名单不应有副作用
+    const rM = obfuscate(srcE, { preset: 'medium', seed: 5, shell: false, mangle: false, excludedIdentifiers: 'keepFn' });
+    ok(runNode(rM.code, 'excl-m.js').trim() === wantE, 'mangle 关闭时排除名单无副作用');
+  }
+
   // 回归：函数声明**嵌套在函数体内**。编译外层函数时，体内语句位置的函数声明会
   // 作为内层闭包被一并编译，随后被 toFunctionExpression 换成新的函数表达式节点。
   // 桥接体随 body 一起搬走了，__wasmVmMeta 也必须一起搬——否则 wasmvm 按 fIdx
