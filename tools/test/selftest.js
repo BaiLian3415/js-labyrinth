@@ -3156,16 +3156,19 @@ section('WASM 档位（阶段一恢复）');
       + 'process.stdout.write(String(keepFn(1,2))+"\\n");';
     const wantE = runNode(srcE, 'excl-want.js').trim();
 
+    // 关掉 vmProtection 再断言标识符留存：**这测的是排除功能本身**。开着 VM 时
+    // 函数体会被编译成字节码，体内局部绑定名不再受任何保留名单保护（含老选项
+    // reservedNames），那是另一回事，由下面一条断言单独钉住。混在一起断言的话，
+    // 这条失败到底是排除功能坏了还是 VM 吃掉了名字，看不出来。
+    const baseE = { preset: 'medium', seed: 5, shell: false, vmProtection: false };
+
     // 关闭时这些名字应当被改名
-    const offE = obfuscate(srcE, { preset: 'medium', seed: 5, shell: false });
+    const offE = obfuscate(srcE, baseE);
     const offCode = offE.code;
     const offGone = ['keepFn', 'keepParam', 'keepVar'].every((n) => !offCode.includes(n));
 
     // 开启后：标识符原样留存，属性名不进字符串池（保持字面形态）
-    const onE = obfuscate(srcE, {
-      preset: 'medium', seed: 5, shell: false,
-      excludedIdentifiers: 'keepFn,keepParam,keepVar,keepProp',
-    });
+    const onE = obfuscate(srcE, { ...baseE, excludedIdentifiers: 'keepFn,keepParam,keepVar,keepProp' });
     const onCode = onE.code;
     const onKept = ['keepFn', 'keepParam', 'keepVar'].every((n) => onCode.includes(n));
     const propKept = onCode.includes('keepProp');
@@ -3178,26 +3181,45 @@ section('WASM 档位（阶段一恢复）');
     ok(dropGone, '未被排除的标识符仍被改名', JSON.stringify({ dropGone }));
     ok(runNode(onE.code, 'excl-on.js').trim() === wantE, '排除后语义不变');
 
+    // 把 VM 这个边界钉住：函数体被编译成字节码后，体内局部绑定名不再被保留名单保护
+    // （老选项 reservedNames 同样如此，是引擎既有行为，不是本次引入的）。这条断言的
+    // 作用是让边界可见——哪天 VM 支持了保留名单，这里会失败并提醒更新文档与界面说明。
+    const vmOn = obfuscate(srcE, {
+      preset: 'medium', seed: 5, shell: false,
+      excludedIdentifiers: 'keepFn,keepParam,keepVar,keepProp',
+    });
+    const vmOld = obfuscate(srcE, { preset: 'medium', seed: 5, shell: false, reservedNames: '^keepVar$' });
+    ok(vmOn.code.includes('keepFn') && !vmOn.code.includes('keepVar')
+      && !vmOld.code.includes('keepVar'),
+      'VM 编译的函数体内局部名不受保留名单保护（既有边界，新旧选项一致）');
+
     // 精确匹配：排除 keepVar 不得连带排除 keepVariable
     const srcP = 'function f(){var keepVariable = 1; return keepVariable;}\n'
       + 'process.stdout.write(String(f())+"\\n");';
     const wantP = runNode(srcP, 'excl-p-want.js').trim();
-    const rP = obfuscate(srcP, { preset: 'medium', seed: 5, shell: false, excludedIdentifiers: 'keepVar' });
+    const rP = obfuscate(srcP, { ...baseE, excludedIdentifiers: 'keepVar' });
     ok(!rP.code.includes('keepVariable'), '排除 keepVar 不误伤 keepVariable（精确匹配）');
     ok(runNode(rP.code, 'excl-p.js').trim() === wantP, '精确匹配用例语义不变');
 
     // 与 reservedNames（正则）共存
     const rB = obfuscate(srcE, {
-      preset: 'medium', seed: 5, shell: false,
-      reservedNames: '^drop', excludedIdentifiers: 'keepFn',
+      ...baseE, reservedNames: '^drop', excludedIdentifiers: 'keepFn',
     });
     ok(rB.code.includes('keepFn') && rB.code.includes('dropParam'),
       'excludedIdentifiers 与 reservedNames 正则同时生效');
     ok(runNode(rB.code, 'excl-b.js').trim() === wantE, '两者共存时语义不变');
 
     // mangle 关闭时排除名单不应有副作用
-    const rM = obfuscate(srcE, { preset: 'medium', seed: 5, shell: false, mangle: false, excludedIdentifiers: 'keepFn' });
+    const rM = obfuscate(srcE, { ...baseE, mangle: false, excludedIdentifiers: 'keepFn' });
     ok(runNode(rM.code, 'excl-m.js').trim() === wantE, 'mangle 关闭时排除名单无副作用');
+
+    // 默认档（low，界面出厂默认）不开 VM，排除必须真的生效——这是最常见的路径
+    const rLow = obfuscate(srcE, {
+      preset: 'low', seed: 5, shell: false, excludedIdentifiers: 'keepFn,keepParam,keepVar,keepProp',
+    });
+    ok(['keepFn', 'keepParam', 'keepVar'].every((n) => rLow.code.includes(n)),
+      'low 预设（界面默认）下排除生效');
+    ok(runNode(rLow.code, 'excl-low.js').trim() === wantE, 'low 预设下排除后语义不变');
   }
 
   // 回归：函数声明**嵌套在函数体内**。编译外层函数时，体内语句位置的函数声明会
