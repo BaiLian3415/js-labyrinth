@@ -519,6 +519,11 @@ function enableReorder(container, itemSel, opts) {
   function lift() {
     const el = drag.el;
     const r = drag.rect0;
+    // CSS 的 user-select:none 是主防线（见 styles.css 的说明：pointerdown 上不能调
+    // preventDefault，会吞掉控件的 click）。这里再清一次选区兜底——个别浏览器在
+    // pointerdown 与首个 pointermove 之间就已经开始选中了，光靠 CSS 来不及。
+    const sel = window.getSelection && window.getSelection();
+    if (sel && sel.removeAllRanges) sel.removeAllRanges();
     const ph = document.createElement('div');
     ph.className = 'reorder-ph';
     ph.style.width = r.width + 'px';

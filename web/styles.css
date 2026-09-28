@@ -447,6 +447,20 @@ html.light .pane { box-shadow: var(--shadow-pane), inset 0 1px 0 rgba(255, 255, 
    莫名消失、也不跟着手实时重绘"。这个标记由 enableReorder 打上（见 app.js）。
 
    过渡只给非拖动块（:not(.dragging)）：被拖的那块必须 1:1 跟手，加过渡会粘手。 */
+/* 拖动把手本身禁止选中：这是抑制选中的**正路**。pointermove 上的 preventDefault()
+   挡不住——浏览器的选中逻辑跑在 mouse 事件上；而 pointerdown 上调 preventDefault()
+   又会连带吞掉容器里控件的 click（开关、下拉都在标题行附近）。所以走 CSS。 */
+.opt-card-head, .pane-head {
+  user-select: none;
+  -webkit-user-select: none;
+}
+/* 拖动进行中：指针会横扫过选项行，若沿途文字可选，一次拖动就会把一片文字刷成选中态，
+   拖完还得再点一下空白处取消。整棵子树禁选最省事。 */
+.reordering, .reordering * {
+  user-select: none !important;
+  -webkit-user-select: none !important;
+}
+
 .reordering > * { animation: none !important; }
 .reordering > *:not(.dragging) { transition: transform var(--dur-mid) var(--ease-out); }
 
