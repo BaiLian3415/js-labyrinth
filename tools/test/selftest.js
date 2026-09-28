@@ -45,6 +45,7 @@ import optionsMeta from '../../src/options-meta.js';
 import pipeline from '../../src/pipeline.js';
 import licenseWeb from '../../src/license-web.js';
 import platform from '../../src/platform.js';
+import hostLimits from '../../src/host-limits.js';
 import i18n from '../../src/i18n.js';
 import makeZip from '../../src/utils/zip.js';
 import hash from '../../src/utils/hash.js';
@@ -1850,6 +1851,66 @@ section('VM 保护与用户标识符冲突');
 
 // ---------------------------------------------------------------- P3：分发表密文化
 
+section('P3：动态操作码（vmDynOpcodes）· 链值驱动轮换');
+{
+  // 轮换量由**前一字的明文**驱动（2026-09-28）。解码端从 nCHAIN 算，编码端必须与
+  // 它逐位一致；一旦不一致，字节码解成垃圾——而且通常不报错，是"能跑、结果错"。
+  // 所以这里逐形态比对产物执行结果，而不是只看能不能构建。
+  //
+  // 输出必须走 process.stdout.write：**不能用 console.log**——max 预设的 consoleStub
+  // 刻意清空 console.*，用它取输出会得到空串，从而把正确产物判成失败。
+  const mk = (body) => body + '\nprocess.stdout.write(String(res)+"\\n");';
+  const forms = [
+    ['顺序循环', 'function f(a){var t=0;for(var i=0;i<a;i++)t+=i;return t;}var res=f(12);'],
+    ['分支混合', 'function f(a){var t=0;for(var i=0;i<a;i++){if(i%3)t+=i;else if(i%5)t-=i;else t++;}return t;}var res=f(17);'],
+    ['while + break/continue', 'function f(a){var t=0,i=0;while(i<a){i++;if(i%4===0)continue;if(i>18)break;t+=i;}return t;}var res=f(26);'],
+    ['switch 密度分支', 'function f(a){var s=0;for(var i=0;i<a;i++){switch(i%4){case 0:s+=1;break;case 1:s+=10;break;case 2:s+=100;break;default:s-=1;}}return s;}var res=f(16);'],
+    ['递归（深调用链）', 'function f(n){return n<2?n:f(n-1)+f(n-2);}var res=f(14);'],
+    // 带标签的 continue：环上依赖最容易在这里出问题
+    ['多跳转（环风险）', 'function f(a){var t=0,i=0;outer:while(i<a){i++;if(i%2)continue outer;if(i>9)break outer;t+=i;}return t;}var res=f(15);'],
+    ['异常路径', 'function f(a){try{if(a>3)throw new Error("e");return a*2;}catch(e){return -1;}finally{}}var res=f(5)+","+f(2);'],
+    ['闭包捕获可变状态', 'function mk(n){return function(x){return x+n;};}function f(a){var g=mk(a),t=0;for(var i=0;i<6;i++)t+=g(i);return t;}var res=f(8);'],
+  ];
+  let bad = '';
+  let dynOn = 0;
+  let offOk = 0;
+  for (const [name, body] of forms) {
+    const src = mk(body);
+    const want = runNode(src, 'dyn-want.js').trim();
+    if (want.startsWith('ERR') || want === '') { bad = name + ' 基线跑不通'; break; }
+    for (const dyn of [true, false]) {
+      for (const seed of [1, 5, 20260928]) {
+        let got;
+        try {
+          const r = obfuscate(src, {
+            preset: 'high', seed, shell: false, integrityCheck: false,
+            vmDynOpcodes: dyn, wasm: false, wasmInterpreter: false,
+          });
+          got = runNode(r.code, 'dyn-' + dyn + '-' + seed + '.js').trim();
+          if (dyn) {
+            const s = r.stats.find((x) => x.pass === 'vm');
+            if (s && s.result && s.result.dyn && s.result.dyn.applied) dynOn++;
+          }
+        } catch (e) { got = 'BUILD:' + String(e && e.message).slice(0, 60); }
+        if (got !== want) {
+          bad = name + ' dyn=' + dyn + ' seed=' + seed + ' 期望 ' + JSON.stringify(want)
+            + ' 实得 ' + JSON.stringify(got);
+          break;
+        }
+        if (!dyn) offOk++;
+      }
+      if (bad) break;
+    }
+    if (bad) break;
+  }
+  ok(bad === '', '链值驱动轮换在各形态/种子下语义正确（开与关都验）', bad);
+  ok(dynOn > 0, 'vmDynOpcodes 开启时确实生效（dyn.applied）', 'applied 次数=' + dynOn);
+  // 守护一个真实踩过的坑：opWordZ 与 opCanon 必须同开同关。曾经 opWordZ 无条件建，
+  // 而 opCanon 只在 dynOps 下填，于是 **dynOps=false（四个预设的默认值）** 时 opcode
+  // 字被不动点循环重算成 (undefined - rot) & mask 的垃圾，整条字节码报废。
+  ok(offOk > 0, '关闭 vmDynOpcodes（四个预设的默认）仍能正确构建并运行', '通过 ' + offOk + ' 次');
+}
+
 section('P3：分发表密文化（vmDispatchEnc）');
 {
   // 样例刻意只用一个 VM 函数并调用两次：P3-3 的「解码清零每次调用执行一遍」
@@ -2773,6 +2834,41 @@ process.stdout.write(a + '|' + b + '\\n');`;
 
 section('其他');
 {
+  // 成本估算（src/host-limits.js）。这三个函数直接决定**用户能上传多大**、以及
+  // 服务端回执预算够不够，所以要有断言——纯数字常量没人盯着，改错了要等线上
+  // 超时才发现。
+  {
+    const names = Object.keys(hostLimits.PRESET_COST);
+    let costBad = '';
+    for (const n of names) {
+      const c = hostLimits.costOf(n);
+      if (!(c.msPerKb > 0) || !(c.inflation >= 1)) costBad = n + ' 成本不合理 ' + JSON.stringify(c);
+    }
+    ok(costBad === '', '各预设成本档为正且膨胀比 ≥ 1', costBad);
+
+    // 认不出的预设必须回落到**当前表里最贵的一档**，不能写死 PRESET_COST.max。
+    // 2026-09-28 重算基线后最贵的已经不是 max（high 走旧 wasm 档，贵数倍），写死
+    // max 会让未知档位按最便宜的一档记账，与「失败要偏保守」完全相反。
+    const dearest = Math.max(...names.map((n) => hostLimits.costOf(n).msPerKb));
+    const fb = hostLimits.costOf('__no_such_preset__');
+    ok(fb.msPerKb === dearest, '未知预设回落到当前最贵的一档（不是写死 max）',
+      '回落 ' + fb.msPerKb + '，最贵 ' + dearest);
+    ok(hostLimits.costOf(undefined).msPerKb === dearest, 'undefined 预设同样回落到最贵档');
+
+    // 上传上限必须落在 [1 KiB, maxUploadBytes] 且对预设单调不增（越贵上限越小）
+    let capBad = '';
+    for (const n of names) {
+      const cap = hostLimits.presetInputCap(n);
+      if (!(cap >= 1024) || cap > hostLimits.HOST.maxUploadBytes) capBad = n + ' 上限 ' + cap;
+    }
+    ok(capBad === '', '各预设上传上限落在合理区间', capBad);
+
+    // 未知档位的上限不得比任何已知档位都大
+    const fbCap = hostLimits.presetInputCap('__no_such_preset__');
+    ok(fbCap <= Math.min(...names.map((n) => hostLimits.presetInputCap(n))),
+      '未知档位的上传上限不比任何已知档位宽松', '回落上限 ' + fbCap);
+  }
+
   // CLI 已随转向纯云端一并移除，help 文本不再存在；改为校验界面用到的文案可渲染。
   ok(typeof i18n.t('guiRun') === 'string' && i18n.t('guiRun').length > 0, '界面文案可渲染');
   const before = i18n.getLang();

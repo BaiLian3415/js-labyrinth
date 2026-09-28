@@ -1970,34 +1970,40 @@ function compileFunction(fn, ctx) {
   } else {
     opKinds.forEach((k, i) => opNums.set(k, slotOrder[i]));
   }
-  // 位置轮换量：rotAt(z) = ((z * DYN_P) ^ DYN_Q) & (N-1)。编译期按 opcode 字的字下标算，
-  // 运行期用同一个式子从取指游标还原（npc 取指后等于字下标 + 1）。两侧必须逐位一致，
-  // 所以两边都走 Math.imul 语义（运行期那侧由 rtlib.mulCall 落到原生 imul 等价实现）。
+  // ---- 轮换量：由「链值」驱动（2026-09-28 落地）----
   //
-  // ---- 为什么轮换量是「位置驱动」而不是「运行状态驱动」（2026-09-27 结论）----
+  // rot = ((前一字明文 * DYN_P) ^ DYN_Q) & (N-1)，z=0 时前一字不存在，取 CHAIN_SEED。
   //
-  // 想让它随运行状态演化，只有两条路，两条都被结构性挡住，记在这里免得重复推导：
+  // 为什么不用字下标当输入（那是 2026-09-27 之前的做法）：下标是整条字节码里的常量，
+  // 轮换量于是也是常量——同一位置在任何一次运行、任何一份产物里都解出同一个动作。
+  // 改成链值之后，轮换量随**前面那个字的实际明文**变化：改一个字节码字，后面所有
+  // opcode 的解读都会跟着变。
   //
-  // ① 由运行期掩码 MASK 驱动：rotStmts 每次调用入口会把整条 B 数组重新 XOR 一遍
-  //    （B[z] ^= MASK ^ nm），所以**解码出的明文是不变量**。若轮换量依赖 MASK，
-  //    第二次调用解出的规范编号就与构建期不同 → 字节码解成垃圾。要修就得在每次
-  //    入口把 opcode 字按新轮换量重写一遍，而「哪些字是 opcode 字」必须显式给出来
-  //    ——那就是操作码位置表（已评估否决：解密后在内存里是一张明文索引表）。
+  // ---- 另一条路：为什么不由运行期掩码 MASK 驱动 ----
   //
-  // ② 由链值驱动：rot = f(前一字明文)，解码端天然可算（取指用的 nCHAIN 就是它，
-  //    把轮换项写在加法左侧即可在 bAt() 更新 nCHAIN 之前读到旧值）。但编码端的
-  //    opcode 字会从「具体值」变成「计算值」，`wordAt` 需要第三态（今天 null 唯一
-  //    表示链值字，得靠 owner[z].slot === 0 区分）、`targetChainOf` 不能再直接读
-  //    words[tz-1]（会是 null），且必须进不动点迭代——因为链值字按定义就是跳转
-  //    指令的最后一个字，紧跟着下一条指令的 opcode 字，链值的每次变化都会级联到
-  //    下一个轮换量。
+  // 记在这里免得重复推导。rotStmts 每次调用入口会把整条 B 数组重新 XOR 一遍
+  // （B[z] ^= MASK ^ nm），所以**解码出的明文是不变量**。轮换量若依赖 MASK，第二
+  // 次调用解出的规范编号就与构建期不同 → 字节码解成垃圾。要修就得在每次入口把
+  // opcode 字按新轮换量重写一遍，而「哪些字是 opcode 字」必须显式给出来——那就是
+  // 操作码位置表（已评估否决：解密后在内存里就是一张明文索引表）。所以「随运行
+  // 状态演化」只能走链值这条，它不需要额外给出任何位置信息。
   //
-  // 也就是说：轮换量一旦要「随运行状态动」，要么引入位置表，要么把链值求解器从
-  // 「只解 null」改成「对 opcode 字也做不动点」。当前保持位置驱动——它在静态面上
-  // 已经达到「同一存储值在不同位置指向不同动作」的效果，而两条升级路径的代价都
-  // 是结构性的，不是随手一改。
+  // ---- 代价：opcode 字从「具体值」变成「计算值」----
+  //
+  // 位置驱动时 opcode 字直接算好落库；链值驱动时它依赖 words[z-1]，而那一字可能
+  // 本身是链值字或另一个 opcode 字，所以本字也得等求解器迭代。于是三处要改：
+  //   · null 这个占位符现在**同时**表示链值字与 opcode 字，得靠 opWordZ 区分；
+  //   · 不动点循环必须**每轮重算** opcode 字——只算 null 的话第一轮填进去之后它们
+  //     就成了"具体值"不再重算，而链值字一变，下游 opcode 全部陈旧；
+  //   · 环上更要紧：链值字按定义就是跳转指令的最后一个字，紧接着就是下一条指令的
+  //     opcode 字，所以链值每次变化都**级联**到下一个轮换量。
+  // 这三件都在下方 wordAt 与不动点循环里处理，另加一道收敛校验（没到不动点就宁可
+  // 构建失败，也不放一份"能跑但结果错"的产物出去）。
+  //
+  // （2026-09-27 那版结论里提到 targetChainOf 需要跟着改——实际那个函数是死代码，
+  //  只有定义没有调用，本次一并删掉了。）
   const rotMask = totalSlots - 1;
-  const rotAt = (z) => ((Math.imul(z, DYN_P) ^ DYN_Q) & rotMask);
+  const rotOf = (chain) => ((Math.imul(chain, DYN_P) ^ DYN_Q) & rotMask);
   if (dynOps && ctx.__vmDyn) { ctx.__vmDyn.applied = true; ctx.__vmDyn.space = totalSlots; }
   // 桶数随指令集规模扩展，桶内大致保持 24 项线性比对；无干扰项时沿用原公式。
   // P3 随机化补强：基数乘一个 1.0~1.4 的随机因子，桶数公式本身逐构建漂移，
@@ -2027,19 +2033,23 @@ function compileFunction(fn, ctx) {
   const CHAIN_SEED = krand(1, 0xfffffff) | 0;
   // 字布局：owner[z] = { instr, slot }（slot 0=opcode, 1/2=操作数, 3=链值字）
   const owner = [];
-  const words = []; // 明文字，null 是链值字占位，后面迭代填上
+  const words = []; // 明文字，null 是「待求值」占位（链值字与动态 opcode 字），后面迭代填上
+  const opCanon = []; // 仅动态操作码：字下标 -> 该字未轮换前的规范编号
   for (let i = 0; i < code.length; i++) {
     const e = code[i];
     const isJump = JUMP_KINDS.has(e.op);
     const w = opWordWidth(e);
     for (let s = 0; s < w; s++) owner.push({ instr: i, slot: s });
-    // 动态操作码：存进字节码的是「规范编号 − 本条指令 opcode 字下标的位置轮换量」，
-    // 运行期取指后按同一式子把轮换量加回来得到规范编号。所以同一个编号在不同位置
-    // 有不同的存储值，同一个存储值在不同位置指向不同动作——静态一张「字 → 语义」表
-    // 不再成立。pos[i] 就是本条指令 opcode 字的字下标。
-    words.push(dynOps
-      ? (opNums.get(e.op) - rotAt(pos[i])) & rotMask
-      : opNums.get(e.op));
+    // 动态操作码：存进字节码的是「规范编号 − rotOf(前一字明文)」。前一字是计算值，
+    // 所以本字也交给求解器算（推平成 null 占位，规范编号记进 opCanon）；位置驱动
+    // 时代这里是一行算完的定值。pos[i] 仍是本条指令 opcode 字的字下标，运行期不再
+    // 用它算轮换量，只用来定位取指。
+    if (dynOps) {
+      opCanon[words.length] = opNums.get(e.op);
+      words.push(null);
+    } else {
+      words.push(opNums.get(e.op));
+    }
     if (MACRO_KINDS.has(e.op)) {
       // 宏指令：n 个打包操作数逐字落流。宏的动作体自己按顺序取走它们，
       // 取指顺序与原来逐条执行时完全一致。
@@ -2068,21 +2078,40 @@ function compileFunction(fn, ctx) {
   for (let j = 0; j < junkN; j++) { owner.push({ instr: -1, slot: 0 }); words.push(randInt(0, 0xffff)); }
   // 指令 opcode 字下标
   const opZ = new Map();
+  // opWordZ 恒为 Set（不能是 null——下面的 wordAt 与不动点循环无条件调 .has，
+  // null 会抛 TypeError；而那个异常会被编译循环的 try/catch 吞掉，表现为"该函数
+  // 保持原样"，实际却是解释器运行时没发出来，自检只报出一堆未绑定引用）。
+  // **填充必须与 opCanon 同开同关**：一旦非空，不动点循环就把这些字当「计算值」
+  // 每轮重算，而 opCanon 仅在 dynOps 下才填。否则 dynOps=false（四个预设的默认值）
+  // 时 opcode 字会被重算成 (undefined - rot) & mask 的垃圾，整条字节码报废。
+  const opWordZ = new Set();
   for (let z = 0; z < words.length; z++) {
-    if (owner[z].instr >= 0 && owner[z].slot === 0) opZ.set(owner[z].instr, z);
+    if (owner[z].instr >= 0 && owner[z].slot === 0) {
+      opZ.set(owner[z].instr, z);
+      if (dynOps) opWordZ.add(z);
+    }
   }
-  // 目标链值取目标 opcode 字的前一字明文，z 为 0 时就是 CHAIN_SEED
-  const targetChainOf = (instrIdx) => {
-    const tz = opZ.get(instrIdx);
-    return tz === 0 ? CHAIN_SEED : words[tz - 1];
-  };
   // 链值字求解。链值字的明文等于所属跳转目标的链值，而目标 opcode 的前一字可能又是
   // 另一个跳转的链值字，所以要递归展开并记忆化。环上的依赖来自跳转目标互指，每个环上
   // 字的值最终由环外的锚定字决定，按值传播就能解出来。
+  //
+  // 动态操作码开启时 opcode 字也走这里：它的明文是「规范编号 − rotOf(前一字明文)」，
+  // 与链值字一样是**算出来的**。所以判断顺序上 opcode 字必须**先**认——第一轮迭代
+  // 之后 words[z] 已非 null，若按「非 null 即具体值」提前返回，它就再也不被重算；
+  // 而它依赖的前一字（多半是上一条指令末尾的链值字）后面还会变，一变它就陈旧。
   const memo = new Map(); // 字下标 -> 已求明文
   const solving = new Set(); // 递归栈（环检测）
   const wordAt = (z) => {
     if (memo.has(z)) return memo.get(z);
+    if (opWordZ.has(z)) {
+      if (solving.has(z)) return 0;
+      solving.add(z);
+      const prev = z === 0 ? CHAIN_SEED : wordAt(z - 1);
+      solving.delete(z);
+      const r = (opCanon[z] - rotOf(prev)) & rotMask;
+      memo.set(z, r);
+      return r;
+    }
     const v = words[z];
     if (v !== null) { memo.set(z, v); return v; }
     if (solving.has(z)) return 0; // 遇到环先以 0 暂定，等环外的值流入后再修正
@@ -2096,14 +2125,16 @@ function compileFunction(fn, ctx) {
     return prev;
   };
   // 环处理。环内字互相依赖时第一遍先以 0 暂定，第二遍用已定值重解，反复迭代到稳定。
-  // 环上字的真实值由环外第一个非环依赖链的锚定值传播而来。
+  // 环上字的真实值由环外第一个非环依赖链的锚定字传播而来。
   let round = 0;
   let progressed = true;
   while (progressed && round++ < words.length + 4) {
     progressed = false;
     memo.clear();
     for (let z = 0; z < words.length; z++) {
-      if (words[z] === null) {
+      // 判据是「opcode 字 **或** 待求值」，不是只判 null。opcode 字必须每轮重算：
+      // 它依赖的前一字可能在本轮稍后才被修正，只算一轮就会留下陈旧值。
+      if (opWordZ.has(z) || words[z] === null) {
         const v = wordAt(z);
         if (words[z] !== v) { words[z] = v; progressed = true; }
       } else {
@@ -2112,6 +2143,11 @@ function compileFunction(fn, ctx) {
     }
   }
   if (words.some((w) => w === null)) throw new Error(msg('vmChainSolveFailed'));
+  // 收敛校验。跑满轮数上限仍在变化 = 没到不动点：此时 words 已非 null，存的是上一轮
+  // 的中间值，而解码端按最终链值算出的规范编号会与构建期不一致——字节码解成垃圾，
+  // 而且**不报错**，属于那种能出包、能跑、结果错的坏产物。宁可构建失败。
+  // 只在动态操作码开启时校验：位置驱动没有这条额外依赖边，别给它新增失败面。
+  if (dynOps && progressed) throw new Error(msg('vmChainSolveFailed'));
   // 逐字求链值并生成密文。分块开启时密文多异或一项块密钥（P4）。
   const chainAt = new Array(words.length);
   const flat = [];
@@ -3380,17 +3416,20 @@ function compileFunction(fn, ctx) {
       t.blockStatement([t.throwStatement(t.newExpression(
         t.identifier('Error'), [t.stringLiteral(msg('vmKeyMismatch'))]))]))] : []),
     t.variableDeclaration('var', [
-      // 动态操作码：取指之后按本条指令 opcode 字的字下标算回位置轮换量并加回去，
+      // 动态操作码：取指之后按**前一字的明文**（也就是 nCHAIN）算回轮换量并加回去，
       // 还原成规范编号。桶映射、比对常数、直接寻址表下标全部按规范编号算，所以下面
-      // 五种分发形态一个字都不用改。取指后 npc = 字下标 + 1，减一就是字下标。
+      // 五种分发形态一个字都不用改。
+      //
+      // 轮换项必须写在加法**左侧**。JS 对 `+` 的求值顺序是先左后右，而 bAt() 是
+      // 「nCHN=…, nCHAIN=nCHN, …」的逗号序列：放右边它先求值，把 nCHAIN 推进到本字，
+      // 读到的就成了新链值而不是前一字的明文。加法可交换，和值不变，只是顺序要紧。
       t.variableDeclarator(t.identifier(_dispT), dynOps
         ? t.binaryExpression('&',
-            t.binaryExpression('+', bAt(),
+            t.binaryExpression('+',
               t.binaryExpression('^',
-                rtlib.mulCall(ctx,
-                  t.binaryExpression('-', t.identifier(npc), t.numericLiteral(1)),
-                  t.numericLiteral(DYN_P)),
-                t.numericLiteral(DYN_Q))),
+                rtlib.mulCall(ctx, t.identifier(nCHAIN), t.numericLiteral(DYN_P)),
+                t.numericLiteral(DYN_Q)),
+              bAt()),
             t.numericLiteral(rotMask))
         : bAt()),
     ]),
