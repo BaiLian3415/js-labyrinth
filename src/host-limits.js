@@ -52,28 +52,53 @@ export const HOST = {
 
 /**
  * 各预设的**实测成本**。数字来自本机 Node 24 的实测（`npm run bench` 可复现，
- * 即 `tools/test/bench.js`：同一份合成输入、同一个 seed、超过 3 s 的用例只测一次）：
+ * 即 `tools/test/bench.js`：同一份合成输入、同一个 seed、超过 3 s 的用例只测一次）。
  *
- *   预设     膨胀比      CPU
- *   low      3.7~3.9×    2.0~2.5 ms/KB
- *   medium   28×         20 ms/KB
- *   high     38×         18~63 ms/KB（抖动大，取上限）
- *   max      85~87×      141~166 ms/KB
+ * 2026-09-28 按 WASM 两档恢复默认后重测。与旧值的差异见下，取的是 **80 KB 档**：
+ *
+ *   预设     规模      耗时        ms/KB    膨胀
+ *   low     3/20/80 KB  19/62/219 ms   2.7    3.6×
+ *   medium  3/20/80 KB  0.2/3.2/10.9 s  136    41.5×
+ *   high    3/20/80 KB  1.8/7.0/26.8 s  335    147×
+ *   max     3/20/80 KB  1.3/1.9/3.8 s   48    28.9×
+ *
+ * **为什么取 80 KB 档而不是最坏值**：每 KB 成本随规模递减（固定开销被摊薄），
+ * 3 KB 档的 ms/KB 里有很大一块是与输入无关的固定开销（字符串池构建、名字表、
+ * 解释器运行时发射）。而下面 estimateCost/presetInputCap 用的都是**边际**模型
+ * （`cpu / msPerKb`），拿固定开销去算边际会把上限收得过紧。80 KB 档本身已经比
+ * 纯边际值略高（如 high 纯边际约 326、这里取 350），留了余量。
+ *
+ * **两个 wasm 档的成本是倒挂的**：high 走旧 wasm 档（数据搬进模块、原语外调），
+ * 实测比 max 的 wasm **内核**档贵约 7 倍，膨胀也高 5 倍。恢复 wasm 默认前 recorded
+ * 基线里没有这一项，所以 high/max 的旧值都偏得离谱。
  *
  * 取值一律向上取整（宁可保守）：估算只用来做预算与预检，真实耗时由运行时决定。
+ * 收紧 high/medium 的上限是**修正**——此前按旧值放行的输入本来就会撞 CPU 预算超时；
+ * 放宽 max 则是 wasm 内核档带来的真实提速。
  */
 export const PRESET_COST = {
   low: { msPerKb: 4, inflation: 4 },
-  medium: { msPerKb: 25, inflation: 30 },
-  high: { msPerKb: 70, inflation: 45 },
-  max: { msPerKb: 170, inflation: 90 },
+  medium: { msPerKb: 150, inflation: 45 },
+  high: { msPerKb: 350, inflation: 150 },
+  max: { msPerKb: 50, inflation: 30 },
 };
 
 const PRESET_NAMES = Object.keys(PRESETS);
 
+/**
+ * 认不出的预设用的兜底档：**当前表里最贵的那一档**，而不是写死 PRESET_COST.max。
+ *
+ * 这条不能想当然。2026-09-28 重算基线后最贵的已经不是 max 档——high 走旧 wasm 档，
+ * 实测比 max 的 wasm 内核档贵数倍（ms/KB 350 对 50）。写死 max 会让未知档位按
+ * **最便宜**的一档记账，与「失败要偏保守」完全相反。
+ */
+const FALLBACK_COST = Object.values(PRESET_COST).reduce(
+  (a, b) => (b.msPerKb > a.msPerKb ? b : a), PRESET_COST.low,
+);
+
 /** 取某个预设的成本档；认不出的预设按最贵的一档算（失败要偏保守）。 */
 export function costOf(preset) {
-  return PRESET_COST[String(preset || '').toLowerCase()] || PRESET_COST.max;
+  return PRESET_COST[String(preset || '').toLowerCase()] || FALLBACK_COST;
 }
 
 function intEnv(raw, fallback) {
