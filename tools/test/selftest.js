@@ -50,6 +50,10 @@ import i18n from '../../src/i18n.js';
 import makeZip from '../../src/utils/zip.js';
 import hash from '../../src/utils/hash.js';
 import secret from '../../src/license-secret.js';
+// 「不混淆项」挑选器的扫描器。app.js 依赖 DOM、Node 里 import 不了，所以扫描器
+// 单独放在 web/scan.js；这里断言的是分栏结果——它决定勾选项写进哪份名单，
+// 列错栏会让排除落空，属于行为契约而不是界面细节。
+import { scanIdentifiers } from '../../web/scan.js';
 
 // 测试专用签发密钥对。
 //
@@ -3141,10 +3145,11 @@ section('WASM 档位（阶段一恢复）');
   }
   ok(tierBad === '', '各预设默认 wasm 档位正确且语义保持（low 关 / medium·high 旧档 / max 内核档）', tierBad);
 
-  // 排除混淆（excludedIdentifiers）：界面「不混淆项」挑选器写进来的**精确名**。
-  // 与 reservedNames（正则）分开：那边是正则文本、这边是字面名，引擎把两者并成同一个
-  // 匹配器，字面名逐个转义。类别（函数/类/参数/属性/变量）由界面扫描器推断，只影响
-  // 清单分栏——真正的排除在下面三处都是全名等值比较，所以类别标错不会导致排除错。
+  // 排除混淆（excludedIdentifiers / excludedStrings）：界面「不混淆项」挑选器写进来的
+  // **精确名**。与 reservedNames / reservedStrings（正则）分开：那边是正则文本、这边是
+  // 字面名，引擎把两类并成同一个匹配器，字面名逐个转义。类别（函数/类/参数/属性/变量/
+  // 字符串）由界面扫描器推断（web/scan.js），并决定勾选项写进哪份名单——列错栏会让
+  // 排除落空，所以扫描器的分栏结果也在下面按行为契约断言。
   {
     // 名字带正则元字符的更要紧：若不转义，$ ^ . | 会被当元字符解释，轻则匹配不到
     // （用户以为排除了其实没排除），重则误匹配一批别的标识符。
@@ -3277,6 +3282,118 @@ section('WASM 档位（阶段一恢复）');
       const rS = obfuscate(srcE, { ...baseE, reservedStrings: '^drop', excludedStrings: 'tagStr' });
       ok(runNode(rS.code, 'excls-b.js').trim() === wantE,
         'excludedStrings 与 reservedStrings 正则共存时语义不变');
+    }
+
+    // 字符串形态的属性名（'k': 1 / o["k"]）也必须受名单保护。objectKeys 排在
+    // stringArray 之前：键位上的字面量一旦被拆段，字符串名单再也匹配不到原串，
+    // 排除当场落空。两条来源分别覆盖——属性名名单（挑选器属性栏）与字符串名单
+    // （挑选器字符串栏），两类都要求保持字面形态。
+    {
+      const srcK = 'var o = { "keepQ": 7 };\nvar p = {}; p["keepC"] = o["keepQ"];\n'
+        + 'process.stdout.write(String(p["keepC"])+"\\n");';
+      const wantK = runNode(srcK, 'exclk-want.js').trim();
+
+      const rK1 = obfuscate(srcK, { ...baseE, excludedIdentifiers: 'keepQ,keepC' });
+      ok(rK1.code.includes('keepQ') && rK1.code.includes('keepC'),
+        '字符串键/计算访问按属性名名单保持字面');
+      ok(runNode(rK1.code, 'exclk1.js').trim() === wantK, '字符串键（属性名名单）语义不变');
+
+      const rK2 = obfuscate(srcK, { ...baseE, excludedStrings: 'keepQ,keepC' });
+      ok(rK2.code.includes('keepQ') && rK2.code.includes('keepC'),
+        '字符串键/计算访问按字符串名单保持字面（objectKeys 不先吃掉原串）');
+      ok(runNode(rK2.code, 'exclk2.js').trim() === wantK, '字符串键（字符串名单）语义不变');
+
+      // 没勾的字符串键仍要拆段：没有把整条路径关掉
+      const rK3 = obfuscate(srcK, baseE);
+      ok(!rK3.code.includes('keepQ') && !rK3.code.includes('keepC'),
+        '未排除时字符串键照常拆段（默认路径不受影响）');
+    }
+
+    // VM 的字符串表是码元密文表（stringsEnc）：被编译的函数里任何字符串都不以
+    // 明文出现。名单里只有标识符时，勾了字符串的函数照样被编译、串字面消失——
+    // high/max 两档实测。现在字符串命中名单同样不编译该函数（vm.js subtreeHitsKeep）。
+    {
+      const srcV2 = 'function calc(n){\n  return n > 1 ? "keepBranch" : "dropBranch";\n}\n'
+        + 'process.stdout.write(calc(2)+"\\n");';
+      const wantV2 = runNode(srcV2, 'exclv2-want.js').trim();
+      const vmBad2 = [];
+      for (const preset of ['low', 'medium', 'high', 'max']) {
+        const r = obfuscate(srcV2, {
+          preset, seed: 5, shell: false, excludedStrings: 'keepBranch',
+        });
+        if (!r.code.includes('keepBranch')) vmBad2.push(preset + ' 串丢失');
+        // low/medium 的收集概率不是 1，未排除的串可能留在明文里，只有 high/max
+        // （threshold 1）才能断言"没排除的照旧被收走"
+        if ((preset === 'high' || preset === 'max') && r.code.includes('dropBranch')) {
+          vmBad2.push(preset + ' 未排除的串没处理');
+        }
+        if (runNode(r.code, 'exclv2-' + preset + '.js').trim() !== wantV2) vmBad2.push(preset + ' 语义变了');
+        const vmStat = r.stats.find((s) => s.pass === 'vm');
+        const kept = vmStat && vmStat.result && vmStat.result.keptPlain;
+        if (preset !== 'low' && !(kept >= 1)) vmBad2.push(preset + ' keptPlain 未计数');
+      }
+      ok(vmBad2.length === 0, '四档下被排除的字符串都字面留存且不误伤', vmBad2.join('; '));
+
+      // 顶层包装（vmWrapTopLevel）同样要过名单：它把顶层语句搬进合成函数再编译，
+      // 漏了这条等于顶层字符串又被吞一次
+      const srcW = 'var s = "keepTop";\nprocess.stdout.write(s+"\\n");';
+      const wantW = runNode(srcW, 'exclw-want.js').trim();
+      const rW = obfuscate(srcW, {
+        preset: 'high', seed: 5, shell: false, vmWrapTopLevel: true,
+        excludedStrings: 'keepTop',
+      });
+      ok(rW.code.includes('keepTop'), 'vmWrapTopLevel 下被排除的字符串字面留存');
+      ok(runNode(rW.code, 'exclw.js').trim() === wantW, 'vmWrapTopLevel 排除用例语义不变');
+    }
+
+    // 外壳互锁：外壳把整个载荷加密，产物文本里看不到任何用户代码，与「被挑的
+    // 保持原样出现在产物中」直接冲突（medium/high/max 预设置 shell: true，实测
+    // 勾了也不可见）。名单非空就不套壳，统计与 warnings 里点名原因。
+    {
+      const srcH = 'function f(){ let keepLocal = 1; return keepLocal + "keepStr"; }\n'
+        + 'process.stdout.write(String(f(0))+"\\n");';
+      const wantH = runNode(srcH, 'exclh-want.js').trim();
+      const rH = obfuscate(srcH, { preset: 'medium', seed: 5, excludedIdentifiers: 'keepLocal' });
+      const shellStat = rH.stats.find((s) => s.pass === 'shell');
+      ok(shellStat && shellStat.result && shellStat.result.skipped === 'keep-list',
+        '名单非空时外壳层被跳过并记进统计', JSON.stringify(shellStat && shellStat.result));
+      ok(rH.warnings.length >= 1, '外壳跳过给出警示文案', JSON.stringify(rH.warnings));
+      ok(rH.code.includes('keepLocal'), '跳过外壳后排除项在产物里可见');
+      ok(runNode(rH.code, 'exclh.js').trim() === wantH, '跳过外壳后语义不变');
+
+      // 名单为空时外壳照常套上：互锁不能误伤默认路径
+      const rH2 = obfuscate(srcH, { preset: 'medium', seed: 5 });
+      const shellStat2 = rH2.stats.find((s) => s.pass === 'shell');
+      ok(shellStat2 && shellStat2.result && shellStat2.result.layers >= 1,
+        '名单为空时外壳照常生效');
+      ok(rH2.warnings.length === 0, '名单为空时没有多余警示');
+    }
+
+    // 挑选器扫描器的分栏。类别决定勾选项写进哪份名单（标识符 / 字符串），
+    // 列错栏会让排除落空，所以这些结果按行为契约断言。
+    {
+      const scanSrc = 'function fn(a, b){ var v = { keepKey: 1, "qKey": 2 }; return a+b+v.keepKey; }\n'
+        + 'const c = cond ? "ternStr" : "altStr";\n'
+        + 'switch (x) { case "caseStr": break; }\n'
+        + 'var o = {}; o.dotProp = 1; o["brkProp"] = 2; o?.optProp;\n'
+        + 'const arr = ["arrElem", 1];\n'
+        + 'const f2 = (p1) => p1; const f3 = p2 => p2; const f4 = async p3 => p3;\n'
+        + 'const obj = { method(){ return "inMethod"; }, get g(){ return 1; } };';
+      const s = scanIdentifiers(scanSrc);
+      const inCol = (col, name) => s[col].includes(name);
+      const scanBad = [];
+      if (!inCol('str', 'ternStr') || !inCol('str', 'altStr')) scanBad.push('三元里的字符串没进字符串栏');
+      if (!inCol('str', 'caseStr')) scanBad.push('case 标签字符串没进字符串栏');
+      if (!inCol('prop', 'keepKey') || !inCol('prop', 'qKey')) scanBad.push('对象键没进属性栏');
+      if (!inCol('prop', 'dotProp') || !inCol('prop', 'brkProp') || !inCol('prop', 'optProp')) {
+        scanBad.push('属性访问没进属性栏');
+      }
+      if (!inCol('str', 'arrElem')) scanBad.push('数组里的字符串没进字符串栏');
+      if (!inCol('param', 'a') || !inCol('param', 'p1') || !inCol('param', 'p2') || !inCol('param', 'p3')) {
+        scanBad.push('参数没进参数栏');
+      }
+      if (!inCol('func', 'fn')) scanBad.push('函数名没进函数栏');
+      ok(scanBad.length === 0, '挑选器分类与名单路由一致（字符串/属性/参数各就各位）', scanBad.join('; '));
     }
   }
 

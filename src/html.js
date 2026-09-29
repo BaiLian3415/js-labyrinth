@@ -256,6 +256,9 @@ function obfuscateDocument(html, options) {
   let stats = null;
   let originalSize = 0;
   let obfuscatedSize = 0;
+  // 逐块混淆产生的警示（如「名单非空→跳过外壳」）并回总结果：同一篇文档里每个
+  // 块都会给出同一条，去重后再交给调用方，不然界面里会连刷十几遍。
+  const blockWarnings = [];
   const res = processHtml(html, (js, idx, blockMeta) => {
     // HTML 模式逐块混淆：每个内联块都插一段文件头横幅会污染页面，且块间
     // 共享作用域下横幅守卫的自身源码核对拿不到整页文本，因此 HTML 模式跳过横幅；
@@ -263,6 +266,7 @@ function obfuscateDocument(html, options) {
     const opts = { ...options, seed: baseSeed + idx * 7919, bannerSkip: true };
     if (blockMeta.sharedNames.length) opts.selfCheck = false;
     const out = obfuscate(js, opts);
+    if (out.warnings && out.warnings.length) blockWarnings.push(...out.warnings);
     stats = out.stats;
     originalSize = out.originalSize;
     obfuscatedSize = out.obfuscatedSize;
@@ -271,7 +275,7 @@ function obfuscateDocument(html, options) {
   return {
     html: res.info.obfuscated === 0 ? null : res.html,
     info: res.info,
-    warnings: res.warnings,
+    warnings: [...new Set([...res.warnings, ...blockWarnings])],
     stats,
     originalSize,
     obfuscatedSize,

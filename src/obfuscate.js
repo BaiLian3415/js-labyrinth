@@ -215,6 +215,9 @@ function obfuscate(code, userOptions) {
   }
 
   const stats = [];
+  // 构建期警示（不阻断流程，但要传到界面/CLI）。目前只有一条：外壳与不混淆名单
+  // 互锁时点名跳过原因，避免用户以为名单没生效。
+  const warnings = [];
 
   const timePass = (name, fn) => {
     const t0 = platform.nowMs();
@@ -422,7 +425,21 @@ function obfuscate(code, userOptions) {
   const payloadCjs = !isModuleSrc && usesFreeCommonJs(ast, traverse);
 
   const tShell = platform.nowMs();
-  if (options.shell !== false) {
+  // ---- 不混淆名单与外壳层的互锁（2026-09-29）----
+  //
+  // 外壳把已完成的产物当**载荷字节流**加密（反馈密钥流 + 交织置换 + 乱序 base64），
+  // 产物文本里不再有任何用户代码——被排除的标识符/字符串即便在载荷内部一字未改，
+  // 静态上也看不到，与「不混淆项保持原样出现在产物中」这条承诺直接冲突。实测
+  // medium/high/max 三档（预设置 shell: true）下，勾了不混淆项的产物里连一个名
+  // 都找不到，用户看到的正是"勾了还是混淆了"。
+  //
+  // 方向选择与 domainLock↔wasm 那条互锁一致：**关外壳，保名单**。名单是用户显式
+  // 选定、要拿产物做核对/对接的输入，外壳只是防护层，关掉产物照样正确；反过来把
+  // 名单悄悄丢进密文里才是 fail-open。名单为空时一切照旧（产物逐字节不变）。
+  const keepRequested = ['excludedIdentifiers', 'excludedStrings', 'reservedNames', 'reservedStrings']
+    .some((k) => Array.isArray(options[k]) && options[k].length > 0);
+  const shellByKeepSkipped = keepRequested && options.shell !== false && !isModuleSrc;
+  if (options.shell !== false && !shellByKeepSkipped) {
     if (isModuleSrc) {
       stats.push({ pass: 'shell', result: { skipped: 'module' } });
     } else {
@@ -454,6 +471,10 @@ function obfuscate(code, userOptions) {
         result: { layers: sr.layers, cjs, form: options.shellForm === 'jsfuck' ? 'jsfuck' : 'classic', jsfuckChars: sr.jsfuckChars },
       });
     }
+  } else if (shellByKeepSkipped) {
+    // 跳过不是静默降级：统计里点名原因，warnings 里给一句人话，界面两处都看得到
+    stats.push({ pass: 'shell', result: { skipped: 'keep-list' } });
+    warnings.push(msg('warnShellSkipped'));
   }
   const shellMs = platform.nowMs() - tShell;
 
@@ -476,8 +497,9 @@ function obfuscate(code, userOptions) {
     const bw = bannerMod.wrapBanner(finalCode, {
       text: bn.text,
       cjs: payloadCjs,
-      // 只有套了外壳的载荷才用盐互锁；ESM 或显式 shell:false 时只做守卫
-      wrap: !isModuleSrc && options.shell !== false,
+      // 只有套了外壳的载荷才用盐互锁；ESM、显式 shell:false，或因不混淆名单
+      // 跳过外壳时只做守卫（没有外壳层密钥可互锁）
+      wrap: !isModuleSrc && options.shell !== false && !shellByKeepSkipped,
       // 横幅层是最外层，也是最显眼的一层：壳形式必须一路传到它这里，
       // 否则 jsfuck 产物只有内层是 JSFuck、外包一层 classic 引导
       shellForm: options.shellForm,
@@ -494,6 +516,7 @@ function obfuscate(code, userOptions) {
   const result = {
     code: finalCode,
     stats,
+    warnings,
     originalSize: code.length,
     obfuscatedSize: finalCode.length,
   };

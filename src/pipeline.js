@@ -77,7 +77,7 @@ export async function runJob(job) {
         obfuscatedSize: r.obfuscatedSize,
         html: false,
         info: null,
-        warnings: [],
+        warnings: r.warnings || [],
       };
     }
   } catch (e) {

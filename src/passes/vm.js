@@ -118,28 +118,64 @@ function collectAllIdentifiers(node, out) {
 }
 
 /**
- * 保留名单：用户点名要保留的标识符（字面名）+ 手写 reservedNames 正则。
- * 没有排除需求时返回 null，走原路径、零额外开销。
+ * 保留名单：用户点名要保留的标识符与字符串字面量（字面名）+ 手写
+ * reservedNames / reservedStrings 正则。没有排除需求时返回 null，走原路径、
+ * 零额外开销。
+ *
+ * 两类条目都要收：VM 的码元密文表（stringsEnc）装的是**函数体里的一切**——
+ * 绑定名的字面形态、字符串字面量的值、属性名。只收标识符的话，被排除的字符串
+ * 会随函数一起进密文表（high/max 档实测），和当初"排除名单在最强两档失效"
+ * 是同一个病。
  */
 function buildKeepNames(options) {
   const names = new Set();
+  const strs = new Set();
   const res = [];
+  const strRes = [];
   for (const n of options.excludedIdentifiers || []) {
     if (typeof n === 'string' && n) names.add(n);
+  }
+  // excludedStrings 在 stringArray 那边是**字面值**（逐个转义加锚点后匹配），
+  // 与这里的 Set 精确比较等价；AST 上的 StringLiteral.value 已经是解码值。
+  for (const n of options.excludedStrings || []) {
+    if (typeof n === 'string' && n) strs.add(n);
   }
   for (const src of options.reservedNames || []) {
     try { res.push(new RegExp(src)); } catch (e) { /* 非法正则：mangle 那边同样忽略 */ }
   }
-  if (!names.size && !res.length) return null;
-  return { names, res };
+  for (const src of options.reservedStrings || []) {
+    try { strRes.push(new RegExp(src)); } catch (e) { /* 非法正则：stringArray 那边同样忽略 */ }
+  }
+  if (!names.size && !strs.size && !res.length && !strRes.length) return null;
+  return { names, strs, res, strRes };
+}
+
+/** 一个字符串值是否命中保留名单（excludedStrings 精确值 + reservedStrings 正则）。 */
+function keepHitsString(keep, value) {
+  if (typeof value !== 'string') return false;
+  if (keep.strs.size && keep.strs.has(value)) return true;
+  for (const re of keep.strRes) if (re.test(value)) return true;
+  return false;
+}
+
+/** 模板串按 quasi 的 cooked 值判（与 stringArray 的取值口径一致）。 */
+function templateHit(keep, node) {
+  for (const q of node.quasis || []) {
+    const v = q.value && q.value.cooked !== undefined && q.value.cooked !== null
+      ? q.value.cooked
+      : (q.value && q.value.raw);
+    if (keepHitsString(keep, v)) return true;
+  }
+  return false;
 }
 
 /**
  * 子树里是否命中保留名单。命中就返回 true，可提前退出。
  *
  * 为什么要这个判断：VM 的字符串表是**码元密文表**（stringsEnc，见 litString/encString），
- * 标识符名作为字符串被加密进表、运行期由 MKS 指令解密。也就是说**被编译的函数里
- * 任何字符串都不会以明文出现**，用户点名保留的名字进了这张表就必然字面消失。
+ * 标识符名与字符串字面量都作为字符串被加密进表、运行期由 MKS 指令解密。也就是说
+ * **被编译的函数里任何字符串都不会以明文出现**，用户点名保留的名字（或字符串）
+ * 进了这张表就必然字面消失。
  *
  * 之前把这个现象记成「已知边界」是回避问题：high/max 档下几乎每个函数都会被编译，
  * 于是排除名单在最强两档对函数内局部变量基本失效。现在改为命中就不编译这个函数。
@@ -156,6 +192,8 @@ function subtreeHitsKeep(node, keep) {
     for (const re of keep.res) if (re.test(node.name)) return true;
     return false;
   }
+  if (node.type === 'StringLiteral') return keepHitsString(keep, node.value);
+  if (node.type === 'TemplateLiteral') return templateHit(keep, node);
   let hit = false;
   eachChild(node, (child) => { if (!hit && subtreeHitsKeep(child, keep)) hit = true; });
   return hit;
@@ -428,9 +466,9 @@ function canCompile(fn, allowAsync, keep) {
   if (!body || body.type !== 'BlockStatement') return false;
   if (!body.body.length) return false;
   if (hasDirectEval(body)) return false;
-  // 用户点名保留的标识符出现在函数体里，这个函数就**不编译**。含嵌套：外层编译会把
-  // 内层一并带走，所以要连整个子树一起判。代价是这些函数少一层 VM 保护，换来的是
-  // 名字真的留在产物里——这正是这个选项存在的意义。
+  // 用户点名保留的标识符或字符串出现在函数体里，这个函数就**不编译**。含嵌套：
+  // 外层编译会把内层一并带走，所以要连整个子树一起判。代价是这些函数少一层 VM
+  // 保护，换来的是名字/字符串真的留在产物里——这正是这个选项存在的意义。
   if (subtreeHitsKeep(body, keep)) return false;
   return body.body.every(regionOk);
 }
@@ -3901,9 +3939,9 @@ function vm(ast, options, ctx) {
   // 异步执行器（vmAsyncExecutor）。WASM 解释器内核档的解释器在模块里、没有 await
   // 能力，该档整体忽略本项（allowAsync 为 false，async 函数照旧不编译）。
   const allowAsync = !!options.vmAsyncExecutor && !ctx.__vmWasmShared;
-  // 用户点名要保留的标识符（+ 手写保留正则）。命中的函数一律不编译，见 canCompile。
-  // 为 null 时所有判定直接短路，不给默认路径添开销。挂一份到 ctx：嵌套函数的编译
-  // 入口（compileInnerFns）在别的作用域里，也要用同一份，不能各建一次。
+  // 用户点名要保留的标识符与字符串字面量（+ 手写保留正则）。命中的函数一律不编译，
+  // 见 canCompile。为 null 时所有判定直接短路，不给默认路径添开销。挂一份到 ctx：
+  // 嵌套函数的编译入口（compileInnerFns）在别的作用域里，也要用同一份，不能各建一次。
   const keepNames = buildKeepNames(options);
   ctx.__vmKeepNames = keepNames;
   const mode = options.vmMode === 'comment' || options.vmMode === 'only-string'

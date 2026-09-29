@@ -63,6 +63,9 @@ const STRINGS = {
     writeError: '无法写入输出文件: {msg}',
     written: '已写入: {path}',
     obfFail: '混淆失败: {msg}',
+    warnShellSkipped: '已跳过外壳层：不混淆名单非空时外壳会把被排除的名字一并加密，' +
+      '产物文本里就看不到明文了——两者不可兼得，按「名单优先」处理。' +
+      '要外壳保护请清空不混淆项（或直接关掉 shell）。',
     badIdentifierPrefix: 'identifierPrefix 非法："{p}" 不是合法标识符前缀' +
       '（不得以数字开头、不得含标识符字符集以外的符号）。' +
       '正确的十六进制风格前缀是 "_0x"（下划线开头），而非 "0x"。',
@@ -253,7 +256,7 @@ const STRINGS = {
     guiExclOpen: '选择…',
     guiExclTitle: '选择不混淆的标识符',
     guiExclKindStr: '字符串',
-    guiExclNote: '勾选的标识符在产物中保持原样：变量/函数/参数不改名，属性名不拆进字符串池。类别由源码上下文推断，仅用于分栏；排除按精确名生效。含这些名字的函数不参与 VM 编译（少一层保护，但名字一定留着）。',
+    guiExclNote: '勾选的标识符/字符串在产物中保持原样：变量/函数/参数不改名，属性名不拆进字符串池，字符串字面量不收集不编码。类别按源码上下文推断，并决定勾选项写进哪份名单（标识符或字符串），列错栏会让排除落空。含这些名字的函数不参与 VM 编译；名单非空时外壳层自动跳过——两处都是为了名字真的留在产物里。',
     guiExclSearchPh: '筛选名称…',
     guiExclKindFunc: '函数',
     guiExclKindClass: '类',
@@ -405,6 +408,9 @@ const STRINGS = {
     writeError: 'Cannot write output file: {msg}',
     written: 'Written: {path}',
     obfFail: 'Obfuscation failed: {msg}',
+    warnShellSkipped: 'Outer shell skipped: with a non-empty exclusion list the shell would ' +
+      'encrypt the excluded names too, leaving no plaintext in the artifact — the two cannot ' +
+      'both hold, so the list wins. Clear the exclusion list (or turn shell off) to keep the shell.',
     badIdentifierPrefix: 'invalid identifierPrefix: "{p}" is not a legal identifier prefix ' +
       '(must not start with a digit and must contain only identifier characters). ' +
       'The correct hex-style prefix is "_0x" (underscore first), not "0x".',
@@ -595,7 +601,7 @@ const STRINGS = {
     guiExclOpen: 'Select…',
     guiExclTitle: 'Identifiers to exclude from obfuscation',
     guiExclKindStr: 'Strings',
-    guiExclNote: 'Checked identifiers stay verbatim in the build: variables/functions/parameters are not renamed, and property names are not folded into the string pool. Categories are inferred from source context and only group the list; exclusion matches exact names. Functions containing these names are not VM-compiled (one less protection layer, but the name definitely stays).',
+    guiExclNote: 'Checked identifiers/strings stay verbatim in the build: variables/functions/parameters are not renamed, property names are not folded into the string pool, and string literals are not collected or encoded. Categories are inferred from source context and decide which list the pick goes to (identifiers or strings) — a mis-filed pick fails silently. Functions containing these names are not VM-compiled, and the outer shell is skipped while the list is non-empty, both so the names really stay in the artifact.',
     guiExclSearchPh: 'Filter names…',
     guiExclKindFunc: 'Functions',
     guiExclKindClass: 'Classes',
