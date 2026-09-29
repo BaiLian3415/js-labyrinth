@@ -259,6 +259,10 @@ export default {
   // 正则文本、这边是字面名，语义不同，合并后无法判断某一条是"用户写的 ^__webpack"
   // 还是"挑选器选的 myFunc"。引擎侧把两者并成一个匹配器，字面名逐个转义。
   "excludedIdentifiers": [],
+  // excludedStrings 与 excludedIdentifiers 同理：界面挑选器写进来的**字面量字符串**。
+  // 不复用 reservedStrings 是因为那边是正则文本、语义是**无锚点 test**——直接写字面量
+  // 会退化成子串匹配（"abc" 命中 "abcd"），而且挑选取值会覆盖用户手写的正则。
+  "excludedStrings": [],
   "stringScatter": false,
   "antiLLM": false,
   "bannerText": ""

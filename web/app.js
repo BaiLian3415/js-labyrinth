@@ -28,6 +28,7 @@
 // JSLB_GATE_CORE 机制已随迁 Vercel 整体删除，产物里既没有门控也没有 403 可言。
 // 真正的边界是"云端执行构建根本不下发核心"，由 verify-deploy.js 断言它们一律 404。
 import optionsMeta from './src/options-meta.js';
+import { VALUE_OPTIONS } from './src/options-meta.js';
 import optionsGate from './src/options-gate.js';
 import plan from './src/plan.js';
 import licenseWeb from './src/license-web.js';
@@ -344,6 +345,29 @@ function renderOption(opt) {
     cb.addEventListener('change', () => mark(opt.key, cb.checked, cb));
     row.append(cb, name);
     row.appendChild(infoBtn(tip));
+    return row;
+  }
+
+  // 「不混淆项」：标签 + 摘要 + 按钮。摘要必须显示**当前真实数量**，否则用户挑完
+  // 关掉弹窗回到选项栏，只剩一个按钮，看不出自己到底选过几个。
+  // 这一支必须在下面那句 row.appendChild(name) 之前返回：通用路径已经把 infoBtn
+  // 挂上去了，再走一遍就会多出一个重复的 ⓘ，而且控件被排到 ⓘ 后面。
+  if (opt.kind === 'picker') {
+    const ctl = document.createElement('span');
+    ctl.className = 'picker-ctl';
+    const sum = document.createElement('span');
+    sum.className = 'picker-sum';
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'mini';
+    btn.dataset.pickFor = opt.key;
+    btn.textContent = t('guiExclOpen');
+    btn.addEventListener('click', openExclPicker);
+    ctl.append(sum, btn);
+    row.append(name, ctl, infoBtn(tip));
+    row.classList.add('is-picker');
+    exclRow = { key: opt.key, sum };
+    syncExclRow();
     return row;
   }
 
@@ -1532,7 +1556,7 @@ async function entriesFromDrop(dt) {
 // renameProperties 三处都是全名等值比较，所以类别标错不会导致排除错——最坏是这个名字
 // 被列在错误的那一栏。
 
-const SCAN_KINDS = ['func', 'class', 'param', 'prop', 'var'];
+const SCAN_KINDS = ['func', 'class', 'param', 'prop', 'var', 'str'];
 
 const ID_START = /[A-Za-z_$ -￿]/;
 const ID_PART = /[A-Za-z0-9_$ -￿]/;
@@ -1552,9 +1576,9 @@ const SCAN_GLOBALS = new Set(['Array', 'Object', 'String', 'Number', 'Boolean', 
   'localStorage', 'sessionStorage', 'eval', 'Function']);
 
 /**
- * 扫出源码里出现的标识符，按上下文推断类别。
+ * 扫出源码里出现的标识符与字符串字面量，按上下文推断类别。
  * @param {string} code 源码
- * @returns {{func:string[],class:string[],param:string[],prop:string[],var:string[]}}
+ * @returns {{func:string[],class:string[],param:string[],prop:string[],var:string[],str:string[]}}
  */
 function scanIdentifiers(code) {
   const found = new Map();
@@ -1563,6 +1587,13 @@ function scanIdentifiers(code) {
     let s = found.get(name);
     if (!s) { s = new Set(); found.set(name, s); }
     s.add(kind);
+  };
+  // 字符串字面量单独收：它们写的是 reservedStrings 而不是 excludedIdentifiers，
+  // 而且不能用上面的 add —— 那边按标识符规则过滤关键字与宿主全局，对字符串不适用。
+  const strs = new Set();
+  const addStr = (v) => {
+    if (v.length === 0 || v.length > 80) return;   // 空的没意义，超长的清单 unusable
+    strs.add(v);
   };
 
   const n = code.length;
@@ -1588,16 +1619,26 @@ function scanIdentifiers(code) {
     if (c === '"' || c === "'" || c === '`') {
       const q = c; const start = i;
       i++;
+      let closed = false;
       while (i < n) {
         if (code[i] === '\\') { i += 2; continue; }
-        if (code[i] === q) { i++; break; }
+        if (code[i] === q) { i++; closed = true; break; }
         if (q !== '`' && code[i] === '\n') break;
         i++;
       }
-      // 对象字面量的字符串键：'strKey': 1
-      let j = i;
-      while (j < n && isSpace(code[j])) j++;
-      if (code[j] === ':') add(code.slice(start + 1, i - 1), 'prop');
+      if (closed) {
+        const raw = code.slice(start + 1, i - 1);
+        // 对象字面量的字符串键：'strKey': 1 —— 它是属性名，进 prop 栏
+        let j = i;
+        while (j < n && isSpace(code[j])) j++;
+        if (code[j] === ':') {
+          add(decodeStrLiteral(raw), 'prop');
+        } else if (q !== '`') {
+          // 纯字面量的字符串进 str 栏。带 ${} 的模板是动态拼的、整体不能作字面量保留，
+          // 不收——收进来只会让用户勾了却没效果。
+          addStr(decodeStrLiteral(raw));
+        }
+      }
       afterDot = false; pendingWord = '';
       continue;
     }
@@ -1654,6 +1695,7 @@ function scanIdentifiers(code) {
   const order = ['class', 'func', 'param', 'prop', 'var'];
   const out = {};
   for (const k of SCAN_KINDS) out[k] = [];
+  for (const nm of strs) out.str.push(nm);
   for (const [nm, kinds] of found) {
     let best = 'var';
     for (const k of order) if (kinds.has(k)) { best = k; break; }
@@ -1663,24 +1705,95 @@ function scanIdentifiers(code) {
   return out;
 }
 
+/**
+ * 把字符串字面量的源码文本解成真正的值。
+ *
+ * 必须解：引擎那边（stringArray）匹配的是**解码后的值**，界面上显示解不开的原文
+ * （'a\\nb' 里那个反斜杠）会让用户勾了一个永远匹配不上的东西。
+ * 认不出的转义原样保留——宁可保留原文，也不要猜错。
+ */
+function decodeStrLiteral(raw) {
+  if (raw.indexOf('\\') < 0) return raw;
+  let out = '';
+  for (let i = 0; i < raw.length; i++) {
+    const c = raw[i];
+    if (c !== '\\') { out += c; continue; }
+    const e = raw[++i];
+    switch (e) {
+      case 'n': out += '\n'; break;
+      case 't': out += '\t'; break;
+      case 'r': out += '\r'; break;
+      case 'b': out += '\b'; break;
+      case 'f': out += '\f'; break;
+      case 'v': out += '\v'; break;
+      case '0': out += '\0'; break;
+      case 'x': {
+        const h = raw.slice(i + 1, i + 3);
+        if (/^[0-9a-fA-F]{2}$/.test(h)) { out += String.fromCharCode(parseInt(h, 16)); i += 2; }
+        else out += '\\x';
+        break;
+      }
+      case 'u': {
+        if (raw[i + 1] === '{') {
+          const close = raw.indexOf('}', i + 2);
+          const h = close > 0 ? raw.slice(i + 2, close) : '';
+          if (/^[0-9a-fA-F]{1,6}$/.test(h)) { out += String.fromCodePoint(parseInt(h, 16)); i = close; }
+          else out += '\\u';
+        } else {
+          const h = raw.slice(i + 1, i + 5);
+          if (/^[0-9a-fA-F]{4}$/.test(h)) { out += String.fromCharCode(parseInt(h, 16)); i += 4; }
+          else out += '\\u';
+        }
+        break;
+      }
+      case undefined: out += '\\'; break;   // 末尾孤立的反斜杠
+      default: out += e; break;             // \\ \' \" \/ 等
+    }
+  }
+  return out;
+}
+
 // ---------- 不混淆项挑选器 ----------
+
+/** 选项栏里那一行的摘要节点，由 renderOption 的 picker 分支登记。 */
+let exclRow = null;
+
+/** 刷新「不混淆项」那一行的摘要：显示标识符数 + 字符串数。 */
+function syncExclRow() {
+  if (!exclRow || !exclRow.sum) return;
+  const ids = exclReadList('excludedIdentifiers').length;
+  const strs = exclReadList('excludedStrings').length;
+  const n = ids + strs;
+  exclRow.sum.textContent = n
+    ? t('guiExclSummary', { ids, strs })
+    : t('guiExclSummaryEmpty');
+  exclRow.sum.classList.toggle('is-set', n > 0);
+}
 
 /** 挑选器的临时状态：本次打开时的扫描结果与勾选集。 */
 let exclScan = null;
 let exclPicked = new Set();
+let exclStrPicked = new Set();
 
-/** 从当前名单里读出已选项（逗号分隔的字面名）。 */
-function exclCurrent() {
-  const v = state.touched.get('excludedIdentifiers');
+/** 读一个逗号分隔的字面名单（排序去重，保证同一选择每次写出的字符串一致）。 */
+function exclReadList(key) {
+  const v = state.touched.get(key);
   if (v === undefined || v === null) return [];
-  return String(v).split(',').map((s) => s.trim()).filter(Boolean);
+  return [...new Set(String(v).split(',').map((s) => s.trim()).filter(Boolean))].sort();
 }
+
+const exclCurrent = () => exclReadList('excludedIdentifiers');
+const exclStrCurrent = () => exclReadList('excludedStrings');
 
 /** 类别 → 文案键。 */
 const EXCL_KIND_KEY = {
   func: 'guiExclKindFunc', class: 'guiExclKindClass',
   param: 'guiExclKindParam', prop: 'guiExclKindProp', var: 'guiExclKindVar',
+  str: 'guiExclKindStr',
 };
+
+/** 该类别勾选集：字符串栏与标识符栏是两个选项，勾选态分开存。 */
+const exclSetOf = (kind) => (kind === 'str' ? exclStrPicked : exclPicked);
 
 function renderExclPicker() {
   const host = els.exclCols;
@@ -1693,6 +1806,7 @@ function renderExclPicker() {
   for (const kind of SCAN_KINDS) {
     const all = (exclScan && exclScan[kind]) || [];
     const list = lower ? all.filter((n) => n.toLowerCase().includes(lower)) : all;
+    const set = exclSetOf(kind);
     const group = document.createElement('section');
     group.className = 'excl-group';
     const h = document.createElement('h3');
@@ -1715,10 +1829,11 @@ function renderExclPicker() {
         const li = document.createElement('li');
         const cb = document.createElement('input');
         cb.type = 'checkbox';
-        cb.checked = exclPicked.has(name);
+        cb.checked = set.has(name);
         cb.dataset.exclName = name;
+        cb.dataset.exclKind = kind;
         cb.addEventListener('change', () => {
-          if (cb.checked) exclPicked.add(name); else exclPicked.delete(name);
+          if (cb.checked) set.add(name); else set.delete(name);
           updateExclCount();
         });
         const sp = document.createElement('span');
@@ -1732,12 +1847,15 @@ function renderExclPicker() {
     }
     host.appendChild(group);
   }
-  els.exclCount.textContent = t('guiExclCount', { shown, picked: exclPicked.size });
+  updateExclCount(shown);
   return { shown, pickedVisible };
 }
 
-function updateExclCount() {
-  els.exclCount.textContent = t('guiExclCount', { shown: exclVisibleCount(), picked: exclPicked.size });
+function updateExclCount(visible) {
+  els.exclCount.textContent = t('guiExclCount', {
+    shown: visible === undefined ? exclVisibleCount() : visible,
+    picked: exclPicked.size + exclStrPicked.size,
+  });
 }
 function exclVisibleCount() {
   const q = els.exclSearch.value.trim().toLowerCase();
@@ -1765,6 +1883,7 @@ function openExclPicker() {
   }
   exclScan = scanIdentifiers(code);
   exclPicked = new Set(exclCurrent());
+  exclStrPicked = new Set(exclStrCurrent());
   els.exclSearch.value = '';
   renderExclPicker();
   els.exclModal.hidden = false;
@@ -1776,36 +1895,42 @@ function closeExclPicker() {
 }
 
 /**
- * 把勾选写进 excludedIdentifiers。
+ * 把勾选写进 excludedIdentifiers（标识符）与 excludedStrings（字符串字面量）。
  *
  * 只在**值真的变了**时才 mark —— 否则点开弹窗再确定也会把这一项标成"用户改过"，
  * 于是它在选项栏里显示为 dirty，导出配置时也会带上，看起来像用户动过它。
- * 写法上刻意**排序后再写**：扫描结果本身是排序的，集合迭代序跟随插入序，
- * 不排序的话同一个选择在不同构建里会产出不同顺序的字符串。
+ * 写法上刻意**排序后再写**：集合迭代序跟随插入序，不排序的话同一个选择在不同
+ * 构建里会产出不同顺序的字符串。
  */
 function applyExclPicker() {
-  const names = [...exclPicked].sort();
-  if (!names.length) {
-    if (!state.touched.has('excludedIdentifiers')) { closeExclPicker(); return; }
-    state.touched.delete('excludedIdentifiers');
-    renderOptions();
-    saveState();
-    setStatus(t('guiExclCleared'), 'ok');
-    closeExclPicker();
-    return;
-  }
-  const value = names.join(',');
-  const before = state.touched.get('excludedIdentifiers');
-  if (before === value) { closeExclPicker(); return; }
-  mark('excludedIdentifiers', value, null);
+  const ids = [...exclPicked].sort();
+  const strs = [...exclStrPicked].sort();
+  const n = ids.length + strs.length;
+  let changed = false;
+
+  const put = (key, list) => {
+    if (!list.length) {
+      if (state.touched.has(key)) { state.touched.delete(key); changed = true; }
+      return;
+    }
+    const value = list.join(',');
+    if (state.touched.get(key) !== value) { mark(key, value, null); changed = true; }
+  };
+  put('excludedIdentifiers', ids);
+  put('excludedStrings', strs);
+
+  if (!changed) { closeExclPicker(); return; }
+  if (state.touched.size === 0) renderOptions();   // 两边都清空了才需要重画
+  saveState();
   closeExclPicker();
-  setStatus(t('guiExclApplied', { n: names.length }), 'ok');
+  setStatus(n ? t('guiExclApplied', { n }) : t('guiExclCleared'), n ? 'ok' : 'ok');
+  syncExclRow();
 }
 
 /** 遍历当前可见（即符合筛选）的复选框。全选/清空都只作用于筛选结果。 */
 function forEachVisible(fn) {
   for (const cb of els.exclCols.querySelectorAll('input[type="checkbox"]')) {
-    if (cb.dataset.exclName) fn(cb.dataset.exclName, cb);
+    if (cb.dataset.exclName) fn(cb.dataset.exclName, cb.dataset.exclKind || 'var', cb);
   }
 }
 
@@ -1897,6 +2022,7 @@ function coerceOption(kind, value) {
       return Math.min(1, Math.max(0, n));
     }
     case 'string':
+    case 'picker':   // picker 背后是逗号分隔的字面名单，与 string 同形
       return typeof value === 'string' ? value : String(value);
     default:
       return undefined;   // enum 要对着 values 校验，交给调用方
@@ -1919,7 +2045,13 @@ function readConfig(raw) {
   if (!Number.isFinite(v) || v < 1) throw new Error('version');
   if (v > CFG_VERSION) throw new Error('newer');
 
-  const meta = new Map(guiOptions().map((o) => [o.key, o]));
+  // 校验用的元数据必须来自 **VALUE_OPTIONS 全量**，不能是 guiOptions()：后者过滤掉
+  // guiHide 的键，于是「不混淆项」背后的 excludedIdentifiers / excludedStrings、以及
+  // 手写正则用的 reservedNames / reservedStrings 都会被当成未知键**静默丢弃**——
+  // 导出时明明写进去了，导入时又没了。
+  const meta = new Map(Object.entries(VALUE_OPTIONS).map(([k, s]) => [k, {
+    kind: s.kind, values: s.values,
+  }]));
   const src = (raw.options && typeof raw.options === 'object') ? raw.options : {};
 
   const entries = new Map();
@@ -2060,7 +2192,7 @@ async function init() {
     'statsBody', 'runBtn', 'copyBtn', 'dlBtn', 'zipBtn', 'drawer', 'apiBase', 'apiHint',
     'licKey', 'actBtn', 'deactBtn', 'licInfo', 'licDevice', 'licBadge', 'seed', 'presetHint',
     'layoutHint', 'layoutResetBtn', 'cfgImportBtn', 'cfgExportBtn', 'cfgFile',
-    'exclBtn', 'exclModal', 'exclBackdrop', 'exclClose', 'exclCols', 'exclSearch',
+    'exclModal', 'exclBackdrop', 'exclClose', 'exclCols', 'exclSearch',
     'exclCount', 'exclAll', 'exclNone', 'exclApply',
     'resetBtn', 'status', 'quota', 'ver', 'inputPane', 'outputPane', 'apiState', 'shortcutHint',
     'compareBtn', 'compareModal', 'compareClose', 'compareBackdrop']) {
@@ -2173,18 +2305,17 @@ async function init() {
     if (f) await importConfig(f);
   });
 
-  // 不混淆项挑选器
-  els.exclBtn.addEventListener('click', openExclPicker);
+  // 不混淆项挑选器（入口按钮由 renderOption 的 picker 分支生成并自己接线）
   els.exclClose.addEventListener('click', closeExclPicker);
   els.exclBackdrop.addEventListener('click', closeExclPicker);
   els.exclApply.addEventListener('click', applyExclPicker);
   els.exclSearch.addEventListener('input', renderExclPicker);
   els.exclAll.addEventListener('click', () => {
-    forEachVisible((name, cb) => { exclPicked.add(name); cb.checked = true; });
+    forEachVisible((name, kind, cb) => { exclSetOf(kind).add(name); cb.checked = true; });
     updateExclCount();
   });
   els.exclNone.addEventListener('click', () => {
-    forEachVisible((name, cb) => { exclPicked.delete(name); cb.checked = false; });
+    forEachVisible((name, kind, cb) => { exclSetOf(kind).delete(name); cb.checked = false; });
     updateExclCount();
   });
   els.exclModal.addEventListener('keydown', (e) => {

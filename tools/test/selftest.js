@@ -3220,6 +3220,40 @@ section('WASM 档位（阶段一恢复）');
     ok(['keepFn', 'keepParam', 'keepVar'].every((n) => rLow.code.includes(n)),
       'low 预设（界面默认）下排除生效');
     ok(runNode(rLow.code, 'excl-low.js').trim() === wantE, 'low 预设下排除后语义不变');
+
+    // excludedStrings：界面挑选器勾选的**字符串字面量**，与 excludedIdentifiers 对称。
+    // 关键在"精确值"：reservedStrings 那边的正则语义本就是不锚点的 test，字面量若不
+    // 转义加锚点直接丢进去，"aStr" 会连 "aStrLonger" 一起命中。
+    {
+      const srcS = 'function f(){\n'
+        + '  var a = "keepStr";\n'
+        + '  var b = "keepStrLonger";\n'
+        + '  return a + "|" + b;\n'
+        + '}\n'
+        + 'process.stdout.write(f()+"\\n");';
+      const wantS = runNode(srcS, 'excls-want.js').trim();
+      const offS = obfuscate(srcS, baseE).code;
+      ok(!offS.includes('keepStr') && !offS.includes('keepStrLonger'),
+        '未设置 excludedStrings 时字符串收进字符串池（都不字面留存）');
+
+      const onS = obfuscate(srcS, { ...baseE, excludedStrings: 'keepStr' });
+      ok(onS.code.includes('keepStr'), 'excludedStrings 让该串字面留存');
+      ok(!onS.code.includes('keepStrLonger'),
+        '排除 keepStr 不连带排除 keepStrLonger（精确值，非子串）');
+      ok(runNode(onS.code, 'excls.js').trim() === wantS, '排除字符串后语义不变');
+
+      // 值里的正则元字符必须按字面处理：'a.c' 若不转义会变成通配并命中 'abc'
+      const srcM = 'function g(){ return "a.c" + "|" + "abc"; }\nprocess.stdout.write(g()+"\\n");';
+      const wantM = runNode(srcM, 'exclm-want.js').trim();
+      const onM = obfuscate(srcM, { ...baseE, excludedStrings: 'a.c' });
+      ok(onM.code.includes('a.c'), '含 . 的字符串值按字面保留（未被当通配）');
+      ok(runNode(onM.code, 'exclm.js').trim() === wantM, '元字符用例语义不变');
+
+      // 与 reservedStrings（正则）共存
+      const rS = obfuscate(srcE, { ...baseE, reservedStrings: '^drop', excludedStrings: 'tagStr' });
+      ok(runNode(rS.code, 'excls-b.js').trim() === wantE,
+        'excludedStrings 与 reservedStrings 正则共存时语义不变');
+    }
   }
 
   // 回归：函数声明**嵌套在函数体内**。编译外层函数时，体内语句位置的函数声明会

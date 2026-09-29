@@ -146,9 +146,14 @@ export default function stringArray(ast, options, ctx) {
   // 语义分析和 LLM 归纳会被引向并不存在的外部资产
   const honey = options.honeyStrings !== false;
   // reservedStrings：匹配的字符串字面量不收集 / 不拆分 / 不编码（正则保留名单）
-  const reservedRe = (options.reservedStrings || [])
-    .map((s) => { try { return new RegExp(s); } catch (e) { return null; } })
-    .filter(Boolean);
+  // excludedStrings：界面「不混淆项」挑选器写进来的**字面量**，同样不收集/不拆分/不编码。
+  // 两类并成一个匹配器。字面量必须转义并**加锚点**：reservedStrings 那边是用户手写的
+  // 正则、语义本就是不锚定的 test，若把字面量直接丢进去，"abc" 会连 "abcd" 一起命中。
+  const reEsc = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const reservedRe = [
+    ...(options.reservedStrings || []).map((s) => { try { return new RegExp(s); } catch (e) { return null; } }),
+    ...(options.excludedStrings || []).map((s) => { try { return new RegExp('^' + reEsc(s) + '$'); } catch (e) { return null; } }),
+  ].filter(Boolean);
   const isReservedString = (v) => reservedRe.length > 0 && reservedRe.some((re) => re.test(v));
 
   const candidates = [];
