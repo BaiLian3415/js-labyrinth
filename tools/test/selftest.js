@@ -3181,17 +3181,41 @@ section('WASM 档位（阶段一恢复）');
     ok(dropGone, '未被排除的标识符仍被改名', JSON.stringify({ dropGone }));
     ok(runNode(onE.code, 'excl-on.js').trim() === wantE, '排除后语义不变');
 
-    // 把 VM 这个边界钉住：函数体被编译成字节码后，体内局部绑定名不再被保留名单保护
-    // （老选项 reservedNames 同样如此，是引擎既有行为，不是本次引入的）。这条断言的
-    // 作用是让边界可见——哪天 VM 支持了保留名单，这里会失败并提醒更新文档与界面说明。
-    const vmOn = obfuscate(srcE, {
-      preset: 'medium', seed: 5, shell: false,
-      excludedIdentifiers: 'keepFn,keepParam,keepVar,keepProp',
-    });
-    const vmOld = obfuscate(srcE, { preset: 'medium', seed: 5, shell: false, reservedNames: '^keepVar$' });
-    ok(vmOn.code.includes('keepFn') && !vmOn.code.includes('keepVar')
-      && !vmOld.code.includes('keepVar'),
-      'VM 编译的函数体内局部名不受保留名单保护（既有边界，新旧选项一致）');
+    // 用户点名的名字必须真的留在产物里，**四档都要成立**。这条曾经挂在 high/max 上：
+    // 函数被 VM 编译后，标识符名进了 VM 的码元密文表（stringsEnc），明文必然消失，
+    // 于是排除名单在最强两档对函数内局部变量基本失效。修法是 canCompile 命中保留名单
+    // 就不编译该函数（代价：这些函数少一层 VM 保护，计数见 vm 统计的 keptPlain）。
+    {
+      const srcV = 'function calc(n){\n'
+        + '  let keepLocal = n + 1;\n'
+        + '  let dropLocal = n + 2;\n'
+        + '  return keepLocal + dropLocal;\n'
+        + '}\n'
+        + 'process.stdout.write(String(calc(1))+"\\n");';
+      const wantV = runNode(srcV, 'exclv-want.js').trim();
+      const vmBad = [];
+      for (const preset of ['low', 'medium', 'high', 'max']) {
+        const r = obfuscate(srcV, {
+          preset, seed: 5, shell: false, excludedIdentifiers: 'keepLocal',
+        });
+        if (!r.code.includes('keepLocal')) vmBad.push(preset + ' 名字丢失');
+        if (/\bdropLocal\b/.test(r.code)) vmBad.push(preset + ' 未排除的没改名');
+        if (runNode(r.code, 'exclv-' + preset + '.js').trim() !== wantV) vmBad.push(preset + ' 语义变了');
+        // 代价可见化：命中保留名单的那个函数应当被计入 keptPlain
+        const vmStat = r.stats.find((s) => s.pass === 'vm');
+        const kept = vmStat && vmStat.result && vmStat.result.keptPlain;
+        if (preset !== 'low' && !(kept >= 1)) vmBad.push(preset + ' keptPlain 未计数');
+      }
+      ok(vmBad.length === 0, '四档预设下被排除的函数内局部变量都字面留存且不误伤', vmBad.join('; '));
+
+      // 不给排除名单时行为与改动前一致：keptPlain 为 0，VM 编译数不受影响
+      const rNone = obfuscate(srcV, { preset: 'high', seed: 5, shell: false });
+      const vmNone = rNone.stats.find((s) => s.pass === 'vm');
+      ok(vmNone && vmNone.result && vmNone.result.keptPlain === 0,
+        '无排除名单时 keptPlain 为 0（默认路径不受影响）');
+      ok(rNone.code.includes('keepLocal') === false,
+        '无排除名单时名字照常被改名（没有把排除做成全局豁免）');
+    }
 
     // 精确匹配：排除 keepVar 不得连带排除 keepVariable
     const srcP = 'function f(){var keepVariable = 1; return keepVariable;}\n'

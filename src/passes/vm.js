@@ -117,6 +117,50 @@ function collectAllIdentifiers(node, out) {
   eachChild(node, (child) => collectAllIdentifiers(child, out));
 }
 
+/**
+ * 保留名单：用户点名要保留的标识符（字面名）+ 手写 reservedNames 正则。
+ * 没有排除需求时返回 null，走原路径、零额外开销。
+ */
+function buildKeepNames(options) {
+  const names = new Set();
+  const res = [];
+  for (const n of options.excludedIdentifiers || []) {
+    if (typeof n === 'string' && n) names.add(n);
+  }
+  for (const src of options.reservedNames || []) {
+    try { res.push(new RegExp(src)); } catch (e) { /* 非法正则：mangle 那边同样忽略 */ }
+  }
+  if (!names.size && !res.length) return null;
+  return { names, res };
+}
+
+/**
+ * 子树里是否命中保留名单。命中就返回 true，可提前退出。
+ *
+ * 为什么要这个判断：VM 的字符串表是**码元密文表**（stringsEnc，见 litString/encString），
+ * 标识符名作为字符串被加密进表、运行期由 MKS 指令解密。也就是说**被编译的函数里
+ * 任何字符串都不会以明文出现**，用户点名保留的名字进了这张表就必然字面消失。
+ *
+ * 之前把这个现象记成「已知边界」是回避问题：high/max 档下几乎每个函数都会被编译，
+ * 于是排除名单在最强两档对函数内局部变量基本失效。现在改为命中就不编译这个函数。
+ */
+function subtreeHitsKeep(node, keep) {
+  if (!node || typeof node !== 'object' || !keep) return false;
+  if (Array.isArray(node)) {
+    for (let i = 0; i < node.length; i++) if (subtreeHitsKeep(node[i], keep)) return true;
+    return false;
+  }
+  if (typeof node.type !== 'string') return false;
+  if (node.type === 'Identifier') {
+    if (keep.names.size && keep.names.has(node.name)) return true;
+    for (const re of keep.res) if (re.test(node.name)) return true;
+    return false;
+  }
+  let hit = false;
+  eachChild(node, (child) => { if (!hit && subtreeHitsKeep(child, keep)) hit = true; });
+  return hit;
+}
+
 /** 子树扫描，不进入函数体内部，函数声明节点本身会上报。 */
 function scanSubtree(root, seen) {
   (function walk(node) {
@@ -372,7 +416,7 @@ function awaitDeclOk(node) {
     : awaitSafe(d.id, true) && awaitSafe(d.init, true)));
 }
 
-function canCompile(fn, allowAsync) {
+function canCompile(fn, allowAsync, keep) {
   if (!fn || fn.generator) return false;
   if (fn.async) {
     // 异步执行器（vmAsyncExecutor）关闭时行为与改动前一致：async 函数一律不编译
@@ -384,6 +428,10 @@ function canCompile(fn, allowAsync) {
   if (!body || body.type !== 'BlockStatement') return false;
   if (!body.body.length) return false;
   if (hasDirectEval(body)) return false;
+  // 用户点名保留的标识符出现在函数体里，这个函数就**不编译**。含嵌套：外层编译会把
+  // 内层一并带走，所以要连整个子树一起判。代价是这些函数少一层 VM 保护，换来的是
+  // 名字真的留在产物里——这正是这个选项存在的意义。
+  if (subtreeHitsKeep(body, keep)) return false;
   return body.body.every(regionOk);
 }
 
@@ -1070,7 +1118,7 @@ function compileFunction(fn, ctx) {
         node.type === 'ObjectMethod') {
       if (!compiledSet.has(node)) {
         prepareFn(node);
-        if (canCompile(node, allowAsync) && countRegionStmts(node.body) >= threshold) {
+        if (canCompile(node, allowAsync, ctx.__vmKeepNames) && countRegionStmts(node.body) >= threshold) {
           try { compileFunction(node, ctx); } catch (e) { /* 保守处理，维持原样 */ }
         }
       }
@@ -3814,13 +3862,13 @@ function topWrapBlocked(prog, ctx) {
  * 阈值不在这里判：判定统一留给下面的候选循环，没编译成由调用方回滚结构。
  * 指令序言留在顶层不动，同时克隆一份进包装体，严格模式因此不丢。
  */
-function makeTopWrapper(stmts, directives) {
+function makeTopWrapper(stmts, directives, keep) {
   if (!stmts.length) return null;
   const fn = t.functionExpression(null, [], t.blockStatement(
     stmts,
     (directives || []).map((d) => t.cloneNode(d, true)),
   ));
-  if (!canCompile(fn)) return null;
+  if (!canCompile(fn, false, keep)) return null;
   return fn;
 }
 
@@ -3853,6 +3901,11 @@ function vm(ast, options, ctx) {
   // 异步执行器（vmAsyncExecutor）。WASM 解释器内核档的解释器在模块里、没有 await
   // 能力，该档整体忽略本项（allowAsync 为 false，async 函数照旧不编译）。
   const allowAsync = !!options.vmAsyncExecutor && !ctx.__vmWasmShared;
+  // 用户点名要保留的标识符（+ 手写保留正则）。命中的函数一律不编译，见 canCompile。
+  // 为 null 时所有判定直接短路，不给默认路径添开销。挂一份到 ctx：嵌套函数的编译
+  // 入口（compileInnerFns）在别的作用域里，也要用同一份，不能各建一次。
+  const keepNames = buildKeepNames(options);
+  ctx.__vmKeepNames = keepNames;
   const mode = options.vmMode === 'comment' || options.vmMode === 'only-string'
     ? options.vmMode
     : 'global';
@@ -3883,7 +3936,7 @@ function vm(ast, options, ctx) {
     else {
       topWrapReason = topWrapBlocked(userProg, ctx);
       if (!topWrapReason) {
-        const wfn = makeTopWrapper(userStmts, userProg.directives);
+        const wfn = makeTopWrapper(userStmts, userProg.directives, keepNames);
         if (wfn) {
           // 包装调用落在内核之后、用户语句原来的位置
           const call = t.expressionStatement(t.callExpression(wfn, []));
@@ -3929,11 +3982,16 @@ function vm(ast, options, ctx) {
   const modelCount = { M0: 0, M1: 0, M2: 0, M3: 0 };
   // comment 模式的最近声明头判定要用到全部候选函数的头下标
   const allHeads = fns.map((fn) => fnHeadIdx(fn));
+  // 因命中保留名单而故意不编译的函数数（代价可见化，见返回值里的 keptPlain）
+  let keptPlain = 0;
   for (const fn of fns) {
     if (compiledSet.has(fn)) continue; // 已被外层编译过程连带处理
     if (rtNames.size && fn.type === 'FunctionDeclaration' && fn.id && rtNames.has(fn.id.name)) continue; // RT 内核是解释器的引导层，编译它会造成循环依赖
     prepareFn(fn);
-    if (!canCompile(fn, allowAsync)) continue;
+    if (!canCompile(fn, allowAsync, keepNames)) {
+      if (keepNames && subtreeHitsKeep(fn.body, keepNames)) keptPlain++;
+      continue;
+    }
     if (countRegionStmts(fn.body) < threshold) continue;
     // 模式筛选。comment 只挑被标记的函数，only-string 只挑含字符串的函数
     if (mode === 'comment' && !isMarkedFn(fn, vmpComments, allHeads)) continue;
@@ -3969,6 +4027,10 @@ function vm(ast, options, ctx) {
     considered: fns.length,
     failed,
     mode,
+    // 因命中用户保留名单而**故意不编译**的函数数。代价可见化：用户在界面勾了排除项
+    // 就该知道有多少函数因此少了一层 VM 保护，而不是构建完才发现强度掉了。
+    // keptPlain: 0 表示没有排除需求，走的是原路径。
+    keptPlain,
     topLevel: options.vmWrapTopLevel
       ? { wrapped: topWrapped, reason: topWrapped ? 'ok' : topWrapReason }
       : { wrapped: false, reason: 'off' },
