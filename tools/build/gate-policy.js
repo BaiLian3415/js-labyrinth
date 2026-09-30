@@ -34,6 +34,11 @@ export const GATED_PREFIXES = [
   'obfuscate.js',
   'pipeline.js',
   'html.js',
+  // html2mem：HTML 文本加密的实现，与 html.js 同属产物侧逻辑。不加进来的话它会
+  // 被当成公开模块拷进 dist/src/，等于把加密方案（密钥流、长度前缀打包、实体表）
+  // 原样发给客户端——既坏了「核心不在产物里」这条，也让它形同虚设。
+  // 2026-09-30 由 dist 核对发现：dist/src/html2mem.js 确实被下发了。
+  'html2mem.js',
   'passes/',
   'ast/',
   'utils/',

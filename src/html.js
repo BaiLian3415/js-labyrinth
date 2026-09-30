@@ -5,6 +5,8 @@ import t from './ast/types.js';
 import i18n from './i18n.js';
 const { t: msg } = i18n;
 import obfuscateMod from './obfuscate.js';
+import html2memMod from './html2mem.js';
+const { html2mem } = html2memMod;
 const { obfuscate } = obfuscateMod;
 /**
  * HTML 内联脚本处理：抽出 <script> 里的 JS 交给 transform，再原位回写。
@@ -275,6 +277,21 @@ function obfuscateDocument(html, options) {
     obfuscatedSize = out.obfuscatedSize;
     return out.code;
   });
+  // HTML2MEM：把文本节点与属性值加密成密文 + 一个还原 loader。放在**内联脚本混淆
+  // 之后**：脚本块里若有 `</script>` 字面量会被 HTML 解析器提前截断，混淆后的
+  // 产物更可能带上这种东西；先混淆完再扫，扫描器看到的就已经是最终形态，不会把
+  // 载荷的一部分误当属性值加密掉。
+  let memStats = null;
+  if (options.html2mem && res.html) {
+    const r = html2mem(res.html, options);
+    if (r.html !== res.html) {
+      res.html = r.html;
+      memStats = { values: r.values, bytes: r.bytes, key: r.key >>> 0 };
+    } else {
+      res.warnings = res.warnings.concat('html2mem: 没有可加密的文本或属性值，产物未变');
+    }
+  }
+
   return {
     html: res.info.obfuscated === 0 ? null : res.html,
     info: res.info,
@@ -282,6 +299,7 @@ function obfuscateDocument(html, options) {
     stats,
     originalSize,
     obfuscatedSize,
+    html2mem: memStats,
   };
 }
 

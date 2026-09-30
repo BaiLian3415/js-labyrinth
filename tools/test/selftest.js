@@ -37,6 +37,7 @@ import { fileURLToPath } from 'node:url';
 
 import obfuscateMod from '../../src/obfuscate.js';
 import htmlMod from '../../src/html.js';
+import html2memMod from '../../src/html2mem.js';
 import codec from '../../src/license-codec.js';
 import licCore from '../../src/license-core.js';
 import plan from '../../src/plan.js';
@@ -61,6 +62,7 @@ const TEST_CODE_KEY = 'AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=';
 
 const { obfuscate } = obfuscateMod;
 const { obfuscateDocument } = htmlMod;
+const h2mMod = html2memMod.default || html2memMod;
 const { runJob } = pipeline;
 const { makeZip: zip } = makeZip;
 
@@ -3338,6 +3340,202 @@ if (process.env.JSLB_SKIP_LIVE === '1') {
   }
 }
 
+  // HTML2MEM：文本节点与属性值加密成密文 + 还原 loader
+  section('HTML2MEM（HTML 文本加密）');
+  {
+    const h2mSrc = '<!DOCTYPE html>\n'
+      + '<html lang="zh"><head><meta charset="utf-8"><title>测试页 &amp; 标题</title>'
+      + '<style>.a{color:red}</style></head>\n'
+      + '<body>\n'
+      + '  <h1 class="title" data-cfg="secret-value-123">可见文本：你好世界</h1>\n'
+      + '  <p class="p2">第二段 &lt;b&gt;加粗&lt;/b&gt; 文本 ABC-456 &amp; 符号</p>\n'
+      + '  <a href="/path?a=1&amp;b=2" data-x="v" title="提示 A&amp;B">链接文字</a>\n'
+      + '  <input type="text" value="输入框默认值" placeholder="占位提示">\n'
+      + '  <div disabled>无值属性</div>\n'
+      + '  <script>var token = "token-abc";</script>\n'
+      + '</body></html>';
+
+    // 关闭时产物不含任何加密痕迹
+    const offH = obfuscateDocument(h2mSrc, obfuscateMod.resolveOptions({ preset: 'low', seed: 5 }));
+    ok(!/atob\(/.test(offH.html), 'html2mem 关闭时不注入 loader');
+    ok(offH.html.includes('可见文本'), 'html2mem 关闭时文本保持明文（行为与改动前一致）');
+    ok(offH.html2mem === null || offH.html2mem === undefined, 'html2mem 关闭时统计为空');
+
+    // 开启后：明文消失、代码与样式不动、loader 就位
+    const onH = obfuscateDocument(h2mSrc, obfuscateMod.resolveOptions({
+      preset: 'low', seed: 5, html2mem: true, html2memKey: 424242,
+    }));
+    const gone = ['可见文本：你好世界', 'secret-value-123', '链接文字', '输入框默认值', '占位提示', '测试页']
+      .filter((s) => onH.html.includes(s));
+    ok(gone.length === 0, '文本节点与属性值明文全部消失', gone.join(' | '));
+    // script 块不在此列：内联脚本本来就会被混淆（既有功能），HTML2MEM 不负责还原它
+    const kept = ['<style>.a{color:red}</style>', '/path?a=1&amp;b=2', 'disabled']
+      .filter((s) => !onH.html.includes(s));
+    ok(kept.length === 0, '样式/href/无值属性保持原样（script 块照常被混淆）', kept.join(' | '));
+    ok(/atob\(/.test(onH.html) && /createTreeWalker/.test(onH.html), 'loader 脚本已注入且含解密与 DOM 遍历');
+    ok(!!onH.html2mem && onH.html2mem.values > 0 && onH.html2mem.bytes > 0,
+      'html2mem 统计报告了值数与密文字节数', JSON.stringify(onH.html2mem));
+    ok(onH.html2mem && onH.html2mem.key === 424242, 'html2memKey 固定密钥被采用', JSON.stringify(onH.html2mem));
+
+    // 固定密钥 → 逐字节可复现
+    const again = obfuscateDocument(h2mSrc, obfuscateMod.resolveOptions({
+      preset: 'low', seed: 5, html2mem: true, html2memKey: 424242,
+    }));
+    ok(again.html === onH.html, '同 seed + 同密钥 → 产物逐字节可复现');
+
+    // html2memKey=0 是「由 seed 决定」而不是「每次真随机」：同 seed 必须可复现（与项目里
+    // 其它随机量的口径一致），不同 seed 才换密钥。
+    const rnd1 = obfuscateDocument(h2mSrc, obfuscateMod.resolveOptions({ preset: 'low', seed: 5, html2mem: true }));
+    const rnd2 = obfuscateDocument(h2mSrc, obfuscateMod.resolveOptions({ preset: 'low', seed: 5, html2mem: true }));
+    const rnd3 = obfuscateDocument(h2mSrc, obfuscateMod.resolveOptions({ preset: 'low', seed: 11, html2mem: true }));
+    ok(rnd1.html2mem.key === rnd2.html2mem.key && rnd1.html === rnd2.html,
+      'html2memKey=0：同 seed 密钥与产物都相同（可复现构建）');
+    ok(rnd1.html2mem.key !== rnd3.html2mem.key && rnd1.html !== rnd3.html,
+      'html2memKey=0：不同 seed 密钥与产物都不同');
+
+    // 往返：用 loader 的同一套算法解回，语义应与原文一致（DOM 值层面，不是逐字节）
+    {
+      const b64 = /var B="([^"]+)"/.exec(onH.html)[1];
+      const key = Number(/,K=(\d+),/.exec(onH.html)[1]);
+      const open = Number(/,O=(\d+),/.exec(onH.html)[1]);
+      const close = Number(/,C=(\d+)/.exec(onH.html)[1]);
+      const packed = h2mMod.untransform(Buffer.from(b64, 'base64').toString('binary'), key);
+      const vals = h2mMod.unpackValues(packed);
+      const re = new RegExp(String.fromCharCode(open) + '(\\d+)' + String.fromCharCode(close), 'g');
+      // 值级往返：解出的值表必须与「原文里真正会出现在 DOM 中的值」逐项相等。
+      // 不拿整份文档比——内联脚本本来就被混淆了，还原标记不会把它变回源码，那是既有功能、
+      // 不归这一层管。DOM 层面的等价由浏览器对比验证（元素/属性/文本逐项 diffCount=0）。
+      const expectVals = [
+        'zh', 'utf-8', '测试页 & 标题', 'title', 'secret-value-123', '可见文本：你好世界',
+        'p2', '第二段 <b>加粗</b> 文本 ABC-456 & 符号', 'v', '提示 A&B', '链接文字',
+        'text', '输入框默认值', '占位提示', '无值属性',
+      ];
+      const badIdx = [];
+      for (let i = 0; i < Math.max(vals.length, expectVals.length); i++) {
+        if (vals[i] !== expectVals[i]) {
+          badIdx.push(i + ':' + JSON.stringify(vals[i]) + '≠' + JSON.stringify(expectVals[i]));
+        }
+      }
+      ok(badIdx.length === 0, '解出的值表与原文 DOM 值逐项一致（实体已解码）', badIdx.join(' | '));
+      const markCount = (onH.html.match(new RegExp(String.fromCharCode(open) + '\\d+' + String.fromCharCode(close), 'g')) || []).length;
+      ok(markCount === vals.length, '占位标记数 == 值数', markCount + ' vs ' + vals.length);
+    }
+
+    // pack/unpack 与 transform/untransform 自洽
+    {
+      const vals = ['a', '你好', '', 'x:y:z', '长'.repeat(200)];
+      ok(h2mMod.unpackValues(h2mMod.packValues(vals)).every((v, i) => v === vals[i]),
+        'packValues/unpackValues 往返一致（含空串与多字节）');
+      ok(h2mMod.untransform(h2mMod.transform('abc 你好 123', 0x9e3779b9), 0x9e3779b9) === 'abc 你好 123',
+        'transform/untransform 互逆');
+    }
+
+    // 实体解码：未知实体与越界数值原样保留（不能猜错）
+    ok(h2mMod.decodeEntities('&amp;&#65;&#x4e2d;') === '&A中', '实体解码：命名/十进制/十六进制');
+    ok(h2mMod.decodeEntities('&unknownthing;') === '&unknownthing;', '未知实体原样保留');
+    ok(h2mMod.decodeEntities('&#999999999;') === '&#999999999;', '越界数值实体原样保留');
+
+    // 全页只有标签与属性、没有可加密内容时，产物不变并给出提示
+    {
+      // 注意：属性同样会被加密，所以「无可加密内容」必须用连属性都没有的文档
+      const bare = '<html><body><div></div><script>var q=1;</script></body></html>';
+      const r = obfuscateDocument(bare, obfuscateMod.resolveOptions({ preset: 'low', seed: 5, html2mem: true }));
+      ok(!/atob\(/.test(r.html), '无可加密内容时不注入 loader');
+      ok(r.warnings.some((w) => /html2mem/.test(String(w))), '并给出「无可加密内容」提示', JSON.stringify(r.warnings));
+    }
+
+    // JS 输入（不是 HTML）不受影响
+    {
+      const jsR = obfuscate('var a = 1; process.stdout.write(String(a));', { preset: 'low', seed: 5, html2mem: true });
+      ok(!/atob\(/.test(jsR.code), 'JS 输入不受 html2mem 影响');
+      ok(runNode(jsR.code, 'h2m-js.js').trim() === '1', 'JS 输入语义不变');
+    }
+
+
+    // 产物结构完整性：loader 只能作为**一整个标签**插在 </body> 前，不能插进标签中间。
+    // 这条不是洁癖——2026-09-30 真出过 bug：插入点用原文的 </body> 下标去切混淆后的字符串
+    // （占位标记长度不同，偏移不对应），loader 被塞进 <script> 标签中间，产出
+    // `<script>` 多于 `</script>`、末尾多一个孤零零的 `pt>` 的坏 HTML。
+    // 当时那份浏览器对比文档没炸，是因为它尾部结构单一、偏移恰好落在空白处——运气而已。
+    {
+      const tagCount = (s, re) => (s.match(re) || []).length;
+      const docs = [
+        ['常规文档', '<!DOCTYPE html><html><head><title>标题在这里</title></head><body>'
+          + '<div class="a" data-x="1">短</div>'
+          + '<p>很长很长很长很长很长很长很长的一段正文内容用来把偏移拉开</p>'
+          + '<span>中</span><script>var q=1;</script></body></html>'],
+        ['属性无引号', '<body><div class=box data-x=9>文本</div><script>var q=1;</script></body>'],
+        ['无 </body> 片段', '<div class="a">文本</div><script>var q=1;</script>'],
+        ['多文本节点', '<body><p>一</p><p>二</p><p>三</p><p>四</p><p>五</p><p>六</p>'
+          + '<script>var q=1;</script></body>'],
+        ['长短交替', '<body><b>短</b><p>' + '长'.repeat(200) + '</p><i>短</i>'
+          + '<script>var q=1;</script></body>'],
+        ['标签内含 </body> 字面量', '<body><p>提到 &lt;/body&gt; 这个标签</p>'
+          + '<script>var q=1;</script></body>'],
+      ];
+      for (const [label, src] of docs) {
+        const r = obfuscateDocument(src, obfuscateMod.resolveOptions({
+          preset: 'low', seed: 5, html2mem: true, html2memKey: 424242,
+        }));
+        const out = r.html || '';
+        const openS = tagCount(out, /<script>/g);
+        const closeS = tagCount(out, /<\/script>/g);
+        ok(openS === closeS, '[' + label + '] script 标签配平', openS + ' 开 / ' + closeS + ' 闭');
+        // loader 必须是一个完整标签：紧邻 </body> 之前、不与其它标签粘连
+        const bi = out.lastIndexOf('</body>');
+        if (bi >= 0) {
+          ok(out.slice(Math.max(0, bi - '</script>'.length), bi) === '</script>',
+            '[' + label + '] loader 紧贴 </body> 之前且标签完整',
+            JSON.stringify(out.slice(Math.max(0, bi - 24), bi)));
+        } else {
+          ok(/<\/script>$/.test(out), '[' + label + '] 无 </body> 时 loader 追加在末尾并闭合',
+            JSON.stringify(out.slice(-24)));
+        }
+        // 除 loader 外，原文里的标签都还在（数量守恒）
+        const srcOpenDiv = tagCount(src, /<div\b/g);
+        const outOpenDiv = tagCount(out, /<div\b/g);
+        ok(srcOpenDiv === outOpenDiv, '[' + label + '] 原有标签数量守恒',
+          srcOpenDiv + ' → ' + outOpenDiv);
+      }
+    }
+    // 界面元数据：guiOptions() 有两条来源（VALUE_OPTIONS 与 DEFAULTS+BOOL_OPTIONS 的旧表），
+    // BOOL_OPTIONS 又是「DEFAULTS 里所有布尔」，所以任何既是布尔默认值又登记进
+    // VALUE_OPTIONS 的选项都会被推两遍 → 界面上两个同名开关，其中一个显示原始键名、
+    // 还落在 BOOL_GROUPS 的默认组。html2mem 踩了这个坑（numberObfuscationMBA 早就在里面，
+    // 一直显示为原始键名没人当 bug 报）。这里钉住：键必须唯一，且 html2mem 要在 defense 组、
+    // 带中文标签与提示。
+    {
+      const opts = optionsMeta.guiOptions();
+      const counts = new Map();
+      for (const o of opts) counts.set(o.key, (counts.get(o.key) || 0) + 1);
+      const dupKeys = [...counts].filter(([, n]) => n > 1).map(([k, n]) => k + 'x' + n);
+      ok(dupKeys.length === 0, 'guiOptions() 无重复键（界面不会渲染出两个同名控件）', dupKeys.join(', '));
+      ok(counts.size === opts.length, '选项数 == 唯一键数', counts.size + ' vs ' + opts.length);
+
+      const h2mUi = opts.filter((o) => o.key === 'html2mem');
+      ok(h2mUi.length === 1, 'html2mem 在界面元数据里恰好一条', String(h2mUi.length));
+      ok(h2mUi[0] && h2mUi[0].group === 'defense', 'html2mem 归在 defense 组', h2mUi[0] ? h2mUi[0].group : '缺失');
+      ok(h2mUi[0] && h2mUi[0].kind === 'bool', 'html2mem 是布尔开关');
+      ok(h2mUi[0] && h2mUi[0].zh && h2mUi[0].zh !== 'html2mem', 'html2mem 有中文标签而非原始键名', h2mUi[0] ? h2mUi[0].zh : '');
+      ok(h2mUi[0] && h2mUi[0].en && h2mUi[0].en !== 'html2mem', 'html2mem 有英文标签');
+      // 提示里必须留着那几条诚实说明，不能被后来的人「精简」掉
+      ok(h2mUi[0] && /混淆不是保密/.test(h2mUi[0].hintZh || ''), '提示写明「混淆不是保密」');
+      ok(h2mUi[0] && /混淆不是保密|obfuscation, not secrecy/.test(h2mUi[0].hintEn || ''), '英文提示同样写明不是保密');
+      ok(h2mUi[0] && /没有正文|blank page/.test(h2mUi[0].hintZh || ''), '提示写明 loader 执行前没有正文');
+      ok(h2mUi[0] && /href/.test(h2mUi[0].hintZh || '') && /src/.test(h2mUi[0].hintZh || ''), '提示写明 href/src 等例外');
+
+      const keyUi = opts.filter((o) => o.key === 'html2memKey');
+      ok(keyUi.length === 1, 'html2memKey 在界面元数据里恰好一条', String(keyUi.length));
+      ok(keyUi[0] && keyUi[0].kind === 'int' && keyUi[0].group === 'defense', 'html2memKey 是 defense 组的整数项');
+
+      // 旧表那条分支不能把 VALUE_OPTIONS 里的键再吐一遍
+      const stillLegacy = opts.filter((o) => o.key === 'numberObfuscationMBA');
+      ok(stillLegacy.length === 1 && stillLegacy[0].zh !== 'numberObfuscationMBA',
+        '既有的 numberObfuscationMBA 重复也消了（此前一直显示原始键名）',
+        stillLegacy.map((o) => o.group + '/' + o.zh).join(', '));
+    }
+  }
+
 cleanTmp();
 
 console.log('\n' + (fail === 0 ? '✅ 全部通过' : '❌ 有失败项') + '：' + pass + ' 项通过，' + fail + ' 项失败');
@@ -3345,3 +3543,5 @@ if (fail) {
   for (const f of failures) console.log('  - ' + f);
   process.exit(1);
 }
+
+
