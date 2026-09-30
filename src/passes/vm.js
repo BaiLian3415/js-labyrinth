@@ -192,8 +192,13 @@ function subtreeHitsKeep(node, keep) {
     for (const re of keep.res) if (re.test(node.name)) return true;
     return false;
   }
-  if (node.type === 'StringLiteral') return keepHitsString(keep, node.value);
-  if (node.type === 'TemplateLiteral') return templateHit(keep, node);
+  // 字符串与模板：命中就 true，**不命中也要继续往下走**。早前这里写成
+  // `return keepHitsString(...)`，等于把 TemplateLiteral 的 `${...}` 子树整段跳过——
+  // 模板表达式里出现的保留名会被漏掉，本该"因含保留名而不编译"的函数反而被编译，
+  // 实测在真实 worker 语料上产出过语法错误的产物（seed 3：解构默认值被当逗号序列打印）。
+  // 字符串字面量没有子节点，但这行仍统一成"判定 + 继续"，避免以后再犯同一个错。
+  if (node.type === 'StringLiteral' && keepHitsString(keep, node.value)) return true;
+  if (node.type === 'TemplateLiteral' && templateHit(keep, node)) return true;
   let hit = false;
   eachChild(node, (child) => { if (!hit && subtreeHitsKeep(child, keep)) hit = true; });
   return hit;

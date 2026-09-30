@@ -53,7 +53,6 @@ export default {
       "opaquePredicatesMax": 2,
       "sentinelRate": 0,
       "integrityPoisonPoints": 2,
-      "bannerText": [""],
       "wasmInterpreter": false,
       "stringScatter": false,
       "antiLLM": false,

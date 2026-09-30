@@ -260,9 +260,12 @@ function obfuscateDocument(html, options) {
   // 块都会给出同一条，去重后再交给调用方，不然界面里会连刷十几遍。
   const blockWarnings = [];
   const res = processHtml(html, (js, idx, blockMeta) => {
-    // HTML 模式逐块混淆：每个内联块都插一段文件头横幅会污染页面，且块间
-    // 共享作用域下横幅守卫的自身源码核对拿不到整页文本，因此 HTML 模式跳过横幅；
-    // 其余增强保护（内核档、碎片化、Anti-LLM）照常生效。
+    // HTML 模式逐块混淆，**跳过引导层**（bannerSkip）。理由与旧的"文件头横幅"无关，
+    // 改成引导层后有两点：引导层逐块注入没有额外价值（它不是面向页面的署名，而是
+    // 产物自校验的载体），而且内联块之间**共享全局作用域**——每块各写一个
+    // `global[随机名]` 健康载体会互相覆盖，后写的把先写的冲掉，字符串池的密钥偏移
+    // 就算得错。要在 HTML 模式启用耦合，正确做法是整页只注入一次引导、在所有块
+    // 之前执行，那是另一件事，不在这里顺手改。其余增强保护照常生效。
     const opts = { ...options, seed: baseSeed + idx * 7919, bannerSkip: true };
     if (blockMeta.sharedNames.length) opts.selfCheck = false;
     const out = obfuscate(js, opts);

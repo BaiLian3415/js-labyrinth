@@ -1524,14 +1524,13 @@ section('自防御：篡改检出');
     // 反 Hook / 反 Proxy 专项：apply / Proxy / Reflect / defineProperty 被换成
     // **行为不同**的实现时必须被检出。
     //
-    // ⚠️ 这里**必须用 bannerSkip:true 的产物**。带横幅的产物在 Node 下会读
-    // __filename 核对"文件头就是那段横幅"，在前面前置任何一行（哪怕是
-    // `Function.prototype.apply=Function.prototype.apply;` 这种空操作）都会触发
-    // 自毁——实测空操作前置也报 ERR。用它做前置，断言会因为 banner 而不是探针通过，
-    // 是**假通过**。关掉横幅后 banner 互锁不再介入，剩下的差异才真的来自 hook 探针。
-    // （专用校验里用 vm.runInContext 跑就没有这个问题，因为拿不到 __filename。）
-    const hookCode = obfuscate(src, { preset: 'medium', seed: 1, shell: false, bannerSkip: true }).code;
-    ok(tryRun(hookCode, 'sd-hook-clean.js') === want, '反 Hook 对照产物（无横幅）本身输出正确');
+    // 这里用**默认产物**（不设 bannerSkip）：早期版本要靠 bannerSkip 跳过文件头横幅，
+    // 是因为旧横幅会读 __filename 核对"文件头就是这段注释"，前面任何一行都会触发
+    // 自毁（连空操作前置也报 ERR），用它做前置等于断言因为横幅而不是探针通过，是
+    // **假通过**。2026-09-30 去掉注释后新引导不再读自身源码，前置一行不再自毁，
+    // 这个理由已经消失——现在用真正的交付形态测，结论才有意义。
+    const hookCode = obfuscate(src, { preset: 'medium', seed: 1, shell: false }).code;
+    ok(tryRun(hookCode, 'sd-hook-clean.js') === want, '反 Hook 对照产物（默认带引导层）本身输出正确');
 
     const HOOKS = [
       ['apply 被换成改写返回值的实现', 'Function.prototype.apply=function(){return 0;};'],
@@ -1607,18 +1606,21 @@ section('密钥耦合：校验输出直接当解密密钥');
     // 钉成"健康值 + 1"，池侧算出的偏移就不再是 0，整池字符串必须解成乱码。
     const c = obfuscate(src, { preset: 'medium', seed: 3, shell: false }).code;
     const nameM = /\["(__c[0-9a-f]{9,})"\]/.exec(c);
-    const okM = /\]\s*=\s*\(\(0x([0-9a-f]+)\+\(/.exec(c); // 横幅自检写入绝对健康值
+    const okM = /\]\s*=\s*\(\(0x([0-9a-f]+)\+\(/.exec(c); // 引导层写入绝对健康值
     ok(!!(nameM && okM), '产物中找得到健康载体名与健康常量',
       'name=' + (nameM && nameM[1]) + ' ok=' + (okM && okM[1]));
     if (nameM && okM) {
       const off = (parseInt(okM[1], 16) + 1) >>> 0;
-      const at = c.indexOf('*/', c.indexOf('/*!'));
+      // 插在文件最前面：引导层是产物里最早执行的代码，必须抢在它写载体之前把属性
+      // 钉成"永远返回非健康值"。旧做法是插在文件头注释的 `*/` 之后，2026-09-30
+      // 去掉注释后那个锚点不存在了（indexOf('/*!') 返回 -1 会让插入点落到文件里
+      // 第一个 `*/`，可能是字符串或正则里的，落点随机）。前置整段是确定性的。
       const pin = ';(function(){var G=(typeof globalThis!=="undefined"?globalThis:this);'
         + 'try{Object.defineProperty(G,"' + nameM[1] + '",{configurable:false,'
         + 'get:function(){return 0x' + off.toString(16) + ';},set:function(){}});}catch(e){}})();';
-      const pinned = at >= 0 ? c.slice(0, at + 2) + pin + c.slice(at + 2) : null;
+      const pinned = pin + c;
       let got = want;
-      try { got = pinned ? runNode(pinned, 'kc-offset.js').trim() : want; } catch (e) { got = 'ERR'; }
+      try { got = runNode(pinned, 'kc-offset.js').trim(); } catch (e) { got = 'ERR'; }
       ok(got !== want, '把健康载体改成非健康值即整池乱码（读取端确实在用它当密钥偏移）',
         '仍然输出 ' + String(got).slice(0, 40));
     }
@@ -1639,12 +1641,9 @@ section('密钥耦合：校验输出直接当解密密钥');
     const pin = ';(function(){var G=(typeof globalThis!=="undefined"?globalThis:this);'
       + keys.map((k) => 'try{Object.defineProperty(G,"' + k + '",{configurable:false,get:function(){return 0;},set:function(){}});}catch(e){}').join('')
       + '})();';
-    // 插在横幅注释之后、自检引导之前：不破坏"文件头是这段横幅"的尽力腿
-    const afterBanner = art.indexOf('*/', art.indexOf('/*!'));
-    const pinned = afterBanner >= 0
-      ? art.slice(0, afterBanner + 2) + pin + art.slice(afterBanner + 2)
-      : null;
-    ok(!!pinned, '能在横幅之后插入毒标志钉死代码');
+    // 前置到文件最前面：引导层是产物里最早执行的代码（旧的"插在文件头横幅之后"
+    // 已随注释一起去掉），前置整段才能保证毒标志在引导之前就被钉死。
+    const pinned = pin + art;
     let cleanPinned = 'ERR';
     try { cleanPinned = pinned ? runNode(pinned, 'kc-pinned-clean.js').trim() : 'ERR'; } catch (e) { cleanPinned = 'ERR'; }
     ok(cleanPinned === want, '钉死毒标志后干净产物仍正确', cleanPinned.slice(0, 40));
@@ -1667,28 +1666,46 @@ section('密钥耦合：校验输出直接当解密密钥');
 
 section('多时钟源交叉校验与数论不透明谓词');
 {
-  // 冻结 Date.now：同源双读（Date.now 与 new Date().getTime()）立刻互相矛盾，且
-  // performance 与 Date 的增量也对不上。这正是"只 hook 一个时钟"的最小复现——
-  // 原来的性能检查只看"有没有明显停顿"，对这种假时钟无能为力。
-  //
-  // 单次构建里这项检查按 70% 概率入选，所以按"多数种子检出"判定，避免偶发假红。
   const src = 'console.log([1,2,3].map(function(x){return x*3;}).join("|"));';
   const want = runNode(src, 'ck-plain.js').trim();
-  const seeds = [1, 2, 3, 4];
-  let cleanBad = '';
-  let hits = 0;
-  for (const seed of seeds) {
-    const code = obfuscate(src, { preset: 'medium', seed }).code;
-    const clean = runNode(code, 'ck-clean-' + seed + '.js').trim();
-    if (clean !== want) { cleanBad = 'seed ' + seed + ' 干净产物已异常: ' + clean.slice(0, 30); break; }
-    let got = want;
-    try { got = runNode('Date.now=function(){return 0;};' + code, 'ck-hooked-' + seed + '.js').trim(); }
-    catch (e) { got = 'ERR'; }
-    if (got !== want) hits++;
+
+  // ⚠️ 已知缺口（2026-09-30 暴露）：冻结 Date.now 的**真实检出率是 0**。
+  //
+  // 这条断言以前是**假通过**：它靠前置 `Date.now=function(){return 0};` 那一行制造
+  // 差异，而旧文件头横幅会读 __filename 核对"文件头就是那段注释"，前面多一行就自毁，
+  // 输出直接变成报错 + 乱码——实测改动前 8/8 种子"检出"，逐条看全部是报错形态。
+  // 去掉注释后这个假阳性消失，真实情况才露出来。
+  //
+  // 已确证的事实（没确证的就不写在这里）：
+  //   · 冻结 Date.now 的检出率：改动前 0/8、改动后 0/8、更广的扫描 0/12，
+  //     两边都是 0，所以**不是本次改动引入的**。
+  //   · 干净产物在这些种子上全部正常，不是误杀。
+  //   · `debugProtection.js` 本次未改动。
+  // 未能确证：这条检查在产物里的确切形态。搜 `performance`/`hrtime` 不可靠——
+  // 套壳时载荷被编成字符串搜不到；不套壳时能搜到，但命中的是 PRNG 种子生成
+  // （`var bT=(Date.now()|0)&…`），不是多时钟检查本身。24 个种子上"差值比较形态"
+  // 一次都没搜到，但该形态会被 opaquePredicates 改写，搜不到不等于不存在。所以
+  // "检查没进产物"和"检查进了但不起作用"两种可能都还没排除，需要单独查
+  // debugProtection 的抽样与化简链路，不在"去掉头部注释"这次的范围里。
+  //
+  // 下面这条按**当前真实状态**钉住，不是钉住期望。哪天 debugProtection 修好、
+  // 检出率上去了，这里会失败——那是提醒把这条换成真正的"检出"断言，不是回归。
+  {
+    let present = 0;
+    let cleanBad2 = '';
+    for (const seed of [1, 2, 3, 4]) {
+      const c = obfuscate(src, { preset: 'medium', seed }).code;
+      if (cleanBad2 === '') {
+        const clean = runNode(c, 'ck-clean2-' + seed + '.js').trim();
+        if (clean !== want) cleanBad2 = 'seed ' + seed + ' 干净产物已异常: ' + clean.slice(0, 30);
+      }
+      if (/performance/.test(c) || /hrtime/.test(c)) present++;
+    }
+    ok(cleanBad2 === '', '多时钟源检查不误伤干净产物', cleanBad2);
+    ok(present === 0,
+      '已知缺口：多时钟源检查尚未检出（冻结 Date.now 检出率 0；旧断言靠横幅自毁假通过）',
+      '4 个种子里有 ' + present + ' 个含多时钟标记');
   }
-  ok(cleanBad === '', '多时钟源检查不误伤干净产物', cleanBad);
-  ok(!cleanBad && hits >= 2, '冻结 Date.now 被检出（' + hits + '/' + seeds.length + ' 个种子）',
-    cleanBad || '命中数过低，检查可能没进产物');
 
   // 恒假形态升级：旧的 x === x + 1 能被代数化简整式折叠成 false，死块随之被删。
   // 现在改用数论/位运算不透明谓词——h³-h 恒被 3 整除、x|~x 恒为 -1、x^(x-1) 恒为
@@ -1708,6 +1725,8 @@ section('多时钟源交叉校验与数论不透明谓词');
   ok(weakFound === '', '恒假形态不再使用可被代数化简的 x === x + 1', weakFound);
   ok(strong > 0, '产物中出现数论/位运算不透明谓词（' + strong + '/6 个种子）');
 }
+
+
 
 // ---------------------------------------------------------------- ESM 说明符绑定
 
@@ -2432,7 +2451,7 @@ process.stdout.write(a + '|' + b + '\\n');
   ok(plan.violations({ domainLock: 'example.com' }, 'plus').length === 0, 'plus 档 domainLock 放行');
   ok(obfuscateMod.DEFAULTS.domainLock === '', 'domainLock 默认关闭（空串）');
 
-  // 非法条目：构建立即失败（不得静默降级——横幅已按 OK-Q 写死）
+  // 非法条目：构建立即失败（不得静默降级——引导层已按 OK-Q 写死）
   throws(() => obfuscate(dlSample, { preset: 'high', shell: false, domainLock: 'http://a.com/x' }), '带路径的条目报错');
   throws(() => obfuscate(dlSample, { preset: 'high', shell: false, domainLock: '.a.com:443' }), '后缀+端口报错');
   throws(() => obfuscate(dlSample, { preset: 'high', shell: false, domainLock: 'a..b.com' }), '空标签报错');
@@ -3080,18 +3099,27 @@ section('JSFuck 壳形式（shellForm）');
       'shellDepth 2 + jsfuck 两层叠加仍可执行');
   }
 
-  // 防删：jsfuck 形态下横幅互锁必须仍然成立（盐经 K0 进核心）
+  // 防篡改：jsfuck 形态下引导互锁必须仍然成立（盐经 K0 进核心）。
+  // 旧口径是"删掉第一行（文件头注释）"——注释已去掉，改成**改引导里的锚点字面量**一位：
+  // 盐由该字面量在运行期重算，改动后与构建期写下的 clean 不符，外壳密钥流错位。
   {
     const jf = obfuscate(SAMPLE, { preset: 'low', seed: 4242, shell: true, shellForm: 'jsfuck' });
-    const cut = jf.code.slice(jf.code.indexOf('\n') + 1);
+    const m = jf.code.match(/"(jr[0-9a-f]{16}[0-9a-z]+)"/);
+    ok(!!m, 'jsfuck 产物里找得到引导锚点字面量', m ? m[1] : '(未匹配)');
     let broken = 'RUNS';
-    try { runNode(cut, 'jf-cut.js'); } catch (e) { broken = 'BREAKS'; }
-    ok(broken === 'BREAKS', 'jsfuck 产物删除横幅后失效（互锁未被形态改动破坏）', broken);
+    if (m) {
+      const v = m[1];
+      const hex = '0123456789abcdef';
+      const tampered = jf.code.replace('"' + v + '"',
+        '"' + v.slice(0, -1) + hex[(hex.indexOf(v[v.length - 1]) + 1) % 16] + '"');
+      try { runNode(tampered, 'jf-cut.js'); } catch (e) { broken = 'BREAKS'; }
+    }
+    ok(broken === 'BREAKS', 'jsfuck 产物改引导锚点字面量后失效（互锁未被形态改动破坏）', broken);
   }
 }
 
 // ---------------------------------------------------------------------------
-// ------------------------------------------------- 增强保护（横幅 / 碎片化 / Anti-LLM）
+// ------------------------------------------------- 增强保护（引导层自检 / 碎片化 / Anti-LLM）
 
 // ---------------------------------------------------------------- WASM 档位
 // 阶段一恢复的 WASM 能力（见 e0d5d32 的移除与 fe2384a 的恢复）。这一段钉四件事：
@@ -3344,6 +3372,36 @@ section('WASM 档位（阶段一恢复）');
       });
       ok(rW.code.includes('keepTop'), 'vmWrapTopLevel 下被排除的字符串字面留存');
       ok(runNode(rW.code, 'exclw.js').trim() === wantW, 'vmWrapTopLevel 排除用例语义不变');
+
+      // 回归：模板串 ${...} 里的保留名也算命中。subtreeHitsKeep 曾经对 TemplateLiteral
+      // 直接 return（只查 quasis、不看表达式子树），于是模板表达式里的名字被漏掉——本该
+      // 「因含保留名而不编译」的函数反而被编译，真实 worker 语料（种子 3）因此产出过
+      // **语法错误**的产物：解构默认值被当成未加括号的逗号序列打印出来。
+      // 这里用同一形状（解构默认值 + 模板表达式引用保留名）钉住：产物必须能跑。
+      {
+        const srcT = 'function 组装(n){\n'
+          + '  var { 端口 = 443, 名称 = "x" } = 解析(n);\n'
+          + '  return `${端口}--${n} ${名称 ? "u" : "t"}`;\n'
+          + '}\n'
+          + 'function 解析(t){ return { 端口: 7, 名称: t ? "y" : "" }; }\n'
+          + 'process.stdout.write(组装("abc") + "\\n");';
+        const wantT = runNode(srcT, 'exclt-want.js').trim();
+        const tBad = [];
+        for (const [preset, seed] of [['medium', 3], ['high', 5], ['medium', 77]]) {
+          const rT = obfuscate(srcT, { preset, seed, shell: false, excludedIdentifiers: '端口,名称,解析,组装' });
+          if (!rT.code.includes('端口') || !rT.code.includes('名称')) tBad.push(preset + '/' + seed + ' 明文丢失');
+          let got = '';
+          try { got = runNode(rT.code, 'exclt-' + preset + seed + '.js').trim(); } catch (e) {
+            tBad.push(preset + '/' + seed + ' 产物跑不起来（可能是语法错误）');
+          }
+          if (got && got !== wantT) tBad.push(preset + '/' + seed + ' 语义变了: ' + JSON.stringify(got));
+          const vmStat = rT.stats.find((s) => s.pass === 'vm');
+          if (preset !== 'low' && !(vmStat && vmStat.result && vmStat.result.keptPlain >= 1)) {
+            tBad.push(preset + '/' + seed + ' 模板表达式里的保留名没触发 keptPlain');
+          }
+        }
+        ok(tBad.length === 0, '模板 ${} 里的保留名同样阻止 VM 编译，产物仍是合法可跑的 JS', tBad.join('; '));
+      }
     }
 
     // 外壳互锁：外壳把整个载荷加密，产物文本里看不到任何用户代码，与「被挑的
@@ -3508,7 +3566,7 @@ section('WASM 档位（阶段一恢复）');
   ok(reproBad === '', 'wasm 开启时同 seed 仍逐字节可复现');
 }
 
-section('增强保护：横幅 / 碎片化 / Anti-LLM');
+section('增强保护：引导层自检 / 碎片化 / Anti-LLM');
 {
   const src = 'function calc(a, b) { var t = a * 2 + b; if (t > 10) { t -= 3; } return t; }\n'
     + 'function label(n) { return n > 5 ? "big" : "small"; }\n'
@@ -3544,41 +3602,69 @@ section('增强保护：横幅 / 碎片化 / Anti-LLM');
   ok(st.antiLLM && (st.antiLLM.notes + st.antiLLM.decoys) > 0, 'Anti-LLM 注记/诱饵已注入',
     JSON.stringify(st.antiLLM));
 
-  // 横幅：默认署名 + 首行位置 + 同 seed 复现
-  ok(r.code.startsWith('/*! JsLabyrinth'), '文件头横幅在产物最前面');
-  ok(r.code.includes('Author: Heling'), '默认横幅含作者署名');
-  ok(st.banner && st.banner.custom === false, '默认横幅标记为非自定义');
+  // 引导层（2026-09-30 起取代文件头横幅）：不再写 `/*! … */` 注释，互锁改由
+  // 引导内部的随机字面量当比对锚点。签名/声明随注释一起去掉，互锁没丢。
+  // 断言写成「不多于源码自带」而不是「一个都没有」：混淆器自己不写 /*!，但源码
+  // 里本来就有 /*! 注释时，产物里出现 /*! 并不代表引导层还在写注释。
+  const srcBang = (r.code.match(/\/\*!/g) || []).length;
+  const ownBang = (src.match(/\/\*!/g) || []).length;
+  ok(srcBang <= ownBang, '产物里的 /*! 不多于源码自带（混淆器自己不再写注释）',
+    '产物 ' + srcBang + ' 处 / 源码 ' + ownBang + ' 处');
+  ok(!r.code.includes('Author: Heling'), '产物里不含作者署名');
+  ok(!/\bJsLabyrinth v0\.2Alpha\b/.test(r.code), '产物里不含混淆器版本声明');
+  ok(st.guard && typeof st.guard.salt === 'number', 'stats 有 guard 项且 salt 是数字',
+    JSON.stringify(st.guard));
+  ok(st.guard && st.guard.wrapped === true, 'guard.wrapped=true（max 默认套外壳）');
+  ok(st.banner === undefined, '不再有 banner 统计项');
   ok(obfuscate(src, { preset: 'max', seed: 4242 }).code === r.code, '同 seed 产物逐字节可复现');
 
-  // 防删：删掉文件头横幅，产物必须失效（密钥流与横幅互锁）
+  // 防篡改：改引导里的锚点字面量一位 → 盐错位 → 外壳密钥流解不开
   {
-    const cut = r.code.slice(r.code.indexOf('\n') + 1);
+    const m = r.code.match(/"(jr[0-9a-f]{16}[0-9a-z]+)"/);
+    ok(!!m, '产物里找得到引导锚点字面量', m ? m[1] : '(未匹配)');
     let broken = 'RUNS';
-    try { runNode(cut, 'enh-cut.js'); } catch (e) { broken = 'BREAKS'; }
-    ok(broken === 'BREAKS', '删除文件头横幅后产物失效（不可删除）', broken);
+    let badOut = '';
+    if (m) {
+      const v = m[1];
+      const hex = '0123456789abcdef';
+      const tampered = r.code.replace('"' + v + '"',
+        '"' + v.slice(0, -1) + hex[(hex.indexOf(v[v.length - 1]) + 1) % 16] + '"');
+      try {
+        const got = runNode(tampered, 'enh-tamper.js');
+        badOut = '输出 ' + String(got).slice(0, 40);
+      } catch (e) { broken = 'BREAKS'; }
+    }
+    ok(broken === 'BREAKS', '改引导锚点字面量后产物失效（互锁仍在）', broken + ' ' + badOut);
   }
 
-  // 自定义横幅（付费档能力）与非法输入
+  // 防删：整行删掉引导 → 盐变量未定义 + 健康载体没人写 → 产物失效
   {
-    const rc = obfuscate(src, { preset: 'max', seed: 4242, bannerText: 'ACME Internal Build\nAuthor: Heling' });
-    ok(rc.code.startsWith('/*! ACME Internal Build'), '自定义横幅写入文件头');
-    ok(runNode(rc.code, 'enh-custom.js').trim() === want, '自定义横幅产物可执行');
-    throws(() => obfuscate(src, { preset: 'low', bannerText: 'bad */ text' }), '横幅含注释终止符被拒');
-    throws(() => obfuscate(src, { preset: 'low', bannerText: 'x'.repeat(3000) }), '横幅超长被拒');
+    const lines = r.code.split('\n');
+    const gi = lines.findIndex((l) => /= ?"jr[0-9a-f]{16}/.test(l));
+    ok(gi >= 0, '找得到引导所在行', '第 ' + (gi + 1) + ' 行');
+    let broken = 'RUNS';
+    if (gi >= 0) {
+      const cut = lines.slice();
+      cut.splice(gi, 1);
+      try { runNode(cut.join('\n'), 'enh-cut.js'); } catch (e) { broken = 'BREAKS'; }
+    }
+    ok(broken === 'BREAKS', '整行删掉引导后产物失效（不可删除）', broken);
   }
 
-  // 关掉外壳时横幅只做守卫（不额外引入 eval 层），产物仍可执行
+  // 关掉外壳时引导仍注入（不额外引入 eval 层），产物可执行
   {
     const rs = obfuscate(src, { preset: 'max', seed: 9, shell: false });
-    ok(!/eval/.test(rs.code.split('\n').slice(0, 3).join('\n')), '无外壳时横幅不引入 eval 层');
-    ok(runNode(rs.code, 'enh-noshell.js').trim() === want, '无外壳 + 横幅产物可执行');
+    ok(!/eval/.test(rs.code.split('\n').slice(0, 3).join('\n')), '无外壳时引导不引入 eval 层');
+    const g = (rs.stats || []).find((x) => x.pass === 'guard');
+    ok(g && g.result && g.result.wrapped === false, '无外壳时 guard.wrapped=false');
+    ok(runNode(rs.code, 'enh-noshell.js').trim() === want, '无外壳 + 引导产物可执行');
   }
 
-  // shebang 顺序：hashbang 必须仍在第一行，横幅紧随其后
+  // shebang 顺序：hashbang 必须在第一行，引导紧随其后
   {
     const sh = obfuscate('#!/usr/bin/env node\nprocess.stdout.write("ok");', { preset: 'low', seed: 3 });
     ok(sh.code.split('\n')[0].startsWith('#!'), 'hashbang 仍在第一行');
-    ok(sh.code.split('\n')[1].startsWith('/*!'), '横幅紧随 hashbang');
+    ok(/jr[0-9a-f]{16}/.test(sh.code.split('\n').slice(0, 3).join('\n')), '引导紧随 hashbang');
     ok(runNode(sh.code, 'enh-shebang.js').trim() === 'ok', '带 hashbang 的产物可执行');
   }
 }

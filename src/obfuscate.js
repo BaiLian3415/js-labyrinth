@@ -225,9 +225,10 @@ function obfuscate(code, userOptions) {
 
   // 密钥耦合（P0）。把完整性校验的输出当作字符串池解密密钥的一部分：
   // integrityCheck 在装载期算出「重算哈希 ^ 期望哈希」的偏移和写进一个随机全局
-  // 属性，横幅自检再追加它自己的偏移；字符串池首次访问时读这个值当密钥偏移。
-  // 代码未被改动时偏移恒为 0，所有耦合式子退化成恒等；改动任一被校验函数或
-  // 修改横幅 → 偏移非零 → 整池字符串解码成乱码。
+  // 属性，引导层先写入绝对健康值（见 passes/banner.js），域名锁定再按 +Q 补回；
+  // 字符串池首次访问时读这个值当密钥偏移。代码未被改动时偏移恒为 0，所有耦合式
+  // 退化成恒等；改动任一被校验函数（或引导层里的锚点字面量）→ 偏移非零 →
+  // 整池字符串解码成乱码。
   //
   // 相比原先「解码器读到毒标志再损坏输出」，这里没有可 NOP 的分支：攻击者必须
   // 复原整条链路（哪些函数入哈希、哈希怎么折叠、偏移怎么参与密钥、健康常量是
@@ -235,13 +236,14 @@ function obfuscate(code, userOptions) {
   // (undefined|0)-OK 得到 -OK，照样非零。
   //
   // 三个角色必须同开同关：池读取端（stringArray）、偏移入端（integrityCheck 的
-  // 增量、banner 的绝对健康值）。有人读没人写会让正常产物自己变乱码，所以三处
+  // 增量、引导层的绝对健康值）。有人读没人写会让正常产物自己变乱码，所以三处
   // 都读 ctx.couple，缺了即整条链路不启用（低档预设关了 integrityCheck 自动关闭，
   // 产物与改造前逐字节一致）。
   //
-  // 横幅必须存在：绝对健康值由横幅自检写入，它是产物里最早执行的代码，也只有
-  // 它能保证"字符串池第一次访问之前载体已有有效值"。跳过横幅（bannerSkip）时
-  // 没人写这个值，读取端会算出 -OK，等于自己把自己打成乱码，因此一并关闭。
+  // 引导层必须存在：绝对健康值由它写入，它是产物里最早执行的代码（在外壳与载荷
+  // 之前），也只有它能保证"字符串池第一次访问之前载体已有有效值"。跳过引导
+  // （bannerSkip）时没人写这个值，读取端会算出 -OK，等于自己把自己打成乱码，
+  // 因此一并关闭。
   if (options.integrityCheck !== false && options.bannerSkip !== true) {
     ctx.couple = {
       // 健康载体名：随机全局属性，存「健康常量 + 累计偏移」
@@ -526,27 +528,26 @@ function obfuscate(code, userOptions) {
     else stats.push({ pass: '·shell', result: { skipped: 'off' }, ms: shellMs });
   }
 
-  // ---- 文件头横幅：默认写混淆器信息与作者名，付费档可自定义；与密钥流互锁 ----
+  // ---- 引导层：健康载体（字符串池密钥耦合）+ 盐（与外壳密钥流互锁）----
+  //
+  // 2026-09-30 起不再写 `/*! … */` 文件头注释：署名、反 LLM 声明与"删掉提示就坏"
+  // 这条威慑一起去掉（用户要求）。互锁本身没有丢——比对锚点从注释正文换成引导内部
+  // 的随机字面量，盐由它重算；删掉引导同样是坏产物（saltVar 未定义 + 载体缺失）。
+  // 详见 passes/banner.js 的文件头注释。
   if (options.bannerSkip !== true) {
-    const bn = bannerMod.sanitizeBanner(options.bannerText);
-    if (!bn.ok) {
-      if (bn.reason === 'long') throw new Error(msg('bannerTooLong', { max: 2000, n: bn.n }));
-      throw new Error(msg('badBannerText', { p: String(options.bannerText).slice(0, 24) }));
-    }
-    const bw = bannerMod.wrapBanner(finalCode, {
-      text: bn.text,
+    const bw = bannerMod.guardLayer(finalCode, {
       cjs: payloadCjs,
       // 只有套了外壳的载荷才用盐互锁；ESM、显式 shell:false，或因不混淆名单
-      // 跳过外壳时只做守卫（没有外壳层密钥可互锁）
+      // 跳过外壳时只做引导（没有外壳层密钥可互锁）
       wrap: !isModuleSrc && options.shell !== false && !shellByKeepSkipped,
-      // 横幅层是最外层，也是最显眼的一层：壳形式必须一路传到它这里，
+      // 引导层在最外层：壳形式必须一路传到它这里，
       // 否则 jsfuck 产物只有内层是 JSFuck、外包一层 classic 引导
       shellForm: options.shellForm,
       poisonKey: progNode.__poisonKey,
       ctx,
     });
     finalCode = bw.code;
-    stats.push({ pass: 'banner', result: { custom: bw.custom, salt: bw.salt } });
+    stats.push({ pass: 'guard', result: { salt: bw.salt, wrapped: bw.wrapped } });
   }
 
   // hashbang 必须晚于套壳（eval 里出现 #! 会 SyntaxError）

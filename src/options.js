@@ -264,6 +264,5 @@ export default {
   // 会退化成子串匹配（"abc" 命中 "abcd"），而且挑选取值会覆盖用户手写的正则。
   "excludedStrings": [],
   "stringScatter": false,
-  "antiLLM": false,
-  "bannerText": ""
+  "antiLLM": false
 };
