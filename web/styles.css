@@ -1292,9 +1292,6 @@ button.primary:hover:not(:disabled) { opacity: .88; }
   .statusbar { padding-bottom: calc(6px + env(safe-area-inset-bottom, 0px)); }
 }
 
-/* ---------- 「不混淆项」选项行（2026-09-29）---------- */
-/* 一个按钮 + 一句摘要。摘要必须显示当前真实数量，否则用户挑完关掉弹窗回到选项栏，
-   只剩一个没写的输入框，看不出自己选过东西。 */
 
 .opt-row.is-picker { align-items: center; }
 .opt-row.is-picker .picker-ctl { display: flex; align-items: center; gap: 8px; min-width: 0; }
@@ -1308,7 +1305,6 @@ button.primary:hover:not(:disabled) { opacity: .88; }
 .opt-row.is-picker .picker-sum.is-set { color: var(--accent); font-weight: 600; }
 .opt-row.is-picker button { flex: 0 0 auto; }
 
-/* ---------- 不混淆项挑选器（2026-09-29）---------- */
 
 .excl-modal { position: fixed; inset: 0; z-index: 60; display: flex; align-items: center; justify-content: center; }
 .excl-modal[hidden] { display: none; }

@@ -38,9 +38,6 @@ import { makeZip } from './src/utils/zip.js';
 import { VERSION } from './src/version.js';
 import DEFAULTS from './src/options.js';
 import PRESETS from './src/presets.js';
-// 「不混淆项」挑选器的源码扫描器。独立成模块是为了能在 Node 自测里直接 import
-// 断言分类结果（app.js 本身依赖 DOM，Node 里 import 不了）。
-import { SCAN_KINDS, scanIdentifiers } from './scan.js';
 
 const PRESET_NAMES = Object.keys(PRESETS);
 const runtimeInfo = {
@@ -351,28 +348,6 @@ function renderOption(opt) {
     return row;
   }
 
-  // 「不混淆项」：标签 + 摘要 + 按钮。摘要必须显示**当前真实数量**，否则用户挑完
-  // 关掉弹窗回到选项栏，只剩一个按钮，看不出自己到底选过几个。
-  // 这一支必须在下面那句 row.appendChild(name) 之前返回：通用路径已经把 infoBtn
-  // 挂上去了，再走一遍就会多出一个重复的 ⓘ，而且控件被排到 ⓘ 后面。
-  if (opt.kind === 'picker') {
-    const ctl = document.createElement('span');
-    ctl.className = 'picker-ctl';
-    const sum = document.createElement('span');
-    sum.className = 'picker-sum';
-    const btn = document.createElement('button');
-    btn.type = 'button';
-    btn.className = 'mini';
-    btn.dataset.pickFor = opt.key;
-    btn.textContent = t('guiExclOpen');
-    btn.addEventListener('click', openExclPicker);
-    ctl.append(sum, btn);
-    row.append(name, ctl, infoBtn(tip));
-    row.classList.add('is-picker');
-    exclRow = { key: opt.key, sum };
-    syncExclRow();
-    return row;
-  }
 
   row.appendChild(name);
   row.appendChild(infoBtn(tip));
@@ -1549,193 +1524,6 @@ async function entriesFromDrop(dt) {
   return out;
 }
 
-// ---------- 标识符扫描（供「不混淆项」挑选器用）----------
-//
-// 扫描器本体在 ./scan.js（纯词法扫描，不用受保护的 parser.js —— 理由见那边文件头）。
-// 类别不是显示问题：它决定勾选项写进 excludedIdentifiers 还是 excludedStrings，
-// 列错栏会让排除当场落空。
-
-// ---------- 不混淆项挑选器 ----------
-
-/** 选项栏里那一行的摘要节点，由 renderOption 的 picker 分支登记。 */
-let exclRow = null;
-
-/** 刷新「不混淆项」那一行的摘要：显示标识符数 + 字符串数。 */
-function syncExclRow() {
-  if (!exclRow || !exclRow.sum) return;
-  const ids = exclReadList('excludedIdentifiers').length;
-  const strs = exclReadList('excludedStrings').length;
-  const n = ids + strs;
-  exclRow.sum.textContent = n
-    ? t('guiExclSummary', { ids, strs })
-    : t('guiExclSummaryEmpty');
-  exclRow.sum.classList.toggle('is-set', n > 0);
-}
-
-/** 挑选器的临时状态：本次打开时的扫描结果与勾选集。 */
-let exclScan = null;
-let exclPicked = new Set();
-let exclStrPicked = new Set();
-
-/** 读一个逗号分隔的字面名单（排序去重，保证同一选择每次写出的字符串一致）。 */
-function exclReadList(key) {
-  const v = state.touched.get(key);
-  if (v === undefined || v === null) return [];
-  return [...new Set(String(v).split(',').map((s) => s.trim()).filter(Boolean))].sort();
-}
-
-const exclCurrent = () => exclReadList('excludedIdentifiers');
-const exclStrCurrent = () => exclReadList('excludedStrings');
-
-/** 类别 → 文案键。 */
-const EXCL_KIND_KEY = {
-  func: 'guiExclKindFunc', class: 'guiExclKindClass',
-  param: 'guiExclKindParam', prop: 'guiExclKindProp', var: 'guiExclKindVar',
-  str: 'guiExclKindStr',
-};
-
-/** 该类别勾选集：字符串栏与标识符栏是两个选项，勾选态分开存。 */
-const exclSetOf = (kind) => (kind === 'str' ? exclStrPicked : exclPicked);
-
-function renderExclPicker() {
-  const host = els.exclCols;
-  host.textContent = '';
-  const q = els.exclSearch.value.trim();
-  const lower = q.toLowerCase();
-  let shown = 0;
-  let pickedVisible = 0;
-
-  for (const kind of SCAN_KINDS) {
-    const all = (exclScan && exclScan[kind]) || [];
-    const list = lower ? all.filter((n) => n.toLowerCase().includes(lower)) : all;
-    const set = exclSetOf(kind);
-    const group = document.createElement('section');
-    group.className = 'excl-group';
-    const h = document.createElement('h3');
-    h.textContent = t(EXCL_KIND_KEY[kind]);
-    const em = document.createElement('em');
-    // 有筛选时同时给出「筛选后 / 总数」，否则只给总数
-    em.textContent = lower ? (list.length + ' / ' + all.length) : String(all.length);
-    h.appendChild(em);
-    group.appendChild(h);
-
-    if (!list.length) {
-      const p = document.createElement('div');
-      p.className = 'excl-empty';
-      p.textContent = t('guiExclNone');
-      group.appendChild(p);
-    } else {
-      const ul = document.createElement('ul');
-      for (const name of list) {
-        shown++;
-        const li = document.createElement('li');
-        const cb = document.createElement('input');
-        cb.type = 'checkbox';
-        cb.checked = set.has(name);
-        cb.dataset.exclName = name;
-        cb.dataset.exclKind = kind;
-        cb.addEventListener('change', () => {
-          if (cb.checked) set.add(name); else set.delete(name);
-          updateExclCount();
-        });
-        const sp = document.createElement('span');
-        sp.textContent = name;
-        sp.title = name;
-        li.append(cb, sp);
-        ul.appendChild(li);
-        if (cb.checked) pickedVisible++;
-      }
-      group.appendChild(ul);
-    }
-    host.appendChild(group);
-  }
-  updateExclCount(shown);
-  return { shown, pickedVisible };
-}
-
-function updateExclCount(visible) {
-  els.exclCount.textContent = t('guiExclCount', {
-    shown: visible === undefined ? exclVisibleCount() : visible,
-    picked: exclPicked.size + exclStrPicked.size,
-  });
-}
-function exclVisibleCount() {
-  const q = els.exclSearch.value.trim().toLowerCase();
-  let n = 0;
-  for (const kind of SCAN_KINDS) {
-    for (const name of (exclScan && exclScan[kind]) || []) {
-      if (!q || name.toLowerCase().includes(q)) n++;
-    }
-  }
-  return n;
-}
-
-/** 取当前输入的源码。多个文件时用当前选中那个，与运行/复制的口径一致。 */
-function exclSource() {
-  const f = state.files[state.active];
-  if (f) return f.code;
-  return els.input.value;
-}
-
-function openExclPicker() {
-  const code = exclSource();
-  if (!code || !code.trim()) {
-    setStatus(t('guiExclNoInput'), 'warn');
-    return;
-  }
-  exclScan = scanIdentifiers(code);
-  exclPicked = new Set(exclCurrent());
-  exclStrPicked = new Set(exclStrCurrent());
-  els.exclSearch.value = '';
-  renderExclPicker();
-  els.exclModal.hidden = false;
-  els.exclSearch.focus();
-}
-
-function closeExclPicker() {
-  els.exclModal.hidden = true;
-}
-
-/**
- * 把勾选写进 excludedIdentifiers（标识符）与 excludedStrings（字符串字面量）。
- *
- * 只在**值真的变了**时才 mark —— 否则点开弹窗再确定也会把这一项标成"用户改过"，
- * 于是它在选项栏里显示为 dirty，导出配置时也会带上，看起来像用户动过它。
- * 写法上刻意**排序后再写**：集合迭代序跟随插入序，不排序的话同一个选择在不同
- * 构建里会产出不同顺序的字符串。
- */
-function applyExclPicker() {
-  const ids = [...exclPicked].sort();
-  const strs = [...exclStrPicked].sort();
-  const n = ids.length + strs.length;
-  let changed = false;
-
-  const put = (key, list) => {
-    if (!list.length) {
-      if (state.touched.has(key)) { state.touched.delete(key); changed = true; }
-      return;
-    }
-    const value = list.join(',');
-    if (state.touched.get(key) !== value) { mark(key, value, null); changed = true; }
-  };
-  put('excludedIdentifiers', ids);
-  put('excludedStrings', strs);
-
-  if (!changed) { closeExclPicker(); return; }
-  if (state.touched.size === 0) renderOptions();   // 两边都清空了才需要重画
-  saveState();
-  closeExclPicker();
-  setStatus(n ? t('guiExclApplied', { n }) : t('guiExclCleared'), n ? 'ok' : 'ok');
-  syncExclRow();
-}
-
-/** 遍历当前可见（即符合筛选）的复选框。全选/清空都只作用于筛选结果。 */
-function forEachVisible(fn) {
-  for (const cb of els.exclCols.querySelectorAll('input[type="checkbox"]')) {
-    if (cb.dataset.exclName) fn(cb.dataset.exclName, cb.dataset.exclKind || 'var', cb);
-  }
-}
-
 // ---------- 持久化 ----------
 
 function saveState() {
@@ -1847,10 +1635,8 @@ function readConfig(raw) {
   if (!Number.isFinite(v) || v < 1) throw new Error('version');
   if (v > CFG_VERSION) throw new Error('newer');
 
-  // 校验用的元数据必须来自 **VALUE_OPTIONS 全量**，不能是 guiOptions()：后者过滤掉
-  // guiHide 的键，于是「不混淆项」背后的 excludedIdentifiers / excludedStrings、以及
-  // 手写正则用的 reservedNames / reservedStrings 都会被当成未知键**静默丢弃**——
-  // 导出时明明写进去了，导入时又没了。
+  // guiHide 的键，于是那些「界面上没有控件、只能经配置或 API 传入」的选项会被当成
+  // 未知键**静默丢弃**——导出时明明写进去了，导入时又没了。
   const meta = new Map(Object.entries(VALUE_OPTIONS).map(([k, s]) => [k, {
     kind: s.kind, values: s.values,
   }]));
@@ -1994,8 +1780,6 @@ async function init() {
     'statsBody', 'runBtn', 'copyBtn', 'dlBtn', 'zipBtn', 'drawer', 'apiBase', 'apiHint',
     'licKey', 'actBtn', 'deactBtn', 'licInfo', 'licDevice', 'licBadge', 'seed', 'presetHint',
     'layoutHint', 'layoutResetBtn', 'cfgImportBtn', 'cfgExportBtn', 'cfgFile',
-    'exclModal', 'exclBackdrop', 'exclClose', 'exclCols', 'exclSearch',
-    'exclCount', 'exclAll', 'exclNone', 'exclApply',
     'resetBtn', 'status', 'quota', 'ver', 'inputPane', 'outputPane', 'apiState', 'shortcutHint',
     'compareBtn', 'compareModal', 'compareClose', 'compareBackdrop']) {
     els[id] = $(id);
@@ -2107,25 +1891,6 @@ async function init() {
     if (f) await importConfig(f);
   });
 
-  // 不混淆项挑选器（入口按钮由 renderOption 的 picker 分支生成并自己接线）
-  els.exclClose.addEventListener('click', closeExclPicker);
-  els.exclBackdrop.addEventListener('click', closeExclPicker);
-  els.exclApply.addEventListener('click', applyExclPicker);
-  els.exclSearch.addEventListener('input', renderExclPicker);
-  els.exclAll.addEventListener('click', () => {
-    forEachVisible((name, kind, cb) => { exclSetOf(kind).add(name); cb.checked = true; });
-    updateExclCount();
-  });
-  els.exclNone.addEventListener('click', () => {
-    forEachVisible((name, kind, cb) => { exclSetOf(kind).delete(name); cb.checked = false; });
-    updateExclCount();
-  });
-  els.exclModal.addEventListener('keydown', (e) => {
-    // Esc 关闭，但别吞掉输入框里的 Esc 之外的行为
-    if (e.key === 'Escape') { e.stopPropagation(); closeExclPicker(); }
-  });
-  // 输入内容变了就重扫。文件被清掉/换掉时排除名单仍保留（那是用户显式选的，与当前
-  // 输入无关），但下次打开弹窗拿到的是新源码的清单。
 
   // 拖放
   for (const pane of [els.inputPane, els.outputPane]) {

@@ -67,24 +67,17 @@ export default function objectKeys(ast, options, ctx) {
   let changed = 0;
   let dotToComputed = 0;
 
-  // 界面「不混淆项」挑选器写进来的精确名：这些属性名保持**字面形态**，不进字符串池、
-  // 也不转计算下标。与 mangle 那边是同一个名单（excludedIdentifiers），但作用对象不同：
-  // 那边管绑定名（变量/函数/参数），这边管属性名（键与点访问）。
-  const keepProps = new Set(options.excludedIdentifiers || []);
-  // 字符串名单（excludedStrings 精确值 + reservedStrings 正则）在这里同样要生效：
-  // 键位上的字符串字面量被拆段之后，stringArray 再也看不到原串，"该串不收集/不拆分"
-  // 的承诺当场落空。语义与 stringArray 的匹配器逐字一致（字面值转义加锚点、手写正则
-  // 保持不锚点 test），否则同一份名单在两处会对同一个串给出不同结论。
-  const reEsc = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  const keepStrRe = [
-    ...(options.reservedStrings || []).map((s) => { try { return new RegExp(s); } catch (e) { return null; } }),
-    ...(options.excludedStrings || []).map((s) => { try { return new RegExp('^' + reEsc(s) + '$'); } catch (e) { return null; } }),
-  ].filter(Boolean);
-  // 命中就保持字面。标 __noPool：stringArray 认这个标记（见 isEligible），否则通过
-  // 属性名名单保护的串会被池收走，产物里只剩一个解码调用，等于这条排除白勾。
+  // reservedStrings 在这里同样要生效：键位上的字符串字面量被拆段之后，stringArray
+  // 再也看不到原串，"该串不收集/不拆分"的承诺当场落空。匹配语义与 stringArray 那边
+  // 逐字一致，否则同一份名单在两处会对同一个串给出不同结论。
+  const keepStrRe = (options.reservedStrings || [])
+    .map((s) => { try { return new RegExp(s); } catch (e) { return null; } })
+    .filter(Boolean);
+  // 命中就保持字面。标 __noPool：stringArray 认这个标记（见 isEligible），否则靠这里
+  // 保护住的串会被池收走，产物里只剩一个解码调用，等于这条保留白设。
   const keepLiteral = (node) => {
     const v = node.value;
-    if (keepProps.has(v) || (keepStrRe.length && keepStrRe.some((re) => re.test(v)))) {
+    if (keepStrRe.length && keepStrRe.some((re) => re.test(v))) {
       node.__noPool = true;
       return true;
     }
@@ -105,7 +98,7 @@ export default function objectKeys(ast, options, ctx) {
       if (t.isStringLiteral(n.key)) {
         const value = n.key.value;
         if (value === '__proto__') return; // 计算属性不再设置原型
-        // 命中排除名单的字符串键保持字面（两类来源：属性名精确名、字符串精确值/正则）
+        // 命中 reservedStrings 的字符串键保持字面
         if (keepLiteral(n.key)) return;
         const expr = makeConcat(value);
         if (!expr) return;
@@ -118,7 +111,6 @@ export default function objectKeys(ast, options, ctx) {
         // 计算形态不触发原型设置。
         const name = n.key.name;
         if (name === '__proto__') return;
-        if (keepProps.has(name)) return;   // 挑选器排除了这个属性名，保持字面形态
         const expr = makeConcat(name);
         if (!expr) return;
         if (n.shorthand) {
@@ -136,7 +128,7 @@ export default function objectKeys(ast, options, ctx) {
       if (n.computed) {
         // 已经是下标形态，只拆字符串
         if (!t.isStringLiteral(n.property)) return;
-        // 与键位同一口径：命中排除名单的串保持字面，否则原串被拆段后
+        // 与键位同一口径：命中保留名单的串保持字面，否则原串被拆段后
         // 字符串名单再也匹配不到它
         if (keepLiteral(n.property)) return;
         const expr = makeConcat(n.property.value);
@@ -147,7 +139,6 @@ export default function objectKeys(ast, options, ctx) {
         // 点访问转计算下标，顺带拆段
         if (!t.isIdentifier(n.property)) return;
         const name = n.property.name;
-        if (keepProps.has(name)) return;   // 同上：点访问也保持字面形态
         // obj.#x 这类私有名进不到这里，parser 给出的是 PrivateName 节点，
         // 这个分支只会遇到公共标识符
         const expr = makeConcat(name);

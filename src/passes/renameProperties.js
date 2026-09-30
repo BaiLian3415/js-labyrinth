@@ -139,14 +139,10 @@ export default function renameProperties(ast, options, ctx) {
   collect(program, null, defs, uses);
 
   // 候选 = 定义 ∩ 访问，再排除白名单
-  // keepProps 是界面「不混淆项」挑选器写进来的精确名（excludedIdentifiers）：
-  // 这些属性名保持原样，与 mangle / objectKeys 共用同一份名单。
-  const keepProps = new Set(options.excludedIdentifiers || []);
   const map = new Map();
   for (const name of defs) {
     if (!uses.has(name)) continue;
     if (RESERVED_PROPS.has(name)) continue;
-    if (keepProps.has(name)) continue;
     if (!map.has(name)) map.set(name, uniqueName(used, prefix));
   }
   if (map.size === 0) return { renamed: 0 };

@@ -266,30 +266,7 @@
   </div>
 </div>
 
-<!-- 不混淆项挑选器（2026-09-29）。类别由词法扫描按上下文推断（web/scan.js），
-     并决定勾选项写进哪份名单：标识符写 excludedIdentifiers、字符串写 excludedStrings。
      两份名单在引擎侧的生效位置不同，所以列错栏不是显示问题、而是排除落空。 -->
-<div class="excl-modal" id="exclModal" hidden role="dialog" aria-modal="true" aria-labelledby="exclTitle">
-  <div class="excl-backdrop" id="exclBackdrop"></div>
-  <div class="excl-card">
-    <div class="excl-head">
-      <h2 id="exclTitle" data-i18n="guiExclTitle">选择不混淆的标识符</h2>
-      <button id="exclClose" class="mini" type="button" data-i18n-aria="cmpAriaClose" aria-label="close">✕</button>
-    </div>
-    <p class="excl-note" data-i18n="guiExclNote">勾选的标识符/字符串在产物中保持原样：变量/函数/参数不改名，属性名不拆进字符串池，字符串字面量不收集不编码，非 ASCII 也不再转成 \uXXXX（直接按原文写出，便于在产物里搜到）。类别按源码上下文推断，并决定勾选项写进哪份名单（标识符或字符串），列错栏会让排除落空。含这些名字的函数不参与 VM 编译；名单非空时外壳层自动跳过——三处都是为了名字真的留在产物里。<b>要让配置值（token、中转地址等）在产物里能直接看到、直接改，请把这些字符串值也在「字符串」栏勾上——勾了就不进字符串池。</b></p>
-    <div class="excl-bar">
-      <input id="exclSearch" class="text" type="search" data-i18n-ph="guiExclSearchPh" placeholder="筛选名称…">
-      <span class="dim" id="exclCount"></span>
-    </div>
-    <div class="excl-cols" id="exclCols"></div>
-    <div class="excl-foot">
-      <button id="exclAll" class="mini" type="button" data-i18n="guiExclSelectAll">全选筛选结果</button>
-      <button id="exclNone" class="mini" type="button" data-i18n="guiExclSelectNone">清空</button>
-      <span class="spacer"></span>
-      <button id="exclApply" class="primary" type="button" data-i18n="guiExclApply">应用</button>
-    </div>
-  </div>
-</div>
 
 <script type="module" src="./app.js"></script>
 </body>

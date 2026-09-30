@@ -113,17 +113,13 @@ function validateReferences(ast, traverse, options) {
 }
 
 /**
- * 「不混淆项」在生成期的字面形态判定器：命中的文本原样写出，不做 \uXXXX 转义。
+ * 保留名在生成期的字面形态判定器：命中的文本原样写出，不做 \uXXXX 转义。
  *
  * 为什么需要它：四个预设都开 escapeNonAscii，它会把非 ASCII 一律转义——包括用户
- * 点名要保留的名字。名字**确实没被改名**（排除是生效的），但产物里写成
+ * 要求保留的名字。名字**确实没被改名**（排除是生效的），但产物里写成
  * \u8ba4\u8bc1\u4ee4\u724c，用户按中文 grep 一个字都搜不到，只能判断"勾了没效果"。
- * 显式勾选优先于通用转义开关，勾了就把原文写出来。
+ * 显式保留优先于通用转义开关，命中就把原文写出来。
  *
- * 两类名单合一：同一个文本在语法上会同时出现在标识符与字符串两个位置——`{'名字':1}`
- * 的键是字符串、`o.名字` 的属性名是标识符、`case '名字':` 是字符串。用户勾的是一个
- * **文本**，落在哪种位置都该原样。手写正则（reservedNames/reservedStrings）一并纳入，
- * 它们是同类需求的另一入口。
  *
  * 名单为空时返回 null：默认路径零开销、产物逐字节不变。
  *
@@ -132,17 +128,14 @@ function validateReferences(ast, traverse, options) {
  */
 function buildKeepRaw(options) {
   const exact = new Set();
-  for (const key of ['excludedIdentifiers', 'excludedStrings']) {
-    for (const s of options[key] || []) if (s) exact.add(s);
-  }
   const res = [];
   for (const key of ['reservedNames', 'reservedStrings']) {
     for (const s of options[key] || []) {
       try { res.push(new RegExp(s)); } catch (e) { /* 非法正则：各处一致忽略 */ }
     }
   }
-  if (!exact.size && !res.length) return null;
-  return (text) => exact.has(text) || res.some((re) => re.test(text));
+  if (!res.length) return null;
+  return (text) => res.some((re) => re.test(text));
 }
 
 /** 判断载荷是否自由引用 CommonJS 绑定（require/module/exports/__dirname/__filename）。
@@ -191,9 +184,7 @@ function obfuscate(code, userOptions) {
   }
 
   // reservedNames / reservedStrings 归一化：字符串（逗号分隔）→ 正则文本数组
-  // excludedIdentifiers / excludedStrings 同形，但它们装的是**字面**名/值不是正则，
-  // 语义差别在 mangle / stringArray 里处理（那边逐个转义并加锚点）。
-  for (const key of ['reservedNames', 'reservedStrings', 'excludedIdentifiers', 'excludedStrings']) {
+  for (const key of ['reservedNames', 'reservedStrings']) {
     if (typeof options[key] === 'string') {
       options[key] = options[key].split(',').map((s) => s.trim()).filter(Boolean);
     } else if (!Array.isArray(options[key])) {
@@ -218,7 +209,7 @@ function obfuscate(code, userOptions) {
   const namesMs = platform.nowMs() - tNames;
 
   const ctx = { traverse, t, usedNames, options, rng: () => rand() };
-  // 「不混淆项」在**生成期**的字面形态。归一化之后就能建，挂 ctx 给主生成与
+  // 保留名在**生成期**的字面形态。归一化之后就能建，挂 ctx 给主生成与
   // integrityCheck 的自哈希共用——两处必须用同一份，否则构建期哈希算的是
   // \uXXXX 形态、运行期读到的是原文，完整性校验必然假失配、把干净产物投毒。
   ctx.keepRaw = buildKeepRaw(options);
@@ -451,7 +442,7 @@ function obfuscate(code, userOptions) {
     compact: options.compact !== false,
     escapeNonAscii: !!options.escapeNonAscii,
     indent: options.indent !== undefined ? options.indent : 2,
-    // 命中「不混淆项」的文本原样写出（不做 \uXXXX 转义），详见 buildKeepRaw
+    // 命中「保留名单」的文本原样写出（不做 \uXXXX 转义），详见 buildKeepRaw
     keepRaw: ctx.keepRaw,
   });
   const generateMs = platform.nowMs() - tGen;
@@ -466,18 +457,18 @@ function obfuscate(code, userOptions) {
   const payloadCjs = !isModuleSrc && usesFreeCommonJs(ast, traverse);
 
   const tShell = platform.nowMs();
-  // ---- 不混淆名单与外壳层的互锁（2026-09-29）----
+  // ---- 保留名单与外壳层的互锁（2026-09-29）---
   //
   // 外壳把已完成的产物当**载荷字节流**加密（反馈密钥流 + 交织置换 + 乱序 base64），
-  // 产物文本里不再有任何用户代码——被排除的标识符/字符串即便在载荷内部一字未改，
-  // 静态上也看不到，与「不混淆项保持原样出现在产物中」这条承诺直接冲突。实测
-  // medium/high/max 三档（预设置 shell: true）下，勾了不混淆项的产物里连一个名
+  // 产物文本里不再有任何用户代码——被保留的标识符/字符串即便在载荷内部一字未改，
+  // 静态上也看不到，与「保留名单保持原样出现在产物中」这条承诺直接冲突。实测
+  // medium/high/max 三档（预设置 shell: true）下，设了保留名的产物里连一个名
   // 都找不到，用户看到的正是"勾了还是混淆了"。
   //
   // 方向选择与 domainLock↔wasm 那条互锁一致：**关外壳，保名单**。名单是用户显式
   // 选定、要拿产物做核对/对接的输入，外壳只是防护层，关掉产物照样正确；反过来把
   // 名单悄悄丢进密文里才是 fail-open。名单为空时一切照旧（产物逐字节不变）。
-  const keepRequested = ['excludedIdentifiers', 'excludedStrings', 'reservedNames', 'reservedStrings']
+  const keepRequested = ['reservedNames', 'reservedStrings']
     .some((k) => Array.isArray(options[k]) && options[k].length > 0);
   const shellByKeepSkipped = keepRequested && options.shell !== false && !isModuleSrc;
   if (options.shell !== false && !shellByKeepSkipped) {
