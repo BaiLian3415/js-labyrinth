@@ -112,6 +112,39 @@ function validateReferences(ast, traverse, options) {
   return problems;
 }
 
+/**
+ * 「不混淆项」在生成期的字面形态判定器：命中的文本原样写出，不做 \uXXXX 转义。
+ *
+ * 为什么需要它：四个预设都开 escapeNonAscii，它会把非 ASCII 一律转义——包括用户
+ * 点名要保留的名字。名字**确实没被改名**（排除是生效的），但产物里写成
+ * \u8ba4\u8bc1\u4ee4\u724c，用户按中文 grep 一个字都搜不到，只能判断"勾了没效果"。
+ * 显式勾选优先于通用转义开关，勾了就把原文写出来。
+ *
+ * 两类名单合一：同一个文本在语法上会同时出现在标识符与字符串两个位置——`{'名字':1}`
+ * 的键是字符串、`o.名字` 的属性名是标识符、`case '名字':` 是字符串。用户勾的是一个
+ * **文本**，落在哪种位置都该原样。手写正则（reservedNames/reservedStrings）一并纳入，
+ * 它们是同类需求的另一入口。
+ *
+ * 名单为空时返回 null：默认路径零开销、产物逐字节不变。
+ *
+ * @param {object} options 归一化之后的选项
+ * @returns {((text:string)=>boolean)|null}
+ */
+function buildKeepRaw(options) {
+  const exact = new Set();
+  for (const key of ['excludedIdentifiers', 'excludedStrings']) {
+    for (const s of options[key] || []) if (s) exact.add(s);
+  }
+  const res = [];
+  for (const key of ['reservedNames', 'reservedStrings']) {
+    for (const s of options[key] || []) {
+      try { res.push(new RegExp(s)); } catch (e) { /* 非法正则：各处一致忽略 */ }
+    }
+  }
+  if (!exact.size && !res.length) return null;
+  return (text) => exact.has(text) || res.some((re) => re.test(text));
+}
+
 /** 判断载荷是否自由引用 CommonJS 绑定（require/module/exports/__dirname/__filename）。
  *  套壳经 (0,eval) 在全局求值，全局无这些绑定，故 CommonJS 源跳过套壳。 */
 function usesFreeCommonJs(ast, traverse) {
@@ -185,6 +218,10 @@ function obfuscate(code, userOptions) {
   const namesMs = platform.nowMs() - tNames;
 
   const ctx = { traverse, t, usedNames, options, rng: () => rand() };
+  // 「不混淆项」在**生成期**的字面形态。归一化之后就能建，挂 ctx 给主生成与
+  // integrityCheck 的自哈希共用——两处必须用同一份，否则构建期哈希算的是
+  // \uXXXX 形态、运行期读到的是原文，完整性校验必然假失配、把干净产物投毒。
+  ctx.keepRaw = buildKeepRaw(options);
 
   // 密钥耦合（P0）。把完整性校验的输出当作字符串池解密密钥的一部分：
   // integrityCheck 在装载期算出「重算哈希 ^ 期望哈希」的偏移和写进一个随机全局
@@ -412,6 +449,8 @@ function obfuscate(code, userOptions) {
     compact: options.compact !== false,
     escapeNonAscii: !!options.escapeNonAscii,
     indent: options.indent !== undefined ? options.indent : 2,
+    // 命中「不混淆项」的文本原样写出（不做 \uXXXX 转义），详见 buildKeepRaw
+    keepRaw: ctx.keepRaw,
   });
   const generateMs = platform.nowMs() - tGen;
 

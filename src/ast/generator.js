@@ -86,6 +86,15 @@ class Generator {
     this.compact = this.options.compact !== false;
     this.escapeNonAscii = !!this.options.escapeNonAscii;
     this.indent = options && options.indent !== undefined ? options.indent : 2;
+    // keepRaw：命中「不混淆项」名单的文本原样写出，**不做 \uXXXX 转义**。
+    //
+    // escapeNonAscii 的四个预设都是开的，它会把非 ASCII 一律转义——包括那些用户
+    // 点名要保留的名字。名字确实没被改名（排除是生效的），但产物里写成
+    // \u8ba4\u8bc1\u4ee4\u724c，用户按中文去 grep 一个字都搜不到，于是合理地判断
+    // 「勾了没效果」。这里的取舍是：**显式勾选优先于通用转义开关**，勾了就把原文
+    // 写出来。代价是产物文本含非 ASCII 字节（与 escapeNonAscii:false 同样的前提：
+    // 文件必须按 UTF-8 提供/解析，页面要有 charset 声明）。
+    this.keepRaw = typeof this.options.keepRaw === 'function' ? this.options.keepRaw : null;
     this._depth = 0; // 当前缩进层级，非紧凑模式才用得上
     this._out = '';
   }
@@ -681,13 +690,17 @@ class Generator {
     // 一个字符串字面量，动辄几 MB——那时逐字符的 switch + 拼接就是 500 万次迭代，
     // 实测占"递归混淆引导器"这一步耗时的 65.8%，也就是整个 shell 步骤的主要成本。
     // 正则扫描在原生代码里跑，量级上快得多；只有真的含需转义字符时才走慢路径。
-    const re = this.escapeNonAscii ? NEEDS_ESCAPE_WIDE : NEEDS_ESCAPE_ASCII;
+    //
+    // wide 与 escapeNonAscii 分开：命中 keepRaw 的串仍要按"非宽"规则转义引号与
+    // 控制字符（否则字面量会坏掉），只是不再把非 ASCII 写成 \uXXXX。
+    const wide = this.escapeNonAscii && !this._keepRaw(s);
+    const re = wide ? NEEDS_ESCAPE_WIDE : NEEDS_ESCAPE_ASCII;
     if (!re.test(s)) return '"' + s + '"';
 
     let out = '"';
     for (let i = 0; i < s.length; i++) {
       const cp = s.charCodeAt(i);
-      if (cp > 0x7e && this.escapeNonAscii) {
+      if (cp > 0x7e && wide) {
         out += '\\u' + cp.toString(16).padStart(4, '0');
         continue;
       }
@@ -716,10 +729,17 @@ class Generator {
     return out;
   }
 
+  /** 命中 keepRaw 名单（未配置时恒 false，零额外开销）。 */
+  _keepRaw(text) {
+    if (!this.keepRaw || typeof text !== 'string' || text === '') return false;
+    return this.keepRaw(text) === true;
+  }
+
   // escapeNonAscii 打开时把标识符里的非 ASCII 字符写成 \uXXXX，
-  // 标识符位置的转义在语法上合法，var \u4e00 = 1 能正常解析
+  // 标识符位置的转义在语法上合法，var \u4e00 = 1 能正常解析。
+  // 命中 keepRaw 的名字原样写出：用户就是要在产物里搜得到它。
   _escapeIdent(name) {
-    if (!this.escapeNonAscii) return name;
+    if (!this.escapeNonAscii || this._keepRaw(name)) return name;
     let out = '';
     for (let i = 0; i < name.length; i++) {
       const cp = name.charCodeAt(i);
@@ -752,11 +772,14 @@ class Generator {
   // 把模板段的 cooked 文本写回源码，反斜杠、反引号和 ${ 都要重新转义，
   // 否则解析时解码出的裸字符会再次被当成转义或插值。
   // escapeNonAscii 打开时连非 ASCII 与 \r 一起转义，模板内的换行本身合法，保持原样。
+  // 命中 keepRaw 的整段同样只做语法必需的转义（反斜杠、反引号、\${、\r、行分隔符），
+  // 不把非 ASCII 写成 \uXXXX——与字符串字面量同一口径。
   _escapeTemplate(s) {
+    const wide = this.escapeNonAscii && !this._keepRaw(s);
     let out = '';
     for (let i = 0; i < s.length; i++) {
       const cp = s.charCodeAt(i);
-      if (cp > 0x7e && this.escapeNonAscii) {
+      if (cp > 0x7e && wide) {
         out += '\\u' + cp.toString(16).padStart(4, '0');
         continue;
       }

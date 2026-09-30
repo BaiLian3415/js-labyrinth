@@ -17,13 +17,16 @@
  *   - 标识符后跟 ':' 同理（且解构 {a: b} 的 a 也是属性名）；
  *   - a['k'] / a?.['k'] 里的字符串是属性名，归属性栏；
  *   - obj.k / obj?.k、get/set 访问器名归属性栏；
- *   - 无括号单参箭头 x => 的 x 归参数栏。
+ *   - 无括号单参箭头 x => 的 x 归参数栏；
+ *   - 「括号后面紧跟 '{'」判为函数/方法定义，其括号是形参表（类体与对象字面量里的
+ *     `m(x){...}` 没有 function 关键字，光看"名字后跟括号"分不出定义还是调用）；
+ *     控制流关键字（if/while/for/switch/with/do/else）排除在这条之外。
  *
  * 扫描是"尽力而为"的：闭包外无法 100% 判定对象字面量与语句块，两处已知的显示偏差
- * ——语句标签 `lbl:` 会被归到属性栏、方法简写 `{ m() {} }` 的 m 会被归到变量栏——
- * 都不影响排除本身：标签名引擎侧从不改名，方法名在两条名单里都是全名等值比较，
- * 从哪一栏勾上都一样生效，只是列的位置不贴切。要修得先能判定对象字面量，那就得
- * 上解析器，代价见上面那段，不值得。
+ * ——语句标签 `lbl:` 会被归到属性栏、方法名（`{ m(){} }` 的 m、`fetch(request)` 的
+ * fetch）会被归到变量栏——都不影响排除本身：标签名引擎侧从不改名，方法名在两条
+ * 名单里都是全名等值比较，从哪一栏勾上都一样生效，只是列的位置不贴切。要修得先能
+ * 判定对象字面量，那就得上解析器，代价见上面那段，不值得。
  */
 
 export const SCAN_KINDS = ['func', 'class', 'param', 'prop', 'var', 'str'];
@@ -47,6 +50,13 @@ const SCAN_GLOBALS = new Set(['Array', 'Object', 'String', 'Number', 'Boolean', 
   'Float64Array', 'ArrayBuffer', 'DataView', 'URL', 'URLSearchParams', 'TextEncoder', 'TextDecoder', 'Intl',
   'queueMicrotask', 'structuredClone', 'crypto', 'performance', 'navigator', 'location', 'history',
   'localStorage', 'sessionStorage', 'eval', 'Function']);
+
+/**
+ * 括号里是**条件表达式**而不是绑定名单的那些头记号。
+ * 它们后面也跟块（if (x) { }），不加排除就会把条件里的名字误判成形参。
+ * catch 刻意不在其中：catch (e) 的 e 是绑定名。
+ */
+const NON_BINDING_HEAD = new Set(['if', 'while', 'for', 'switch', 'with', 'do', 'else']);
 
 /** 字符串字面量结束后的占位记号：让"值的结尾"这件事在 lastSig 上可判。 */
 const STR_END = '@';
@@ -147,58 +157,75 @@ export function scanIdentifiers(code) {
       while (j < n && ID_PART.test(code[j])) j++;
       const w = code.slice(i, j);
       const before = lastSig;
-      if (w === 'function' || w === 'class' || w === 'async') {
-        pendingWord = w; expectParams = true;
-      } else if (w === 'get' || w === 'set') {
-        pendingWord = 'prop';            // 访问器：get val() 的 val 是属性名
-      } else if (afterDot) {
+      const objKey = code[nextSigIdx(j)] === ':' && before !== '?' && before !== 'case';
+      // setsParams：这个名字之后紧跟的 '(' 是**形参表**。只有"声明/定义"位置才成立；
+      // 普通调用 a.b(...) 的括号是实参表，里面的名字不该进参数栏。
+      let setsParams = false;
+      if (afterDot) {
+        // 点访问后面的名字一律是属性名。**这一支必须排在 get/set 判定之前**：否则
+        // headers.set("k", token) 会被当访问器关键字，pendingWord 残留成 'prop'，
+        // 紧接着的括号被判成形参表，token 于是从「变量」跳到「参数」——实测踩中。
         top().items.push({ name: w, kind: 'prop' });
+      } else if (w === 'function' || w === 'class') {
+        pendingWord = w; setsParams = true;
+      } else if (w === 'get' || w === 'set') {
+        if (code[nextSigIdx(j)] === '(') {
+          // set(v){} ... } / get(){}：get/set 本身是**成员名**（方法）。但括号是形参表
+          // 还是实参表**不能在这里定**——裸调用 get(令牌) 也是这个形状，草率认定会
+          // 把实参误判成形参。统一交给 ')' 那句「后面跟不跟 '{'"判定。
+          top().items.push({ name: w, kind: 'prop' });
+        } else {
+          pendingWord = 'prop';          // 访问器关键字：get val() 的 val 是属性名
+        }
+      } else if (w === 'async') {
+        pendingWord = w; setsParams = true;
       } else if (pendingWord) {
         if (pendingWord === 'async') {
           // async 后面的名字不是被声明的函数名（那一个走上面的 function 分支）：
           // async x => x / async m(){} 都得按上下文常规定类，否则参数被塞进函数栏。
-          const objKey = code[nextSigIdx(j)] === ':' && before !== '?' && before !== 'case';
           top().items.push({ name: w, kind: objKey ? 'prop' : 'var' });
-          expectParams = true;
-          pendingWord = '';
         } else {
           top().items.push({ name: w, kind: pendingWord === 'class' ? 'class' : (pendingWord === 'prop' ? 'prop' : 'func') });
-          pendingWord = '';
-          expectParams = true;             // 名字之后紧跟的 '(' 是形参表
         }
+        pendingWord = '';
+        setsParams = true;               // 名字之后紧跟的 '(' 是形参表
       } else {
         // 对象字面量的键：标识符后跟冒号。case a: 的标签与 c ? a : b 的三元真支
         // 不是键值对，那两处保持 var（排除名单对标识符本来就是全名等值比较，
         // 归栏只影响显示与"写进哪份名单"，而这两处的名字都属于标识符名单）。
-        const objKey = code[nextSigIdx(j)] === ':' && before !== '?' && before !== 'case';
         top().items.push({ name: w, kind: objKey ? 'prop' : 'var' });
       }
+      // expectParams 只允许跨空白/注释存活到下一个 '('：任何别的名字都会把它重置，
+      // 否则一个没配上括号的关键字（如 const x = async, y = 1 之后的 async）会把
+      // 后面第一个括号误判成形参表。
+      expectParams = setsParams;
       afterDot = false;
       lastSig = w;
       i = j;
       continue;
     }
 
-    if (c === '.') { afterDot = true; lastSig = '.'; i++; continue; }
+    if (c === '.') { afterDot = true; pendingWord = ''; expectParams = false; lastSig = '.'; i++; continue; }
 
     if (c === '[') {
       // 成员访问还是字面量：看 '[' 前面是不是一个值的结尾（标识符 / ')' / ']' /
       // 字符串 / '.'）。a[k]、a?.[k] 是成员访问，[1,2]、const [a] = x 是字面量。
       brackets.push(afterDot || isValueEnd(lastSig));
-      afterDot = false; pendingWord = ''; lastSig = '[';
+      afterDot = false; pendingWord = ''; expectParams = false; lastSig = '[';
       i++;
       continue;
     }
 
     if (c === ']') {
       if (brackets.length) brackets.pop();
-      afterDot = false; lastSig = ']';
+      afterDot = false; pendingWord = ''; expectParams = false; lastSig = ']';
       i++;
       continue;
     }
 
     if (c === '(') {
-      levels.push({ items: [], isParams: expectParams || pendingWord !== '' });
+      // headSig 记下括号前那个记号，')' 收尾时用它区分"定义"与"调用"（见下）。
+      levels.push({ items: [], isParams: expectParams || pendingWord !== '', headSig: lastSig });
       expectParams = false; afterDot = false; lastSig = '(';
       i++;
       continue;
@@ -206,11 +233,17 @@ export function scanIdentifiers(code) {
 
     if (c === ')') {
       const lv = levels.length > 1 ? levels.pop() : levels[0];
+      const after = nextSigIdx(i + 1);
       // 箭头函数：')' 之后是 '=>'，这层即便没被标记成形参表也要按形参收
-      let j = nextSigIdx(i + 1);
-      if (code[j] === '=' && code[j + 1] === '>') lv.isParams = true;
+      if (code[after] === '=' && code[after + 1] === '>') lv.isParams = true;
+      // 「括号后面紧跟 '{'」= 函数/方法定义体，这层的括号就是形参表。这条补上了
+      // 词汇层拿不到的信息：类体与对象字面量里的 `m(x){...}` 没有 function 关键字，
+      // 光看名字后跟括号分不出"定义"还是"调用"。控制流关键字（if/while/for/
+      // switch/with/do）后面也跟块，但它们括号里是条件表达式，必须排除掉；
+      // catch 不排除——它括号里绑的确实是名字。
+      if (!lv.isParams && code[after] === '{' && !NON_BINDING_HEAD.has(lv.headSig)) lv.isParams = true;
       for (const it of lv.items) add(it.name, (lv.isParams && it.kind === 'var') ? 'param' : it.kind);
-      afterDot = false; lastSig = ')';
+      afterDot = false; pendingWord = ''; lastSig = ')';
       i++;
       continue;
     }
@@ -221,13 +254,13 @@ export function scanIdentifiers(code) {
       const lv = top();
       const it = lv.items[lv.items.length - 1];
       if (it && it.kind === 'var' && it.name === lastSig) it.kind = 'param';
-      afterDot = false; lastSig = '=';
+      afterDot = false; pendingWord = ''; expectParams = false; lastSig = '=';
       i++;
       continue;
     }
 
-    if (c === '{' || c === '[' || c === ';' || c === ',') pendingWord = '';
-    if (!isSpace(c)) { afterDot = false; if (c !== '(') pendingWord = ''; lastSig = c; }
+    if (c === '{' || c === ';' || c === ',') pendingWord = '';
+    if (!isSpace(c)) { afterDot = false; if (c !== '(') pendingWord = ''; expectParams = false; lastSig = c; }
     i++;
   }
   // 未闭合的括号（源码有语法错误时）：把残留条目按 var 收掉，别丢

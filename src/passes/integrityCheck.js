@@ -146,6 +146,10 @@ export default function integrityCheck(ast, options, ctx) {
     compact: options.compact !== false,
     escapeNonAscii: !!options.escapeNonAscii,
     indent: options.indent !== undefined ? options.indent : 2,
+    // 必须与主生成用同一份「不混淆项原样写出」判定：这里算的是**将被写进产物
+    // 的那段文本**的哈希，运行期拿 toString() 重算。主生成把命中的中文写成原文
+    // 而这里写成 \uXXXX 的话，两边哈希不等，干净产物会被自己的完整性校验投毒。
+    keepRaw: ctx && ctx.keepRaw,
   };
 
   // 毒药标志做成多点，N 个独立全局属性全部置位才算完成毒化，解码器

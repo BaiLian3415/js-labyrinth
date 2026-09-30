@@ -3369,6 +3369,37 @@ section('WASM 档位（阶段一恢复）');
       ok(rH2.warnings.length === 0, '名单为空时没有多余警示');
     }
 
+    // 被挑的名字必须**以中文明文**出现在产物里，而不是换了个写法的 \uXXXX。
+    // 四个预设都开 escapeNonAscii，它会把非 ASCII 一律转义——包括用户点名保留的
+    // 名字。名字确实没被改名（排除是生效的），但用户按中文 grep 一个字都搜不到，
+    // 只能判断"勾了没效果"。取舍：显式勾选优先于通用转义开关。
+    {
+      const srcC = 'let 认证令牌 = "Bearer " + "s3cr3t";\n'
+        + 'function 校验(t){ if (t !== 认证令牌) { throw new Error("bad"); } return "ok:" + t; }\n'
+        + 'process.stdout.write(校验("Bearer s3cr3t") + "\\n");';
+      const wantC = runNode(srcC, 'exclc-want.js').trim();
+      const escC = [...'认证令牌'].map((c) => '\\u' + c.codePointAt(0).toString(16).padStart(4, '0')).join('');
+      const cBad = [];
+      for (const preset of ['low', 'medium', 'high', 'max']) {
+        const r = obfuscate(srcC, { preset, seed: 5, shell: false, excludedIdentifiers: '认证令牌' });
+        if (!r.code.includes('认证令牌')) cBad.push(preset + ' 中文明文丢失');
+        if (r.code.includes(escC)) cBad.push(preset + ' 仍写成 \\uXXXX 转义');
+        // 语义要过，且**完整性自校验不能假失配**：哈希算的是将被写进产物那段文本，
+        // 主生成与 integrityCheck 必须用同一份 keepRaw，否则字符串池被投毒，
+        // 取回的字符串里会出现替换字符 U+FFFD。
+        let got = '';
+        try { got = runNode(r.code, 'exclc-' + preset + '.js').trim(); } catch (e) { cBad.push(preset + ' 抛错'); }
+        if (got !== wantC) cBad.push(preset + ' 语义/字符串池异常: ' + JSON.stringify(got));
+        if (got.includes('\ufffd')) cBad.push(preset + ' 字符串池被投毒');
+      }
+      ok(cBad.length === 0, '被排除的中文名以明文出现在产物里，且语义与完整性自校验不受影响', cBad.join('; '));
+
+      // 字符串名单同一条路：被排除的字符串值也原样留存（元字符与中文都算）
+      const rStr = obfuscate('function f(){ return "中文值|a.c"; }\nprocess.stdout.write(f()+"\\n");',
+        { ...baseE, excludedStrings: '中文值|a.c' });
+      ok(rStr.code.includes('中文值|a.c'), '被排除的字符串值以明文原样留存');
+    }
+
     // 挑选器扫描器的分栏。类别决定勾选项写进哪份名单（标识符 / 字符串），
     // 列错栏会让排除落空，所以这些结果按行为契约断言。
     {
@@ -3394,6 +3425,33 @@ section('WASM 档位（阶段一恢复）');
       }
       if (!inCol('func', 'fn')) scanBad.push('函数名没进函数栏');
       ok(scanBad.length === 0, '挑选器分类与名单路由一致（字符串/属性/参数各就各位）', scanBad.join('; '));
+
+      // 回归：`get`/`set` 曾经作为访问器关键字排在点访问判定**之前**，于是
+      // h.set("a", 令牌) 里的 令牌 被当形参收，再经「同名归最具体类别」合并，
+      // 从变量栏跳到参数栏——用户看到的正是"我在里面调用了它就变成参数了"。
+      // 同时钉住「方法形参确实进参数栏」，别为了修前者把真的形参也丢了。
+      const scanCases = [
+        ['点调用实参不判形参', 'function f(){ let 令牌 = 1; const h = {}; h.set("a", 令牌); return 令牌; }',
+          { 令牌: 'var', h: 'var' }],
+        ['裸调用 get(x) 实参不判形参', 'function f(){ let 令牌 = 1; return get(令牌); }', { 令牌: 'var' }],
+        ['对象方法形参进参数栏', 'var o = { n(y){ return y; } };', { n: 'var', y: 'param' }],
+        ['类方法形参进参数栏', 'class A { m(x){ return x; } }', { m: 'var', x: 'param' }],
+        ['异步方法形参进参数栏', 'export default { async fetch(request){ return request; } };', { request: 'param' }],
+        ['catch 绑定进参数栏', 'function f(){ try { g(); } catch (e) { return e; } }', { e: 'param' }],
+        ['if 条件里的名字保持变量', 'function f(){ let 令牌 = 1; if (令牌) { 令牌 = 2; } }', { 令牌: 'var' }],
+        ['while/for/switch 条件不误判', 'function f(a){ while (a) { break; } for (let i=0;i<a;i++){} switch (a) { case 1: break; } }',
+          { a: 'param', i: 'var' }],
+        ['async 未配括号不污染后续', 'const x = async; function f(){ let 令牌 = 1; return g(令牌); }', { 令牌: 'var' }],
+      ];
+      const caseBad = [];
+      for (const [label, csrc, expect] of scanCases) {
+        const got = scanIdentifiers(csrc);
+        for (const [name, want] of Object.entries(expect)) {
+          const col = ['class', 'func', 'param', 'prop', 'var', 'str'].find((k) => got[k].includes(name));
+          if (col !== want) caseBad.push(label + '：' + name + ' 期望 ' + want + ' 实得 ' + (col || '未收'));
+        }
+      }
+      ok(caseBad.length === 0, '形参/变量分栏回归（点调用实参、方法形参、控制流括号）', caseBad.join('; '));
     }
   }
 
