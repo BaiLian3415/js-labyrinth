@@ -24,7 +24,7 @@ const DEFAULT_NAME_STYLE = DEFAULTS.nameStyle;
  *
  * 命名策略由 `nameStyle` 选，共四档（与 obfuscator.io 的 identifierNamesGenerator
  * 同一套命名，便于横向对比产物）：`Mangled`、`Mangled-shuffled`、`Hexadecimal`、
- * `Dictionary`。四档共用下面的"命名池"机制——长度递增、**按引用次数从多到少发放**、
+ * `Dictionary`。四档共用下面的"命名池"机制——长度递增、按引用次数从多到少发放、
  * 跳过已占用名与关键字、池空退回随机名，区别只在池子里装的是什么、以及发名顺序
  * 固不固定。
  */
@@ -35,7 +35,7 @@ const DEFAULT_NAME_STYLE = DEFAULTS.nameStyle;
  * `a…Z$_` → `aa…` → `aaa…` 的固定顺序发名，54 个单字符起步，小文件全用单字符。
  * 这是 terser 等 minifier 的经典取法，也是本项目体积最小的档。
  *
- * 关键性质：**字母表不打乱**。同一个输入永远得到同一份名字，与 seed 无关——好处是
+ * 关键性质：字母表不打乱。同一个输入永远得到同一份名字，与 seed 无关——好处是
  * 两次构建可以逐字节 diff、跨机器结果一致；代价是产物里必然出现 a、b、c… 的发名
  * 顺序，指纹极强。想要短名但不留这个指纹，用 `Mangled-shuffled`。
  */
@@ -71,7 +71,7 @@ function* mangledShuffledNames() {
  * 十六进制名池（`nameStyle: 'Hexadecimal'`）。
  *
  * 形状是"头一个字母 + 若干位十六进制"（a7 / f30 / 0e91…），逐构建打乱。从
- * **2 字符**起步而不是 1 字符：单字符起步会退回 Mangled 那种 a/b/c 序列感，2 字符
+ * 2 字符起步而不是 1 字符：单字符起步会退回 Mangled 那种 a/b/c 序列感，2 字符
  * 起每个名字都长得像摘要片段，肉眼看不出发放顺序。`if`（i+f）这类正好落在
  * "字母+十六进制"形状里的关键字由 RESERVED 跳过。
  *
@@ -273,7 +273,7 @@ export default function mangle(ast, options, ctx) {
   const { traverse } = ctx;
   const used = new Set(ctx.usedNames);
   const prefix = options.identifierPrefix || '_0x';
-  // reservedNames：用户手写的**正则**保留名单（^__webpack 之类），匹配的绑定名不改名
+  // reservedNames：用户手写的正则保留名单（^__webpack 之类），匹配的绑定名不改名
   const reservedRe = (options.reservedNames || [])
     .map((s) => { try { return new RegExp(s); } catch (e) { return null; } })
     .filter(Boolean);

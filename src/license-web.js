@@ -12,7 +12,7 @@
  * 机器码变了；② 特征里任何一项漂移（GPU 渲染器取不到、改时区、改语言）都会让
  * 已激活的卡在 restore 时判成 machine 不一致，用户什么都没干就被踢回未激活。
  *
- * 现在改为**服务端签发**：激活时向 Worker 要一个机器码，Worker 按**卡密编号**
+ * 现在改为服务端签发：激活时向 Worker 要一个机器码，Worker 按卡密编号
  * 登记（KV 里随机签发并持久保存），此后同一张卡在任何设备、任何时间取到的都是
  * 同一个值——"永久绑定"就是说这个。服务端没绑 KV 时退化成"由卡号确定性派生"
  * （同一张卡恒等），保证恒定性不依赖存储是否可用。
@@ -97,7 +97,7 @@ export function setKeyMaterial(codeKeyB64, saltBase64) {
  * Worker 入口每次请求调用，未配置时保持内置常量。
  *
  * 这两个都不是秘密：公钥本来就随源码分发。放在环境变量里只是为了支持"不同部署
- * 用不同密钥对"，不是为了藏东西——**私钥绝不能出现在这里**。
+ * 用不同密钥对"，不是为了藏东西——私钥绝不能出现在这里。
  */
 export function loadKeysFromEnv() {
   const k = platform.env('JSLB_CODE_KEY');
@@ -289,7 +289,7 @@ async function setRedeemer(cardId, code, machineId) {
   const kv = platform.getKv();
   if (kv && typeof kv.put === 'function') {
     try {
-      // **必须看返回值**：store 的契约是「成功 true / 失败 false」，不抛异常
+      // 必须看返回值：store 的契约是「成功 true / 失败 false」，不抛异常
       // （见 vercel/store.js 的接口注释，Upstash 与 RESP 两条实现都这样）。
       // 只 await 不看返回值的话，Redis 挂掉会返回 false，这里却 return true，
       // 于是 activate 里那道 fail-closed 的 `=== false` 判定永远走不到——
@@ -334,11 +334,11 @@ async function deviceId() {
 /**
  * 采集设备特征，拼成一段定序文本。
  *
- * 只取**跨会话稳定**且不受显示设置漂移影响的量：平台、CPU 核心数、GPU 渲染器、
+ * 只取跨会话稳定且不受显示设置漂移影响的量：平台、CPU 核心数、GPU 渲染器、
  * 时区与语言。刻意不取 UA 全串（同一浏览器版本内会随小版本更新漂移）、不取
  * canvas 噪声（隐私浏览器会加噪，且同一台机器两次可能不同）、也不取任何随机值。
  *
- * **不再纳入屏幕尺寸（CSS 像素）与 devicePixelRatio**：它们会随系统显示缩放、
+ * 不再纳入屏幕尺寸（CSS 像素）与 devicePixelRatio：它们会随系统显示缩放、
  * 多屏切换、窗口跨屏拖动而变——这是"机器码随意变动"的主因。保留的几项只在
  * 用户显式更改硬件或浏览器配置时才变，不随日常显示操作漂移。
  *
@@ -403,7 +403,7 @@ function newMachineCode() {
 /**
  * 由卡密编号确定性派生机器码。
  *
- * 只在**服务端没绑 KV** 时用：随机签发的值得有地方存才恒等，没 KV 就存不住
+ * 只在服务端没绑 KV 时用：随机签发的值得有地方存才恒等，没 KV 就存不住
  * （每个 isolate 的内存都是干净的），这时改用"卡号 → 机器码"的确定性映射，
  * 同一张卡在任何 isolate、任何时间都算出同一个值。
  *
@@ -600,7 +600,7 @@ export async function machineId(opts) {
 /**
  * 当前设备码原文（32 位 hex）。
  *
- * 它是客户端随机生成并持久化的标识，用途已**收窄为服务端 KV 的按设备分键**
+ * 它是客户端随机生成并持久化的标识，用途已收窄为服务端 KV 的按设备分键
  * （scopedKey）与 X-JSLB-Device 请求头，不再参与机器码派生——机器码改由设备
  * 特征决定，这样清掉站点数据不会导致已激活的卡失效，且绑定卡在浏览器间可
  * 迁移（只要设备特征不变）。它只是标识，不是密钥。
@@ -644,7 +644,7 @@ export function trialEntitlements() {
  *
  * @param {object} [opts]
  * @param {boolean} [opts.selfAnchored] 是否用记录自己的 machine 作锚点，而不是
- *   现场派生的机器码。**服务侧（Worker 闸门）必须传 true**：Worker 里没有
+ *   现场派生的机器码。服务侧（Worker 闸门）必须传 true：Worker 里没有
  *   navigator / screen / WebGL，派生出的机器码与浏览器永不相等，否则任何记录
  *   都会判成 machine 不一致（详见 license-core.verifyLicenseData 的说明）。
  *   浏览器与 CLI 省略即可，保持"必须与当前机器一致"的严格语义。
@@ -757,7 +757,7 @@ export async function exportRecord() {
  * 核心模块是按设备 cookie 下发的，服务端 KV 里没有这台设备的记录，模块请求
  * 一律 403。这一步让服务端补上登记。
  *
- * 记录本身带签名且绑定机器码。服务端**没有浏览器指纹**，派不出与客户端一致的
+ * 记录本身带签名且绑定机器码。服务端没有浏览器指纹，派不出与客户端一致的
  * 机器码，所以这里采用自锚定校验（verifyLicenseData 传 mid=null）：拿记录自称的
  * machine 作锚点，再验卡密签名、签名绑定段与记录令牌三者是否与它自洽。
  * 客户端因此换不来别人的授权，也改不动套餐与用量（那几项都在令牌载荷里）。

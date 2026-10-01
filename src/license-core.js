@@ -8,7 +8,7 @@
  *
  * 到期时间、套餐与用量都不直接采信存储里的字段，而是由卡密还原后比对：
  * 单独改 expiresAt、plan 或 usage 都过不了令牌验签。到期时间更进一步——它由
- * **卡密里已签名的签发日**推出，连重新签令牌都改不动。
+ * 卡密里已签名的签发日推出，连重新签令牌都改不动。
  *
  * 机器绑定（v5）：卡密本身不再携带绑定段——"一卡一机"由服务端赎回登记承担，
  * 卡密层的 matchesMachine 判定对 v5 卡恒真（bindSeg 恒为全 0）。本地能校验的
@@ -58,11 +58,11 @@ export function readUsage(u) {
  *
  * ## 第 1.5 种调用方式：自锚定（Web 端服务侧）
  *
- * `mid` 省略（传 null/undefined）时进入**自锚定**模式：不拿外部机器码来比，
- * 而是**采信记录自己的 `machine` 字段**作为锚点。
+ * `mid` 省略（传 null/undefined）时进入自锚定模式：不拿外部机器码来比，
+ * 而是采信记录自己的 `machine` 字段作为锚点。
  *
  * 为什么必须提供这个模式：Worker 里没有 navigator / screen / WebGL，设备特征
- * 全为空，`machineId()` 算出来的是一个与浏览器**永不相等**的常量（实测：
+ * 全为空，`machineId()` 算出来的是一个与浏览器永不相等的常量（实测：
  * 服务端 4CFS7ZE5899W3R803S439Y2F vs 浏览器 1K9W9H9S065P0C7M834C1XC8）。
  * 于是浏览器写下的记录在服务端恒被判 `machine` 不一致 —— 核心模块一律 403，
  * 且补登记（importRecord）也永远失败。这不是配置问题，是结构上不可能成立。
@@ -106,7 +106,7 @@ export function verifyLicenseData(data, mid, keyB64) {
   // 非自锚定时才需要显式比对；自锚定下 anchor 就是 data.machine，恒等。
   if (!selfAnchored && data.machine !== mid) return { ok: false, reason: 'machine' };
 
-  // 到期时间由**卡密里已签名的签发日**与天数推出，不采信记录里的 issuedAt 或
+  // 到期时间由卡密里已签名的签发日与天数推出，不采信记录里的 issuedAt 或
   // expiresAt。这两项在存储里是明文，改一下就能把自己的许可证无限续期；而
   // 签发日在卡密签名载荷里，改不动。
   const expected = expiryFromIssueDay(parsed);
@@ -136,7 +136,7 @@ export function verifyLicenseData(data, mid, keyB64) {
  * 到期时间与用量两项都进令牌签名载荷，改存储里的任何一项都过不了验签，
  * 因此每次配额递增都要整份重写，不能只改 usage 字段。
  *
- * 注意这个令牌用的是**派生自公钥的对称密钥**，不需要签发私钥——用量每次递增
+ * 注意这个令牌用的是派生自公钥的对称密钥，不需要签发私钥——用量每次递增
  * 都要重签，而那时只有用户本机。它的作用是留下篡改痕迹，不是安全边界；
  * 真正的防伪造在卡密那层（Ed25519，私钥在签发方）。
  *

@@ -1,5 +1,5 @@
 export default {
-  // 配额口径（2026-09-26 起）：全部按**宿主免费档包络**反推，见 src/host-limits.js。
+  // 配额口径（2026-09-26 起）：全部按宿主免费档包络反推，见 src/host-limits.js。
   // 之所以要往下压：云端执行时上行走 Vercel 函数，平台对请求体有 4.5 MB 硬线，
   // 而免费档的 CPU 额度也只够跑小文件；把配额写成"10 MB/1000 次"只会让用户跑到
   // 一半撞平台 413/超时。每个档的 maxFileBytes 必须 ≤ 该档预设的单文件上限
@@ -62,7 +62,7 @@ export default {
       // 属于「会明显改变产物形态」的功能，与 antiLLM / debugProtection 同级；
       // Free 档只给 low 预设与基础防护，不开这一档。
       //
-      // html2memKey（固定密钥）**刻意不加闸门**：它是 html2mem 的附属项，单独限制没有
+      // html2memKey（固定密钥）刻意不加闸门：它是 html2mem 的附属项，单独限制没有
       // 意义（没有 html2mem 时它本来就不起作用），加了反而会让人以为能单独用。
       // 注意闸门只挂在 html2mem 这一个键上，Plus 及以上没设这个键 = 全放行，
       // 与 antiLLM 的写法一致。
@@ -75,7 +75,7 @@ export default {
     }
   },
   // 2026-09-22 起：订阅档为 Free(low) < Plus(high) < Team(max) = Business(max)。
-  // 提预设上限必须同时把闸门放宽到能放行该预设的**每一个**取值——high 会打开
+  // 提预设上限必须同时把闸门放宽到能放行该预设的每一个取值——high 会打开
   // envFingerprint，闸门若仍把它关着，加载期就会被 assertConsistent() 拦下。
   // Team 与 Business 同为 max 且都不设闸门，差别只剩配额。
   "plus": {

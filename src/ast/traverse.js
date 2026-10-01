@@ -400,7 +400,7 @@ function isRefByIdent(node, parentNode, parentKey) {
   // 没有绑定，selfCheck 立刻报一处假的"未绑定引用"。
   // 注意 shorthand（`import { A }`）两侧指向同一节点，这里一并覆盖。
   if (parent.type === 'ImportSpecifier') return false;
-  // export 的 exported 是对外属性名，不是引用；但 local 是**真实引用**，指向本模块
+  // export 的 exported 是对外属性名，不是引用；但 local 是真实引用，指向本模块
   // 的绑定，`export { c as d }` 里的 c 若不存在就是真的未绑定，必须继续报出来。
   if (parent.type === 'ExportSpecifier' && parent.exported === node) return false;
   if (parent.type === 'ObjectMethod' && parent.key === node) return false;
@@ -567,7 +567,7 @@ function traverse(ast, visitor) {
   // 兼容 File 包装，直接遍历它的 program
   if (ast.type === 'File' && ast.program) ast = ast.program;
   const rootPath = new NodePath(ast, null, null, null);
-  // **作用域树按需构建，这里不预先建。**
+  // 作用域树按需构建，这里不预先建。
   //
   // 原来是 noScope 为假就无条件 buildScopes()，等于每次遍历都从根重搭整棵作用域树
   // （collectNode 要过一遍全树、注册绑定、挂引用路径）。但多数 pass 根本不读
@@ -576,11 +576,11 @@ function traverse(ast, visitor) {
   //
   // 惰性化是安全的：NodePath.scope 的 getter 本来就实现了"缓存失效就重建"的路径
   // （按 scopeBuildSeq 判断陈旧），第一次读 path.scope 时会自己调 buildScopes(root)。
-  // __dshScope 挂在**节点**上，因此同一节点的任意 path 实例拿到的是同一份作用域；
+  // __dshScope 挂在节点上，因此同一节点的任意 path 实例拿到的是同一份作用域；
   // getBinding 只沿已建好的 parent 链走，而拿到 Scope 的唯一途径就是 path.scope，
   // 不存在"没建就查绑定"的路径。Scope.crawl() 也自己会重建，不依赖这里的预建。
   //
-  // visitor.noScope 因此变成了纯兼容标志：它原本只用来阻止这次**急切**构建，而
+  // visitor.noScope 因此变成了纯兼容标志：它原本只用来阻止这次急切构建，而
   // getter 的惰性路径一直不看它。现在急切构建没有了，传不传都一样——保留是为了
   // 不动 12 个 pass 的调用点，语义上等价。
   // 每个节点都要用到的三件事，一次性算好放进 plan。
@@ -614,7 +614,7 @@ function walk(node, path, plan) {
   }
 
   // 叶子节点（Identifier 与各种 Literal）的子键是空数组，而它们占全部节点的一半
-  // 以上。用索引循环而不是 for...of：后者对数组**每次都会新建迭代器对象**，
+  // 以上。用索引循环而不是 for...of：后者对数组每次都会新建迭代器对象，
   // 节点一多就是实实在在的分配与 GC 压力（profile 里 GC 占 10.9%）。
   const keys = VISITOR_KEYS[type];
   const nk = keys == null ? 0 : keys.length;

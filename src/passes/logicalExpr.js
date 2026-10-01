@@ -21,9 +21,9 @@ function isSideEffectFree(node) {
 const BOOL_BINARY_OPS = new Set(['==', '===', '!=', '!==', '<', '>', '<=', '>=']);
 
 /**
- * 表达式是否**恒产出布尔值**。
+ * 表达式是否恒产出布尔值。
  *
- * 交换 `&&`/`||` 两侧只有在这一点成立时才安全：这两个运算符返回的是**操作数的值**，
+ * 交换 `&&`/`||` 两侧只有在这一点成立时才安全：这两个运算符返回的是操作数的值，
  * 不是布尔值。`3 || 1` 得 3，交换成 `1 || 3` 得 1——值变了。原先的注释写"求值结果
  * 不变"，那是错的，也正是这个 pass 在 medium 下把 `v + (b || 1)` 改坏的原因
  * （b 为真时结果被换成右操作数）。两侧都是比较、`!` 或布尔字面量时，取值与真值
@@ -99,7 +99,7 @@ export default function logicalExpr(ast, options, ctx) {
       if (n.operator === '??') return; // ?? 没有等价的交换或三元写法，nullish 分支会漏掉左值
       // 两侧都是原子、且都恒为布尔时交换短路顺序，取值与副作用才都不变。
       //
-      // isBooleanValued 两条刻意放在 rng() **之后**：rng() 的消耗序列因此与修复前
+      // isBooleanValued 两条刻意放在 rng() 之后：rng() 的消耗序列因此与修复前
       // 完全一致，凡是本来就不会发生非法交换的产物仍逐字节不变，改动只落在真正
       // 出错的那部分组合上。
       if (isSideEffectFree(n.left) && isSideEffectFree(n.right) && rng() < 0.3

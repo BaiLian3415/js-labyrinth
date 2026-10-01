@@ -58,7 +58,7 @@ function makeTruePredicate(guard, live, ctx) {
   const eq = (l, r) => t.binaryExpression('===', l, r);
   // 运行时原子族，静态不可折叠。
   //
-  // ⚠️ 除 case 0 外都要用 `typeof v !== 'number' || …` 短路包住。位运算
+  // 除 case 0 外都要用 `typeof v !== 'number' || …` 短路包住。位运算
   // （`>>>` `|` `&` `^`）只对 Number 成立：参数装的是 BigInt 时
   // `v & 0xff` 会抛 "Cannot mix BigInt and other types"，装 Symbol 也会抛。
   // 而参数的实际类型在构建期无从得知（这正是"活值"的意义），所以必须先

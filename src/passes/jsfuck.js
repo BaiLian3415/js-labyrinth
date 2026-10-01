@@ -2,7 +2,7 @@
  * JSFuck 编码器：把一段 ASCII 源码编成只由 [ ] ( ) ! + { } 八个字符构成的表达式
  * （"纯 JSFuck" 家族：语法上只有下标、调用、一元运算与加法）。
  *
- * 为什么不是经典的六个字符：'c'、'o'、'j' 这三个字符在整个可达空间里**只有**
+ * 为什么不是经典的六个字符：'c'、'o'、'j' 这三个字符在整个可达空间里只有
  * 基串 "[object Object]" 给得出，而它必须写成 `([]+{})`；同理 NaN 走 `(+{}+[])`。
  * 少了 `{}` 就连 'constructor' 都拼不出来（拼不出它 → 拿不到 Function →
  * 一切都无从谈起），所以经典 JSFuck 的实现里 `{}` 也是绕不开的基串字面量。
@@ -29,7 +29,7 @@
  *   → '%'         : escape(" ")[0]，escape 经 FUNC("return escape")() 取得
  *   若反过来先要 S，就会绕回 m，环就闭合了。
  *
- * 成本（实测，Node 下真 eval + 长度统计）——**每字节的开销几乎全在 '%'**：
+ * 成本（实测，Node 下真 eval + 长度统计）——每字节的开销几乎全在 '%'：
  *   · 老路线 unescape('%XX')      : 每字节要把 '%' 的取用链整个内联一遍，2969
  *                                  字符/字节（get('%') ≈ 2909 占 98%）。
  *   · 现用路线（占位符置换）      : 编码串里用 hex 字母表外的 's' 占位，整串拼
@@ -136,7 +136,7 @@ const UNESCAPE = () => memoSet('@unescape',
   FUNC() + '(' + strExpr('return unescape') + ')()');
 
 function derive(ch) {
-  // 先处理破环用的三个字符，必须在通用小写分支**之前**：
+  // 先处理破环用的三个字符，必须在通用小写分支之前：
   //   'm' → 来自 "function anonymous(...)"，只需直接字符，无依赖
   //   'S'、'g' → 来自 String 的 .name（拼 "name" 这个键要用到 'm'）
   // 如果把 'm' 交给下面的 (n).toString(36) 分支，它会去要 "toString" 键 → 要 'S'
@@ -156,7 +156,7 @@ function derive(ch) {
     case '%': return FUNC() + '(' + strExpr('return escape') + ')()(' + get(' ') + ')[+[]]';
     default: break;
   }
-  // 其余小写字母走 (v).toString(36)，v 是**base36 数值**：a=10 … z=35
+  // 其余小写字母走 (v).toString(36)，v 是 base36 数值：a=10 … z=35
   // （不是字母表下标——'m' 的下标是 12 但 base36 值是 22，搞错会绕回上面那个环）
   if (ch >= 'a' && ch <= 'z') {
     const v = 10 + (ch.charCodeAt(0) - 97);

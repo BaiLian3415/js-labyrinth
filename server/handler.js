@@ -2,10 +2,10 @@
  * 服务端 JSON API 处理器（Vercel Functions 的实现层，见 vercel/entry.js）。
  *
  * 只提供 /api/* 五个端点：/api/obfuscate、/api/license、/api/plans、/api/health、
- * /api/machine。**静态界面不经过这里**——dist/ 由托管平台的 CDN 直接发；原先
+ * /api/machine。静态界面不经过这里——dist/ 由托管平台的 CDN 直接发；原先
  * "把非 /api 请求转给 ASSETS 绑定"那一路属于 Cloudflare 部署，已随之移除。
  *
- * /api/machine 负责发机器码：激活时客户端向它要一个，服务端按**卡密编号**登记
+ * /api/machine 负责发机器码：激活时客户端向它要一个，服务端按卡密编号登记
  * 后永久保存，同一张卡此后拿到的永远是同一个值（详见 license-web 的"机器码"一节）。
  *
  * 与浏览器共用同一份核心（src/**），因此相同输入、相同卡密在两端得到相同结果与
@@ -19,7 +19,7 @@
  * 卡密是 v5 对称格式（编号 + 加密信息段 + 校验码），服务端与浏览器共用同一把
  * 卡密密钥（内置，或用 JSLB_CODE_KEY 覆盖）。对称密钥随静态资源公开，拿到源码
  * 的人能自己造卡——真正的强制靠服务端：/api/obfuscate 逐请求校验 + KV 赎回登记
- * （一卡一机）；混淆核心**根本不在静态产物里**（构建走 build:web:cloud）。
+ * （一卡一机）；混淆核心根本不在静态产物里（构建走 build:web:cloud）。
  *
  * 请求示例：
  *   curl -X POST https://<host>/api/obfuscate \
@@ -40,7 +40,7 @@ const { t } = i18n;
 /**
  * 设备 cookie。
  *
- * 浏览器的模块请求是同源普通 GET，**不会**带 `X-JSLB-Device` 这种自定义头
+ * 浏览器的模块请求是同源普通 GET，不会带 `X-JSLB-Device` 这种自定义头
  * （ESM 的 import 没法加头），只有 cookie 会自动带上。所以鉴权身份走 cookie。
  */
 function deviceCookie(request, dev) {
@@ -120,7 +120,7 @@ function prepareEnv(env, request) {
 /**
  * 本次请求该用哪种语言回消息。
  *
- * 服务端文案原先只由**模块加载时**读到的 JSLABYRINTH_LANG 决定，于是界面切了英文的
+ * 服务端文案原先只由模块加载时读到的 JSLABYRINTH_LANG 决定，于是界面切了英文的
  * 访问者拿到的报错仍是中文（`Activation failed: 激活失败: 未找到许可证文件` 这种
  * 中英夹杂），这是"license 英文未适配"的来源。
  *
@@ -193,7 +193,7 @@ async function handleObfuscate(request, env) {
   const body = await readBody(request);
   if (body === null) return json({ ok: false, message: 'invalid JSON body' }, 400);
 
-  // 客户端手里的签名记录先补登记，与 /api/license 的补登记是**同一个** licenseWeb
+  // 客户端手里的签名记录先补登记，与 /api/license 的补登记是同一个 licenseWeb
   // .importRecord（验签 + 自锚定机器码 + 赎回登记，一项都不少），只是把两步合成一步。
   //
   // 为什么必须有这一步：Vercel 函数是跨实例无状态的，没接云存储时授权记录只活在

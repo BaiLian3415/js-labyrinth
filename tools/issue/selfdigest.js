@@ -9,7 +9,7 @@
  *
  * 摘要规则见 src/license-secret.js 的头注释：digest_i 取 sha256(相对路径 + '\n' +
  * normalize(text_i))，结果是 64 位 hex，stored_i 再用 HMAC-SHA256(CODE_KEY,
- * 'JSLB/SELF/' + i) 做异或掩码。**路径参与摘要**，所以移动这几个文件同样要重算。
+ * 'JSLB/SELF/' + i) 做异或掩码。路径参与摘要，所以移动这几个文件同样要重算。
  * 掩码密钥是卡密密钥（随源码公开），所以这张表只挡随手改动，不挡有心人——见 license-secret.js。
  * normalize 会把文本里所有 64 位 hex 串抹成 0，为的是避免摘要表引用自身，
  * 不然每写一次表摘要就变一次，永远收敛不了。
@@ -50,7 +50,7 @@ function fileDigest(rel) {
 /**
  * 逐 nibble 异或两个等长 hex 串，结果仍是等长 hex。
  *
- * **不要给每一 nibble 补零**：a[i] / b[i] 是单个 hex 字符，异或结果必然落在
+ * 不要给每一 nibble 补零：a[i] / b[i] 是单个 hex 字符，异或结果必然落在
  * [0,0xF]，toString(16) 恒为一位，输出恒等于入参长度（64）。加 padStart(2,'0')
  * 反而会把每条撑成 128 字符——那样 normalizeForHash 的 /\b[0-9a-f]{64}\b/ 就再也
  * 匹配不上，license-secret.js 的归一化文本随表值变动，--write 的不动点迭代直接

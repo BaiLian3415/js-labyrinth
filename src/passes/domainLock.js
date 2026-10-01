@@ -2,7 +2,7 @@
  * 域名锁定（P5 第二项）：混淆产物只允许在指定域名（及可选端口）上运行。
  *
  * 与 obfuscator.io 的 domainLock（明文域名数组 + 运行期 if 比对 + throw）的
- * 本质区别：这里的匹配结果是**密钥耦合**的——匹配贡献直接写进字符串池解密
+ * 本质区别：这里的匹配结果是密钥耦合的——匹配贡献直接写进字符串池解密
  * 密钥的健康载体，不存在可以 NOP 的检测分支：
  *
  *   构建期  把白名单逐条散列成 32 位数值（逐构建随机盐），掩码编码后内嵌；
@@ -199,7 +199,7 @@ export default function domainLock(ast, options, ctx) {
   if (!stmts.length) throw new Error('domainLock: internal template parse failure');
   // 标记「早带即调用」的函数：integrityCheck 随后会给根级函数体注入交叉校验闩锁，
   // 而闩锁对象（var latchObj={}）是在 integrityCheck 自己的早带块里才赋值的，
-  // 位置在本块**之后**（早带按调用顺序追加，本 pass 先跑）。于是这个函数一旦被
+  // 位置在本块之后（早带按调用顺序追加，本 pass 先跑）。于是这个函数一旦被
   // 挑成入口校验点，函数体首行就是 `if(!latchObj[key])`，此刻 latchObj 还是
   // 提升后的 undefined —— 读 undefined[key] 抛 TypeError，而外层 catch(e){}
   // 把它吞掉：+Q 永不落位，偏移停在非零，整池字符串静默乱码，产物不报任何错。

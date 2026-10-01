@@ -5,7 +5,7 @@
  *   - 本地执行（自建 / 本地静态部署）：直接调用与命令行、服务端同一份核心
  *     （./src/index.js），用访问者的 CPU，代码不出本机；服务端只负责授权
  *     （/api/license）与下发策略（/api/plans），不接触源码。
- *   - 云端执行（Vercel 部署，web.cloudOnly）：产物里**没有**混淆核心，
+ *   - 云端执行（Vercel 部署，web.cloudOnly）：产物里没有混淆核心，
  *     源码上传到 /api/obfuscate 由服务端跑完流水线再回结果。两条路的服务端
  *     实现是同一份（server/handler.js），授权与套餐闸门完全一致。
  *
@@ -16,7 +16,7 @@
  */
 // 授权链路与选项元数据是公开的：未激活用户也要能打开界面、填卡密、激活。
 //
-// 混淆核心（index.js → obfuscate/pipeline/html → passes/ast）**不在静态 import 链上**。
+// 混淆核心（index.js → obfuscate/pipeline/html → passes/ast）不在静态 import 链上。
 // 两种部署形态下它的下场不同：
 //   - 云端执行（cloudOnly，Vercel 部署的默认）：产物里根本没有这批模块，
 //     loadCore 直接拒绝，界面把源码 POST 给 /api/obfuscate。
@@ -157,7 +157,7 @@ function serverAttested() {
 /**
  * 本产物是否由 `build-web.js --cloud` 构建（dist 里没有混淆核心）。
  *
- * 判据是构建期写进 index.html 的 meta 标记，**不依赖服务端**：探活失败时界面也
+ * 判据是构建期写进 index.html 的 meta 标记，不依赖服务端：探活失败时界面也
  * 必须认得自己是云端产物，否则 run() 会去 import 一个不存在的 ./src/index.js，
  * 用户看到的是一句浏览器的 404 黑话，而不是"服务不可用"。
  */
@@ -445,12 +445,12 @@ function mark(key, value, ctl) {
  * 明确照顾手指输入（styles.css 有 @media (pointer: coarse) 整节）。
  *
  * 三处刻意的取舍：
- *  1. **pointerdown 只记意图，不立刻起拖**。等指针真挪过 5px 才算拖动，否则
+ *  1. pointerdown 只记意图，不立刻起拖。等指针真挪过 5px 才算拖动，否则
  *     点开关、点按钮这类普通点击会被误判成拖动（容器里全是这类控件）。
- *  2. **不用 setPointerCapture**。在 pointerdown 上抢捕获会吞掉子元素的 click，
+ *  2. 不用 setPointerCapture。在 pointerdown 上抢捕获会吞掉子元素的 click，
  *     而容器里恰好全是可点控件。改成拖动真正开始后再往 window 挂 move/up，
  *     指针移出容器范围照样跟得住。
- *  3. **被拖的块不脱流**，只是加 .dragging 的观感；顺序变化靠把它插到兄弟节点
+ *  3. 被拖的块不脱流，只是加 .dragging 的观感；顺序变化靠把它插到兄弟节点
  *     前后实现，布局自己回流。省掉算位移、影子副本与"拖完位置对不上"的一整类问题。
  */
 function enableReorder(container, itemSel, opts) {
@@ -494,7 +494,7 @@ function enableReorder(container, itemSel, opts) {
 
   /**
    * FLIP：先量旧位置 → 改 DOM → 用 transform 把元素拉回旧位置 → 下一帧撤掉
-   * transform，让它自己滑到新位置。**只动 transform**，不碰 width/height/margin：
+   * transform，让它自己滑到新位置。只动 transform，不碰 width/height/margin：
    * 一次拖动会连着触发几十次 pointermove，动布局属性等于每帧重排。
    */
   function flip(mutate) {
@@ -538,9 +538,9 @@ function enableReorder(container, itemSel, opts) {
     el.style.height = r.height + 'px';
     el.classList.add('dragging');
     // 入场动画必须掐掉：DOM 一重排节点就被重新插入，而 CSS 动画在重新插入时会
-    // **重启**。group-in / pane-in 都是 backwards 填充 + from{opacity:0}，重启
+    // 重启。group-in / pane-in 都是 backwards 填充 + from{opacity:0}，重启
     // 瞬间元素是全透明的——拖动时每重排一次就闪一次，看着就是"卡片莫名消失"。
-    // 这个标记**故意留到下次开抽屉才清**（setDrawer 里清 .opt-groups）：松手就清
+    // 这个标记故意留到下次开抽屉才清（setDrawer 里清 .opt-groups）：松手就清
     // 会让入场动画在落位那一刻再闪一次，等于把问题挪了个位置。
     container.classList.add('reordering');
     drag.ph = ph;
@@ -698,7 +698,7 @@ function updatePresetHint() {
   let txt = ent
     ? base + ' ' + t('guiPresetCeiling', { preset: ent.preset }) + ' · ' + limitsText(ent)
     : base;
-  // consoleStub 会把 console.* 全部置空且永久生效，选中后产物运行时的**任何**
+  // consoleStub 会把 console.* 全部置空且永久生效，选中后产物运行时的任何
   // console 输出都不会出现。这极易被当成"产物坏了"（在 Node 下跑脚本时表现为
   // 静默退出、一行输出都没有）。只有 max 预设默认开着它，所以选到时必须显式提示。
   const stub = state.touched.has('consoleStub')
@@ -954,7 +954,7 @@ async function run() {
     // 单文件模式下输入框是唯一真相，每次运行都要重新读一遍。
     //
     // 原来只在 state.files 为空时读输入框，而第一次运行就会把 state.files 填成
-    // 一项，于是**第二次运行沿用第一次缓存的源码**：用户改了代码再点运行，看到的
+    // 一项，于是第二次运行沿用第一次缓存的源码：用户改了代码再点运行，看到的
     // 还是旧结果，且没有任何提示。输入框上没有 input 监听写回 state.files，
     // 所以那条路径永远同步不上。
     //
@@ -1140,7 +1140,7 @@ async function syncServerPolicy() {
   const ens = await licenseWeb.ensure();
   if (ens.ok && !ens.trial) {
     state.serverLicense = null;
-    // 本地已有授权**也要**同步一次服务端：核心模块按设备 cookie 下发，而 cookie
+    // 本地已有授权也要同步一次服务端：核心模块按设备 cookie 下发，而 cookie
     // 只在服务端认得这台设备时才管用。上次会话只在本地验过卡密的话，服务端这边
     // 是没有记录的，模块请求会全部 403。同步完再预热核心，免得首次执行要等模块。
     const s = await pushLicense();
@@ -1240,8 +1240,8 @@ function renderApiState() {
     // 提示优先级：能不能连上 > 部署有没有云存储 > 执行模式 > 其它。
     //
     // "没接云存储"排在执行模式之前是刻意的：store=memory 时授权记录只活在单个
-    // 函数实例里，实例一换就"刚激活又提示未激活"、每日次数按实例重置——这是**部署
-    // 缺陷**，比"云端执行"这种设计选择更需要先说，否则用户只会看到一句莫名其妙的
+    // 函数实例里，实例一换就"刚激活又提示未激活"、每日次数按实例重置——这是部署
+    // 缺陷，比"云端执行"这种设计选择更需要先说，否则用户只会看到一句莫名其妙的
     // 激活失败，完全想不到根因在存储。判据来自 /api/health 的 store 字段。
     const noStore = !!(state.apiOnline && state.apiInfo && state.apiInfo.store === 'memory');
     if (cloudOnly() && state.apiOnline === false) els.apiHint.textContent = t('guiCloudNoApi');
@@ -1329,7 +1329,7 @@ async function refreshLicensePanel() {
   els.licBadge.title = trial ? t('guiTrialHint', { limits: limitsText(ent) }) : '';
   els.licBadge.dataset.state = nextLic;
   if (prevLic && prevLic !== nextLic) replay(els.licBadge, 'pop');
-  // 用量一律按**本地**记录显示，不能用服务端那份。
+  // 用量一律按本地记录显示，不能用服务端那份。
   //
   // 界面这一侧的混淆在浏览器内跑，consumeRun 只把用量写进本地签名记录；服务端那份
   // 是 /api/obfuscate 的计数，浏览器跑多少次它都不知道（这是设计如此，见
@@ -1339,7 +1339,7 @@ async function refreshLicensePanel() {
   // 原先这里在 state.serverLicense 存在时直接显示服务端的 quotaText，于是有两个症状：
   //   1) 跑完一次不刷新次数——显示的是一份激活时刻的服务端快照；
   //   2) 刷新页面后先看到本地计数，紧接着被服务端的旧值（通常是 0）覆盖掉。
-  // 而 state.serverLicense 在**本地有记录**时也会被赋值（见 syncLicenseWithServer），
+  // 而 state.serverLicense 在本地有记录时也会被赋值（见 syncLicenseWithServer），
   // 所以这条分支的"本地没有可读的记录"前提并不成立。
   const localQuota = await licenseWeb.quotaText();
   if (state.serverLicense) {
@@ -1373,11 +1373,11 @@ async function refreshLicensePanel() {
  * 否则英文界面下会一直留着初始化时写下的中文（"试用模式（未激活）…"）。
  * init 与语言切换共用这一处，避免两份逻辑漂移。
  *
- * ⚠️ 「没有许可证」不等于「激活失败」。requireLicense=true 时 ensure() 在本机
- * 没有记录就返回 {ok:false, reason:'missing'}，那是**每个新浏览器的常态**；原先
+ * 「没有许可证」不等于「激活失败」。requireLicense=true 时 ensure() 在本机
+ * 没有记录就返回 {ok:false, reason:'missing'}，那是每个新浏览器的常态；原先
  * 一律套上 webActivateFailed 播成「激活失败: 未找到许可证文件」，用户刚打开页面、
  * 还没输过卡密就先看到一句失败，而授权面板同时显示着服务端的套餐（serverLicense），
- * 两行自相矛盾、极难自查。现在这里只给中性引导，**真正的激活失败仍由 activate() 播报**。
+ * 两行自相矛盾、极难自查。现在这里只给中性引导，真正的激活失败仍由 activate() 播报。
  */
 async function refreshStatusFromLicense() {
   const ens = await licenseWeb.ensure();
@@ -1576,7 +1576,7 @@ const CFG_VERSION = 1;
  * 选项口径直接复用 explicitOptions()——那份正是提交给核心的显式选项。导出与实跑
  * 共用同一份定义，才不会出现"导出的配置导入后跑出另一种结果"。
  *
- * **刻意不带的东西**（导出文件是要能发出去的）：
+ * 刻意不带的东西（导出文件是要能发出去的）：
  *   · 卡密 state.apiKey —— 付费凭据，进了 JSON 就等于公开出去；
  *   · 服务地址 state.apiBase —— 环境相关，不是防护配置的一部分。导出它会在换
  *     机器/换站点时带着旧地址走，纯添乱。
@@ -1622,7 +1622,7 @@ function coerceOption(kind, value) {
 /**
  * 解析并校验一份配置文件，返回要落到 state 上的东西。
  *
- * **未知键必须丢掉，不能塞进 state.touched** —— 那份 map 的内容会被原样 POST 到
+ * 未知键必须丢掉，不能塞进 state.touched —— 那份 map 的内容会被原样 POST 到
  * /api/obfuscate，来源不明的键不该有机会走到服务端请求体里。值也一律按选项元数据
  * 的 kind 收敛（bool 真假、int/count 取整、percent 夹到 0..1、enum 对 values），
  * 免得手改的 JSON 塞进一个后面会让核心抛异常的值。
@@ -1636,7 +1636,7 @@ function readConfig(raw) {
   if (v > CFG_VERSION) throw new Error('newer');
 
   // guiHide 的键，于是那些「界面上没有控件、只能经配置或 API 传入」的选项会被当成
-  // 未知键**静默丢弃**——导出时明明写进去了，导入时又没了。
+  // 未知键静默丢弃——导出时明明写进去了，导入时又没了。
   const meta = new Map(Object.entries(VALUE_OPTIONS).map(([k, s]) => [k, {
     kind: s.kind, values: s.values,
   }]));
@@ -1757,7 +1757,7 @@ function initPaneOrder() {
 /**
  * 布局复位：卡片顺序与面板顺序都回到默认，再重渲染一次。
  *
- * 面板必须**显式**按默认顺序摆回去，不能只把 state.paneOrder 清空就完事：
+ * 面板必须显式按默认顺序摆回去，不能只把 state.paneOrder 清空就完事：
  * applyPaneOrder() 的循环体在空数组下根本不执行，面板会保持拖动后的顺序。
  */
 function resetLayout() {

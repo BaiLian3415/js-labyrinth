@@ -147,7 +147,7 @@ export default function stringArray(ast, options, ctx) {
   const honey = options.honeyStrings !== false;
   // reservedStrings：匹配的字符串字面量不收集 / 不拆分 / 不编码（正则保留名单）
 
-  // 两类并成一个匹配器。字面量必须转义并**加锚点**：reservedStrings 那边是用户手写的
+  // 两类并成一个匹配器。字面量必须转义并加锚点：reservedStrings 那边是用户手写的
   // 正则、语义本就是不锚定的 test，若把字面量直接丢进去，"abc" 会连 "abcd" 一起命中。
   const reservedRe = (options.reservedStrings || [])
     .map((s) => { try { return new RegExp(s); } catch (e) { return null; } })
@@ -326,10 +326,10 @@ export default function stringArray(ast, options, ctx) {
     const rotation = options.stringArrayRotate === false ? 0 : randInt(0, maxRot);
     const mask = useIndexMask ? randInt(0x100, 0xffffff) : 0;
     const checksum = options.selfDefending ? hashItems(encodedItems) : null;
-    // 访问期校验和必须按**旋转后**的顺序算：装配期的校验跑在旋转之前，而访问
+    // 访问期校验和必须按旋转后的顺序算：装配期的校验跑在旋转之前，而访问
     // 期看到的池已经左旋过 R 位，FNV 与顺序相关，直接拿旋转前的期望值比对会
     // 每一组都失配，把正常产物自己毒掉
-    // 注意旋转的是**密文**数组：池里存的是 encodedItems，运行期重算走的也是它
+    // 注意旋转的是密文数组：池里存的是 encodedItems，运行期重算走的也是它
     const rotatedItems = rotation > 0
       ? encodedItems.slice(rotation).concat(encodedItems.slice(0, rotation))
       : encodedItems;
@@ -589,7 +589,7 @@ function buildIifeSource({ listVar, encodedItems, encoding, key, rotation, mask,
   // 「dk 非零但掩码为零」的白名单情形；dk === 0 时整式恒等于原字符串（逐位可
   // 验证），正常产物不受影响。
   //
-  // **空串必须跳过**：池里的空串有实际用途（拼名时的 join("") 分隔符），而空串没有
+  // 空串必须跳过：池里的空串有实际用途（拼名时的 join("") 分隔符），而空串没有
   // 首码元，charCodeAt(0) 是 NaN，fromCharCode(NaN) 会把它变成 "\u0000" 之类的脏
   // 字符，拼出来的方法名就错了（实测表现为 "undefined is not a function"）。长度
   // 判断只影响空串、与毒化语义无关。

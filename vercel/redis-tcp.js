@@ -1,14 +1,14 @@
 /**
- * 极小 Redis 客户端：只用 Node 内置的 node:net / node:tls，**零第三方依赖**。
+ * 极小 Redis 客户端：只用 Node 内置的 node:net / node:tls，零第三方依赖。
  *
  * 为什么需要它：Vercel Marketplace 的「Redis（Official Redis for Vercel，背后是
- * Redis Cloud）」只会注入**一个**环境变量 `REDIS_URL`——标准 redis:// 连接串，
- * **没有 REST 接口**。官方示例的做法是 `npm install redis`。
+ * Redis Cloud）」只会注入一个环境变量 `REDIS_URL`——标准 redis:// 连接串，
+ * 没有 REST 接口。官方示例的做法是 `npm install redis`。
  * 而本项目把「零依赖」当硬要求（部署方拿到源码 `node vercel/entry.js` 就能直接跑，
  * 不必先过一遍 npm 审计与供应链面），所以这里自己拼 RESP。
  *
  * 范围刻意收窄：只实现授权记录与用量计数真正用到的那几条命令
- * （GET / SET / DEL / INCRBY），走**同一条连接、命令串行化**。授权路径的并发极低
+ * （GET / SET / DEL / INCRBY），走同一条连接、命令串行化。授权路径的并发极低
  * （一次请求才两三条命令），串行完全够用，换来的是不会出现"两条命令的回包交叉"
  * 这类难查的解析 bug。
  *
@@ -16,12 +16,12 @@
  *   命令  *<参数个数>\r\n$<字节长度>\r\n<参数>\r\n...
  *   回包  +OK  -ERR ...  :123  $5\r\nhello  $-1  *2\r\n...
  * 四个容易踩的点，这里都处理了：
- *   1. 长度是**字节数**不是字符数——记录里有中文与 base64，按字符数算必然错位；
+ *   1. 长度是字节数不是字符数——记录里有中文与 base64，按字符数算必然错位；
  *   2. 回包可能跨 TCP 分段到达，缓冲区不够时必须等下一个 chunk，不能当错误；
- *   3. scheme 决定传输方式，但**绝不从 TLS 往下掉**：`rediss://` 只走 TLS（握手失败
+ *   3. scheme 决定传输方式，但绝不从 TLS 往下掉：`rediss://` 只走 TLS（握手失败
  *      就判失败，不改走明文），`redis://` 先明文、失败再升到 TLS（有些服务商会把
  *      TLS 端口的 scheme 写成 redis://）。实测 Vercel 官方 Redis 注入的连接串是
- *      `redis://…:10944`，那个端口是**明文**的（对同一端口发 TLS 握手会被回
+ *      `redis://…:10944`，那个端口是明文的（对同一端口发 TLS 握手会被回
  *      WRONG_VERSION_NUMBER），所以明文优先既不绕路也不多余。
  *   4. 命令级错误（-ERR）不该断连接，只有连接层失败才重连。
  *
@@ -288,7 +288,7 @@ function createClient(options) {
     if (connecting) return connecting; // 别的命令正在建连，共享它
     session = null;
     connecting = (async () => {
-      // 试哪些传输方式，规则只有一条：**不往下掉安全等级**。
+      // 试哪些传输方式，规则只有一条：不往下掉安全等级。
       //   连接串写 rediss:// → 只试 TLS。写明要加密就不能因为握手失败而改走明文，
       //     那种情况宁可判失败（写入返回 false、授权模块提示用量写不进去）。
       //   连接串写 redis://  → 先明文后 TLS。有些服务商会把 TLS 端口的 scheme 写成

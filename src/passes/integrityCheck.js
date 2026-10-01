@@ -117,11 +117,11 @@ export default function integrityCheck(ast, options, ctx) {
   // 引用 + 显式键"登记：运行期取 fn.toString()，构建期生成同一节点的文本，两
   // 者逐字比对。显式键取代旧的 fn.name 查表，匿名函数表达式也能进表。
   const targets = rootBody.filter((s) => s.type === 'FunctionDeclaration' && s.id && s.id.name);
-  // 机制层（字符串池访问器）走**延迟校验**：头部循环插在装载最早期，那时
+  // 机制层（字符串池访问器）走延迟校验：头部循环插在装载最早期，那时
   // `var accessor = ...` 还没执行，引用到的是 undefined，哈希必然假失配。
   // 于是单独生成一块校验，插到最后一条访问器声明之后——那时函数已就位，
   // 且仍在用户代码之前。
-  // 可见性过滤：只收声明**仍在 rootBody 里**的访问器。vm（含 vmWrapTopLevel）会把
+  // 可见性过滤：只收声明仍在 rootBody 里的访问器。vm（含 vmWrapTopLevel）会把
   // 部分根级语句搬进嵌套函数体，搬走之后语句就不在 rootBody 里了，硬插校验块会失配，
   // 宁可放弃这一处的覆盖，也不要拿假失配投毒去换覆盖率。
   const deferred = [];
@@ -146,8 +146,8 @@ export default function integrityCheck(ast, options, ctx) {
     compact: options.compact !== false,
     escapeNonAscii: !!options.escapeNonAscii,
     indent: options.indent !== undefined ? options.indent : 2,
-    // 必须与主生成用同一份「不混淆项原样写出」判定：这里算的是**将被写进产物
-    // 的那段文本**的哈希，运行期拿 toString() 重算。主生成把命中的中文写成原文
+    // 必须与主生成用同一份「不混淆项原样写出」判定：这里算的是将被写进产物
+    // 的那段文本的哈希，运行期拿 toString() 重算。主生成把命中的中文写成原文
     // 而这里写成 \uXXXX 的话，两边哈希不等，干净产物会被自己的完整性校验投毒。
     keepRaw: ctx && ctx.keepRaw,
   };
@@ -234,10 +234,10 @@ export default function integrityCheck(ast, options, ctx) {
   //
   // 排除「早带即调用」的函数（domainLock 的授权校验函数，见该 pass 的注释）：
   // 闩锁对象 var latchObj={} 是在本 pass 自己的早带块里才赋值，而那个块排在
-  // domainLock 早带块**之后**。给这种函数注入闩锁，函数体首行 `if(!latchObj[k])`
+  // domainLock 早带块之后。给这种函数注入闩锁，函数体首行 `if(!latchObj[k])`
   // 会在 latchObj 还是提升后的 undefined 时执行 → TypeError 被外层 catch 吞掉 →
   // domainLock 的 +Q 永不落位 → 字符串池偏移非零 → 整池静默乱码。
-  // 被排除的函数**仍在哈希面内**（头部循环照常校验它），只是不作为入口校验点，
+  // 被排除的函数仍在哈希面内（头部循环照常校验它），只是不作为入口校验点，
   // 也就是不获得"被调用时顺手校验一个 peer"这层交叉检查。
   const entryCandidates = targets.filter((fn) =>
     !isVMCompiled(fn) && !rtlib.isRtFn(ctx, fn) && fn.body && fn.body.type === 'BlockStatement'
@@ -351,7 +351,7 @@ export default function integrityCheck(ast, options, ctx) {
   const maskLitA = '0x' + (hashMaskA >>> 0).toString(16);
   const maskLitB = '0x' + (hashMaskB >>> 0).toString(16);
   verifierLines.push('var ' + nEA + '=' + nEnt + '[0]^' + maskLitA + ';var ' + nEB + '=' + nEnt + '[1]^' + maskLitB + ';');
-  // 密钥耦合（P0）：把「重算 ^ 期望」的偏移**无条件**累加到健康载体上。
+  // 密钥耦合（P0）：把「重算 ^ 期望」的偏移无条件累加到健康载体上。
   // 未被改动时两项都是 0，载体保持健康常量，读取端算出的密钥偏移为 0；
   // 改任一被校验函数即让偏移非零，字符串池的解密密钥整体偏移，整池字符串
   // 静默变乱码。这里没有 if——不存在「校验分支被 NOP 掉就恢复」的路径。
@@ -371,7 +371,7 @@ export default function integrityCheck(ast, options, ctx) {
   // 一次精确子串校验，防的是针对哨兵体内容的定向重写
   const headLines = [];
   headLines.push('(function(){');
-  // 健康载体**不在这里初始化**：绝对健康值由横幅自检写入，它是整份产物里最早
+  // 健康载体不在这里初始化：绝对健康值由横幅自检写入，它是整份产物里最早
   // 执行的代码，能保证任何字符串池访问之前载体都有效。本块的校验调用只做增量
   // 累加（未被改动时每一项都是 0）。这里若再写一次绝对值，会把横幅那份偏移
   // 抹掉，横幅耦合就失效了。
@@ -417,7 +417,7 @@ export default function integrityCheck(ast, options, ctx) {
   // 而它过去完全不在校验面内。
   //
   // 访问器声明不一定还在 rootBody —— vm（含 vmWrapTopLevel）会把部分根级语句搬进
-  // 嵌套函数，所以按**语句节点**找回它实际所在的语句块，就地插一个一次性校验块（挂在
+  // 嵌套函数，所以按语句节点找回它实际所在的语句块，就地插一个一次性校验块（挂在
   // 闩锁表上，即便落在热函数里也只跑一次）。落在 VM 已编译函数体内的跳过：
   // 那里的代码是按字节码步执行的，插进去既不会被正常执行也破坏匹配。
   let deferredInjected = 0;

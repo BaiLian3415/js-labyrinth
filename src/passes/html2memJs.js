@@ -1,16 +1,16 @@
 /**
- * HTML2MEM（JS 侧）：把**嵌在 JS 里的 HTML** 也加密成密文，运行期由注入的解码器还原。
+ * HTML2MEM（JS 侧）：把嵌在 JS 里的 HTML 也加密成密文，运行期由注入的解码器还原。
  *
  * 与文档模式（src/html2mem.js，改的是整篇 HTML 的文本节点与属性值）的分工：
  *   - 文档模式：输入本身是 HTML，加密文本节点 + 属性值，还原靠 loader 遍历 DOM。
  *   - 本 pass：输入是 JS，HTML 以字符串/模板字面量存在于代码里。把这样的字面量换成
  *     一个运行期解码调用 `_h2m(N)`，N 指向本文件专属的密文表。
  *
- * **这里不需要 DOM**：解码器只做一件事——按标记把模板里的占位换回值、返回字符串。它不
+ * 这里不需要 DOM：解码器只做一件事——按标记把模板里的占位换回值、返回字符串。它不
  * 碰 document，所以产物在 Node / worker / ServiceWorker 里照样能跑。这一点与文档模式
  * （必须有 document）根本不同，也是本模式适用范围更广的原因。
  *
- * 两个识别来源，取**并集**（用户 2026-10-01 选定）：
+ * 两个识别来源，取并集（用户 2026-10-01 选定）：
  *   1. 标签白名单：串里出现白名单标签的 `<tag` 或 `</tag`。用白名单而不是「有尖括号
  *      就算」，是为避开 `a < b`、`Array<int>`、`i<length` 这类误伤——`<b` 里的 b 不是
  *      标签，`Map<string,X>` 里的 string 不是标签。代价是自定义标签（`<my-widget>`）
@@ -19,7 +19,7 @@
  *      document.write / createContextualFragment 的实参里，或 ``$(`…`)`` 这类
  *      jQuery/Zepto 调用。这类即使标签不在白名单也会被处理。
  *
- * **带标签的模板（lit-html 的 html`…`）不处理**，这是有意留的空缺而不是漏写：
+ * 带标签的模板（lit-html 的 html`…`）不处理，这是有意留的空缺而不是漏写：
  * 它的准星位置必须是真正的 TemplateLiteral，替换成解码调用会让
  * TaggedTemplateExpression.quasi 变成 CallExpression，生成器读 node.quasis 直接抛
  * TypeError；而且标签函数约定收到的是 (strings, ...values)，塞一个返回单个字符串的
@@ -30,10 +30,10 @@
  * 插值模板（`<div>${x}</div>`）逐个静态片段加密，重建成 `_h2m(0)+x+_h2m(1)` 的拼接。
  * 片段本身加密不出东西的（纯空白、单个闭合标签）保持原样，不为了统一而套一层空调用。
  *
- * **必须**排在 stringArray 之前（obfuscate.js 里有注释说明）：它把字面量整个换掉，
+ * 必须排在 stringArray 之前（obfuscate.js 里有注释说明）：它把字面量整个换掉，
  * stringArray 后面就看不到 HTML 了。
  *
- * 注入头部是**源码级前插**、不参与 mangle，所以注入名必须登记进 ctx.keepNames，
+ * 注入头部是源码级前插、不参与 mangle，所以注入名必须登记进 ctx.keepNames，
  * 否则 AST 里的调用点被改名、注入源码里的名字没变，两边对不上。与 stringArray 的
  * 解码器同一处理。
  */
@@ -101,7 +101,7 @@ function nodeName(node) {
  *     / `$(`…`)`（jQuery、Zepto）：实参或模板本体
  *   - `` html`…` ``（lit-html 之类）：tag 名以 html 结尾
  *
- * 位置参数一律**取全部实参**逐一判断：insertAdjacentHTML 的内容在第二个参数、
+ * 位置参数一律取全部实参逐一判断：insertAdjacentHTML 的内容在第二个参数、
  * document.write 在第一个，逐一分辨太脆，漏判的代价（该加密的没加密）比分判的代价大。
  */
 function byDomSite(path) {
@@ -190,7 +190,7 @@ export default function html2memJs(ast, options, ctx) {
   const keep = ctx.keepNames || (ctx.keepNames = new Set());
 
   const isReserved = makeReservedFilter(options);
-  // 标记字符按**整份源码**挑一次：同一文件里所有模板共用一组，索引才对得上。
+  // 标记字符按整份源码挑一次：同一文件里所有模板共用一组，索引才对得上。
   const mk = pickMarkers(typeof ctx.source === 'string' ? ctx.source : '')
     || { open: '\u0001', close: '\u0002' };
 
@@ -288,11 +288,11 @@ export default function html2memJs(ast, options, ctx) {
 
   // ---- 阶段三：替换 ----
   //
-  // 两类要分开处理，且**顺序不能反**：
+  // 两类要分开处理，且顺序不能反：
   //   1. 无插值模板（收集时归入 'str'）：path 就是 TemplateLiteral 本身，整体换成一个调用。
   //   2. 有插值模板：按 path 聚合成拼接表达式替换。
   //
-  // 顺序反了会坏：先处理 'str' 时，它 replaceWith 掉的节点里可能**同时**含有后来
+  // 顺序反了会坏：先处理 'str' 时，它 replaceWith 掉的节点里可能同时含有后来
   // quasiPlan 引用的子路径——那些子路径指向已经被回收的 quasis，replaceWith 会写坏
   // AST，生成器读到 undefined.quasis 直接抛。先做聚合替换（quasiPlan 里的 path 是
   // 带插值的模板，与 'str' 那批不重叠），再逐个替换 'str'，两者就互不干扰。
@@ -333,7 +333,7 @@ export default function html2memJs(ast, options, ctx) {
   const cipher = crypt(packed, key);
   const blob = btoa(cipher);
 
-  // 注入名是**宿主全局**上的绑定（源码级前插的 var），AST 里的引用没有对应声明，
+  // 注入名是宿主全局上的绑定（源码级前插的 var），AST 里的引用没有对应声明，
   // validateReferences 会判成「未绑定引用」而让 selfCheck 失败。登记进
   // options.extraGlobals —— 那是 validateReferences 认的自定义全局入口，
   // stringArray 的 accessor 也走同一条路。

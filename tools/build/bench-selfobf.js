@@ -5,7 +5,7 @@
 // 分段解密，字符串池把每次取字符串变成解密加校验，而控制流平坦化只是多一层 switch
 // 分派。凭直觉挑必错，所以这里实跑：
 //
-//   1) 把 src/** 用「基线 + 某个候选 pass」混淆一遍，写进 _selfobf-bench/<名>/src/**
+//   1) 把 src/ 用「基线 + 某个候选 pass」混淆一遍，写进 _selfobf-bench/<名>/src/
 //   2) 载入这份混淆后的核心，和原核心跑同一个混淆任务
 //   3) 输出实测倍率（中位数，先热身一轮排掉 JIT 影响）
 //
@@ -39,7 +39,7 @@ const ONLY = argVal('only', '').split(',').map((s) => s.trim()).filter(Boolean);
 // 候选阶梯
 //
 // 基线 = build-web.js 当前的配置（关掉全部运行期昂贵 pass）。每一条候选只加一项，
-// 这样量出来的差值就是该项**独立**的运行期代价；组合项用于验证代价是否叠加。
+// 这样量出来的差值就是该项独立的运行期代价；组合项用于验证代价是否叠加。
 // ---------------------------------------------------------------------------
 
 const BASELINE = {
@@ -69,7 +69,7 @@ const CANDIDATES = [
   { id: 'cheap5_stringLow', name: '便宜五项 + 字符串池(阈值 0.3)', add: { controlFlowFlattening: true, deadCodeInjection: true, opaquePredicates: true, logicalExpressions: true, conditionObfuscation: true, stringArray: true, stringArrayThreshold: 0.3, stringArrayEncoding: 'base64' } },
 
   // 第二轮：第一轮实测把真实代价结构量清楚了——
-  //   对象键编码 21.4×、字符串池 2.6×、**不透明谓词 2.99×**（这条不在旧文档的
+  //   对象键编码 21.4×、字符串池 2.6×、不透明谓词 2.99×（这条不在旧文档的
   //   昂贵名单里，是旧文档指错方向的地方）、数字混淆 1.11×，
   //   控制流/死码/逻辑/条件几乎免费（各 1.02~1.04×）。
   // 于是第二轮改为「去掉谓词 + 逐步降低字符串池阈值」，找 ≤1.5× 的最强组合。
@@ -87,7 +87,7 @@ const active = ONLY.length ? CANDIDATES.filter((c) => ONLY.includes(c.id)) : CAN
 // ---------------------------------------------------------------------------
 // 被测输入：用项目自己的真实模块，比合成样本更接近线上实际负载
 //
-// 别用 web/app.js：它含动态 import()，会撞上混淆器一个**既有的**缺陷
+// 别用 web/app.js：它含动态 import()，会撞上混淆器一个既有的缺陷
 // （`t.import is not a function`）。build:web 只混淆 src/**，所以那条缺陷不在
 // 线上路径上——但也意味着这里只能拿 src 里的文件当输入。
 // ---------------------------------------------------------------------------
@@ -114,7 +114,7 @@ const inputs = INPUT_FILES.map((rel) => {
 });
 
 // ---------------------------------------------------------------------------
-// 把 src/** 用给定选项混淆进 _selfobf-bench/<id>/src/**
+// 把 src/ 用给定选项混淆进 _selfobf-bench/<id>/src/
 // ---------------------------------------------------------------------------
 
 async function buildVariant(core, id, options) {

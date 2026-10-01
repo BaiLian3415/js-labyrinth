@@ -2,10 +2,10 @@
  * Vercel 侧的云存储适配层。
  *
  * 为什么需要它：Vercel 的函数是无状态的，同一个许可证记录下一秒可能落到另一个实例上。
- * 没有一处**云端存储**，授权记录与用量计数就只能在单实例内存里活着——表现是"刚激活又
+ * 没有一处云端存储，授权记录与用量计数就只能在单实例内存里活着——表现是"刚激活又
  * 提示未激活""每天次数怎么刷新都在涨"。Vercel 没有原生 KV，所以这里认两种 Redis 接入：
- * **Upstash 的 REST 接口**（Marketplace 里一键安装）以及 **Vercel 官方 Redis 注入的
- * 标准连接串 REDIS_URL**（Redis Cloud，只有 RESP 协议，客户端在 vercel/redis-tcp.js，
+ * Upstash 的 REST 接口（Marketplace 里一键安装）以及 Vercel 官方 Redis 注入的
+ * 标准连接串 REDIS_URL（Redis Cloud，只有 RESP 协议，客户端在 vercel/redis-tcp.js，
  * 同样是零依赖）。两条路都不通才退化为单实例内存。
  *
  * 形状对齐 `server/handler.js` 里对 `env.JSLB_KV` 的用法：
@@ -22,7 +22,7 @@
  *   UPSTASH_REDIS_REST_URL / UPSTASH_REDIS_REST_TOKEN  Upstash 控制台给的一对
  *   REDIS_URL                                    Vercel 官方 Redis（Redis Cloud）注入的
  *                                                标准连接串，走 vercel/redis-tcp.js 的 RESP
- * 一组都没配时退化为**单实例内存**（进程内 Map）：能跑，但不跨实例持久化，界面与
+ * 一组都没配时退化为单实例内存（进程内 Map）：能跑，但不跨实例持久化，界面与
  * /api/health 会明确提示（hostNoStore）。
  */
 

@@ -117,7 +117,7 @@ function validateReferences(ast, traverse, options) {
  * 保留名在生成期的字面形态判定器：命中的文本原样写出，不做 \uXXXX 转义。
  *
  * 为什么需要它：四个预设都开 escapeNonAscii，它会把非 ASCII 一律转义——包括用户
- * 要求保留的名字。名字**确实没被改名**（排除是生效的），但产物里写成
+ * 要求保留的名字。名字确实没被改名（排除是生效的），但产物里写成
  * \u8ba4\u8bc1\u4ee4\u724c，用户按中文 grep 一个字都搜不到，只能判断"勾了没效果"。
  * 显式保留优先于通用转义开关，命中就把原文写出来。
  *
@@ -210,7 +210,7 @@ function obfuscate(code, userOptions) {
   const namesMs = platform.nowMs() - tNames;
 
   const ctx = { traverse, t, usedNames, options, rng: () => rand() };
-  // 保留名在**生成期**的字面形态。归一化之后就能建，挂 ctx 给主生成与
+  // 保留名在生成期的字面形态。归一化之后就能建，挂 ctx 给主生成与
   // integrityCheck 的自哈希共用——两处必须用同一份，否则构建期哈希算的是
   // \uXXXX 形态、运行期读到的是原文，完整性校验必然假失配、把干净产物投毒。
   ctx.keepRaw = buildKeepRaw(options);
@@ -296,7 +296,7 @@ function obfuscate(code, userOptions) {
 
   // HTML2MEM（JS 侧）：把嵌在 JS 里的 HTML 字面量加密成密文 + 注入解码器。
   //
-  // 必须排在 templateToConcat 与 stringArray **之前**，两个原因：
+  // 必须排在 templateToConcat 与 stringArray 之前，两个原因：
   //   - stringArray 会把字符串字面量收进池并换成池访问调用，本 pass 就认不出 HTML 了；
   //   - templateToConcat 会把模板拆成 `"a"+x+"b"`，插值模板的片段边界也就没了。
   // 排在它俩前面，模板还保持原样，片段边界完整。
@@ -341,16 +341,16 @@ function obfuscate(code, userOptions) {
   if (options.callProxy) applyPass(callProxy, 'callProxy');
   // ---- domainLock 与 WASM 档互锁（2026-09-27 实测发现）----
   //
-  // 两者不兼容，且是**旧实现里就存在**的潜在问题：wasm 档会把未被函数或导出引用的
+  // 两者不兼容，且是旧实现里就存在的潜在问题：wasm 档会把未被函数或导出引用的
   // 顶层语句搬进它合成的 main()，而 domainLock 的授权贡献（+Q）靠 insertHeadEarly
-  // 落在头部、必须在任何字符串池访问之前执行。搬进 main() 后时序全变，实测**授权
-  // 主机上产物直接抛错**（不是腐蚀，是 THREW）。显式关掉 wasm 即恢复正常，所以
+  // 落在头部、必须在任何字符串池访问之前执行。搬进 main() 后时序全变，实测授权
+  // 主机上产物直接抛错（不是腐蚀，是 THREW）。显式关掉 wasm 即恢复正常，所以
   // 失败确实由 wasm 引入。
   //
   // 平时碰不到它，是因为 domainLock 是用户显式选项、四个预设里默认关；但 wasm
   // 恢复默认开启后，任何 plus+ 用户开域名锁定就会踩到，所以这里必须互锁。
   //
-  // 方向选择：**关 wasm，保 domainLock**。domainLock 是用户显式选定的安全功能，
+  // 方向选择：关 wasm，保 domainLock。domainLock 是用户显式选定的安全功能，
   // 悄悄把它降级是 fail-open；wasm 是防护/优化层，关掉产物照样正确。这与项目既有
   // 取舍一致——宁可少一层保护，也不拿自损坏的产物换覆盖率。
   const dlRequested = Array.isArray(options.domainLock) && options.domainLock.length > 0;
@@ -372,12 +372,12 @@ function obfuscate(code, userOptions) {
   //
   // ============================== 结论：前提不成立，不做 ==============================
   //
-  // 两次修订都不是"还没写完"，是**逐层往下挖之后发现这件事的前提是空的**。
+  // 两次修订都不是"还没写完"，是逐层往下挖之后发现这件事的前提是空的。
   //
   // ---- 第一次修订（2026-09-27 那版计划）错在哪 ----
   //
-  // 那版写的是「第①步：L2 字节码集加一条 CALLW，跑通 L2 调 L3」。**L2 当时并不存在**：
-  // rtgen.js 生成的只有值语义层 / 桥接层 / 加载链三部分，JS 侧**没有任何取指循环**
+  // 那版写的是「第①步：L2 字节码集加一条 CALLW，跑通 L2 调 L3」。L2 当时并不存在：
+  // rtgen.js 生成的只有值语义层 / 桥接层 / 加载链三部分，JS 侧没有任何取指循环
   // （扫 for/while 读 B[]/pc 的模式，零命中）。当时只有一台 VM——WASM 内核。
   // 更要紧的是：就算造出来了，只装一条 CALLW 的 L2 也没有防护价值——它的全部工作
   // 就是「走一个字 → 解密 → 写进 WASM 内存 → 交棒」，一眼就能认出是 memcpy 包装。
@@ -387,12 +387,12 @@ function obfuscate(code, userOptions) {
   // L2 唯一可能的收益是「让静态产物里看不到程序字节码」。那就得问：现在看得到吗？
   //
   //   · 部署形态（vercel.json → buildCommand = build:web:cloud）：受保护模块与加密层
-  //     **完全不进 dist**，混淆在服务端跑。README 自己写了两条：产物里没有混淆核心
+  //     完全不进 dist，混淆在服务端跑。README 自己写了两条：产物里没有混淆核心
   //     与 cloudOnly=true「两者必须对上」；以及这一层「比『加密后公开』更靠前」。
-  //     也就是说**核心压根不下发给客户端**，L2 要保护的对象在产物里不存在。
-  //   · 自建形态（build:web 不带 --cloud）：核心在 dist 里，但**同一份产物里**。
+  //     也就是说核心压根不下发给客户端，L2 要保护的对象在产物里不存在。
+  //   · 自建形态（build:web 不带 --cloud）：核心在 dist 里，但同一份产物里。
   //     把 code segment 从 WASM data 段搬到 L2 的载荷，只是从产物的一个位置挪到
-  //     另一个位置——同一份文件、同一个访问者、同样的静态分析。**防护增量为零。**
+  //     另一个位置——同一份文件、同一个访问者、同样的静态分析。防护增量为零。
   //
   // 换句话说：L2 要挣回成本，指令集必须真的在解释逻辑（那是阶段 B）；而阶段 B 改的
   // 是"多少函数由 L2 解释"——可对部署形态来说，全部函数都在服务端，客户端连字节码
@@ -400,12 +400,12 @@ function obfuscate(code, userOptions) {
   //
   // ---- 假如将来真要做，前提是部署形态先变 ----
   //
-  // 只有一个条件能让阶段二变得有意义：**产品形态改成把混淆核心下发给客户端**
+  // 只有一个条件能让阶段二变得有意义：产品形态改成把混淆核心下发给客户端
   // （离线本地执行、或把 wasmvm 当作可分发的加固 SDK 卖）。那时"客户端拿到了核心"
   // 才成立，L2 才有东西可护。届时的起点不是"造 L2"，而是先定：
-  //   · 哪些函数归 L2 vs L3（切分只能落在**函数粒度**上——pc/链值/掩码/槽位只在
+  //   · 哪些函数归 L2 vs L3（切分只能落在函数粒度上——pc/链值/掩码/槽位只在
   //     WASM 内存里，L2 无法在函数执行中途接管）；
-  //   · 句柄表归属：现状**本来就在宿主侧**（rtgen 的 tab/fre/fr 都是 JS 数组，装真值），
+  //   · 句柄表归属：现状本来就在宿主侧（rtgen 的 tab/fre/fr 都是 JS 数组，装真值），
   //     这条已自动满足，不需要改；
   //   · 异常回传用带标签的返回值，不让异常穿越 WASM 边界（各宿主对 WASM 抛出的处理
   //     不一，且会打断 L2 的栈一致性）。
@@ -415,10 +415,10 @@ function obfuscate(code, userOptions) {
   // ---- 实测：切分只能落在函数粒度（2026-09-28）----
   //
   // 状态分布（wasmvm.js 内存布局 + rtgen.js 值语义层）：
-  //   JS 侧    句柄表 tab / 空闲表 fre / 帧表栈 fr —— 普通 JS 数组，装的是**真值**
+  //   JS 侧    句柄表 tab / 空闲表 fre / 帧表栈 fr —— 普通 JS 数组，装的是真值
   //   WASM 侧  字节码、pt/argslot/semtab、槽位、值栈（mv 是 WASM 内存的 Int32Array
   //            视图）、pc、链值、逐帧随机重掩的掩码
-  // 所以「L2 解释一段指令、在控制流处交棒」在本架构下**不成立**——那需要把 pc/链值/
+  // 所以「L2 解释一段指令、在控制流处交棒」在本架构下不成立——那需要把 pc/链值/
   // 掩码/槽位暴露到 WASM 之外，等于把内核最要紧的部分拆出来。
   //
   // ---- 另一条被高估的担忧 ----
@@ -426,7 +426,7 @@ function obfuscate(code, userOptions) {
   // 曾担心"code segment 移出 data 段后 ANCHOR/探针覆盖不到"。实测不必担心：prb(i) 是
   // 从 WASM 内存的 PRB 处读探针表（wasmvm.js 里 `splitConst(PRB) + i` 与 `+1` 两次
   // i32Load），宿主侧比对的是自己那份 probeVal。L2 写入内存之后再校验，等于校验的是
-  // **实际落地的运行态**，比校验静态快照更强。真正要处理的是另一件事：探针对
+  // 实际落地的运行态，比校验静态快照更强。真正要处理的是另一件事：探针对
   // （probeIdx/probeVal）目前以明文成对放在 data 段（L205 `put(idx); put(val)`），
   // 它们由 codeWords 派生，code 移出而探针留下就等于泄漏。
   if (options.wasmInterpreter) timePass('wasmvm', () => wasmvm(ast, options, ctx));
@@ -468,13 +468,13 @@ function obfuscate(code, userOptions) {
   const tShell = platform.nowMs();
   // ---- 保留名单与外壳层的互锁（2026-09-29）---
   //
-  // 外壳把已完成的产物当**载荷字节流**加密（反馈密钥流 + 交织置换 + 乱序 base64），
+  // 外壳把已完成的产物当载荷字节流加密（反馈密钥流 + 交织置换 + 乱序 base64），
   // 产物文本里不再有任何用户代码——被保留的标识符/字符串即便在载荷内部一字未改，
   // 静态上也看不到，与「保留名单保持原样出现在产物中」这条承诺直接冲突。实测
   // medium/high/max 三档（预设置 shell: true）下，设了保留名的产物里连一个名
   // 都找不到，用户看到的正是"勾了还是混淆了"。
   //
-  // 方向选择与 domainLock↔wasm 那条互锁一致：**关外壳，保名单**。名单是用户显式
+  // 方向选择与 domainLock↔wasm 那条互锁一致：关外壳，保名单。名单是用户显式
   // 选定、要拿产物做核对/对接的输入，外壳只是防护层，关掉产物照样正确；反过来把
   // 名单悄悄丢进密文里才是 fail-open。名单为空时一切照旧（产物逐字节不变）。
   const keepRequested = ['reservedNames', 'reservedStrings']
@@ -553,11 +553,11 @@ function obfuscate(code, userOptions) {
   // HTML2MEM（JS 侧）的解码器：源码级前插，放在引导层之后、载荷之前。
   //
   // 为什么不在 pass 里就地往 AST 顶部插变量：那样子树会跟着 mangle 一起被改名，而这里
-  // 前插的是**已生成的源码字符串**、不经过 AST，两边会对不上。所以走和 guardLayer 一样
+  // 前插的是已生成的源码字符串、不经过 AST，两边会对不上。所以走和 guardLayer 一样
   // 的路子：pass 把解码器源码挂在 ctx 上，这里统一前插。注入名已登记 ctx.keepNames，
   // mangle 不会碰它。
   //
-  // 位置必须在 selfCheck **之后**：前插的是源码、AST 里没有对应声明，此刻再跑绑定检查
+  // 位置必须在 selfCheck 之后：前插的是源码、AST 里没有对应声明，此刻再跑绑定检查
   // 会把解码器的调用点判成「未绑定引用」而误报失败（pass 内已把它登记进
   // options.extraGlobals 供 validateReferences 放行，两处缺一不可）。
   if (ctx.html2memJsSource) {

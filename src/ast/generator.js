@@ -57,7 +57,7 @@ const RIGHT_ASSOC = new Set(['**', '=', '+=', '-=', '*=', '/=', '%=', '<<=', '>>
  * 这两个正则只用于"整串扫一遍、无命中就免去逐字符处理"的快速判定，真正的转义
  * 仍走 _escapeString 的慢路径，两边判据必须一致：
  *   慢路径转义条件 = 字符是 " 或 \ 或 cp < 0x20，或（escapeNonAscii 且 cp > 0x7e）
- * 注意 0x7e（~）在两种模式下都**不**转义，所以宽判定的下界是 0x7f。
+ * 注意 0x7e（~）在两种模式下都不转义，所以宽判定的下界是 0x7f。
  */
 const NEEDS_ESCAPE_ASCII = /["\\\u0000-\u001f]/;
 const NEEDS_ESCAPE_WIDE = /["\\\u0000-\u001f\u007f-\uffff]/;
@@ -86,12 +86,12 @@ class Generator {
     this.compact = this.options.compact !== false;
     this.escapeNonAscii = !!this.options.escapeNonAscii;
     this.indent = options && options.indent !== undefined ? options.indent : 2;
-    // keepRaw：命中「不混淆项」名单的文本原样写出，**不做 \uXXXX 转义**。
+    // keepRaw：命中「不混淆项」名单的文本原样写出，不做 \uXXXX 转义。
     //
     // escapeNonAscii 的四个预设都是开的，它会把非 ASCII 一律转义——包括那些用户
     // 点名要保留的名字。名字确实没被改名（排除是生效的），但产物里写成
     // \u8ba4\u8bc1\u4ee4\u724c，用户按中文去 grep 一个字都搜不到，于是合理地判断
-    // 「勾了没效果」。这里的取舍是：**显式勾选优先于通用转义开关**，勾了就把原文
+    // 「勾了没效果」。这里的取舍是：显式勾选优先于通用转义开关，勾了就把原文
     // 写出来。代价是产物文本含非 ASCII 字节（与 escapeNonAscii:false 同样的前提：
     // 文件必须按 UTF-8 提供/解析，页面要有 charset 声明）。
     this.keepRaw = typeof this.options.keepRaw === 'function' ? this.options.keepRaw : null;
@@ -121,7 +121,7 @@ class Generator {
     let needParen = prec < minPrec;
     // 优先级相同就要看结合性：右结合运算符出现在左侧、左结合运算符出现在右侧时
     // 必须补括号，否则重解析出的结合顺序会反过来。** 是唯一的右结合二元运算符，
-    // (2**3)**2 漏了括号会变成 2**(3**2)。
+    // (23)2 漏了括号会变成 2(32)。
     if (!needParen && prec === minPrec && side) {
       const rightAssoc = expr.type === 'AssignmentExpression' || RIGHT_ASSOC.has(expr.operator);
       needParen = side === 'right' ? !rightAssoc : rightAssoc;
@@ -264,7 +264,7 @@ class Generator {
       case 'ImportNamespaceSpecifier': this._s('* as ' + node.local.name); break;
       case 'ExportSpecifier': this._exportSpecifier(node); break;
       default:
-        // **不静默吞掉未知节点类型**。原先是 break，于是任何没写 case 的节点都会
+        // 不静默吞掉未知节点类型。原先是 break，于是任何没写 case 的节点都会
         // 打印成空串：产物仍能解析、仍能跑，只是少了一块代码——正是本项目最怕的
         // 那类「静默产出错代码」缺陷（README「已知问题」里记的两个都是这一类）。
         // 抛出来能让它在构建期就变成一次明确的失败。
@@ -291,12 +291,12 @@ class Generator {
   }
 
   _expressionStatement(node) {
-    // 先把表达式渲染到**独立缓冲**，再决定要不要包括号。
+    // 先把表达式渲染到独立缓冲，再决定要不要包括号。
     //
     // 不能渲染进主缓冲后回头改：那需要 this._out.slice(0, start) + '(' + this._out.slice(start)，
     // 每次都要复制整条已生成的输出，语句一多就是 O(n²)。实测在 6 KB 输入 / 424 KB 产物的
     // 中档配置下，这一处独占 24.7% 的总耗时（CPU profile 自耗时第一）。
-    // 换成独立缓冲后，代价只与**这一个表达式**的长度成正比。
+    // 换成独立缓冲后，代价只与这一个表达式的长度成正比。
     const saved = this._out;
     this._out = '';
     this._node(node.expression);
@@ -686,7 +686,7 @@ class Generator {
   _escapeString(s) {
     // 快路径：整串不需要转义时直接拼接返回。
     //
-    // 逐字符循环对短字符串无所谓，但外壳（shell）会把**整个载荷的 base64** 当成
+    // 逐字符循环对短字符串无所谓，但外壳（shell）会把整个载荷的 base64 当成
     // 一个字符串字面量，动辄几 MB——那时逐字符的 switch + 拼接就是 500 万次迭代，
     // 实测占"递归混淆引导器"这一步耗时的 65.8%，也就是整个 shell 步骤的主要成本。
     // 正则扫描在原生代码里跑，量级上快得多；只有真的含需转义字符时才走慢路径。

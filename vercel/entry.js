@@ -2,14 +2,14 @@
  * Vercel 函数的共用入口。
  *
  * api/*.js 只是几个一行转发（Vercel 按文件建函数，所以每个路由要有一个文件），
- * 真正的逻辑都在这里：**把 Vercel 的请求交给平台无关的 API handler**
+ * 真正的逻辑都在这里：把 Vercel 的请求交给平台无关的 API handler
  * （server/handler.js），再把它返回的 Response 按 Vercel 免费档的约束加工一遍：
  *
  *   1. 上传侧预检：请求体大小、单次上传上限、当前预设的单次上限——超了直接回
  *      可读的 413，而不是让平台丢一句 `FUNCTION_PAYLOAD_TOO_LARGE`；
  *   2. 预算记账：全网每日 CPU 预算（默认 300 s，见 src/host-limits.js）用云存储
  *      累计，用尽即 503，避免把免费档的月度 Active CPU 一次性烧穿；
- *   3. 回执侧：大回执**流式**返回（Vercel 的 4.5 MB 回执上限对流式不适用），
+ *   3. 回执侧：大回执流式返回（Vercel 的 4.5 MB 回执上限对流式不适用），
  *      只留一道自家护栏（默认 64 MiB）；
  *   4. /api/health 上补宿主信息（host / store / envelope / budget），界面的诊断
  *      面板据此显示"云端到底挂在哪、还剩多少预算"；
@@ -212,7 +212,7 @@ async function handle(request) {
     const pre = preflightUpload(body, text, host);
     if (!pre.ok) return pre.response;
 
-    // CPU 预算：按估算**先预占**，跑完只在失败时退回（成功就按估算入账）。
+    // CPU 预算：按估算先预占，跑完只在失败时退回（成功就按估算入账）。
     // 预占是必须的：并发请求同时通过检查会让预算形同虚设。
     const preset = String((body && body.options && body.options.preset) || 'max').toLowerCase();
     const estimate = estimateCost(preset, pre.codeBytes || 0);

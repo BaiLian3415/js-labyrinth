@@ -262,9 +262,9 @@ function obfuscateDocument(html, options) {
   // 块都会给出同一条，去重后再交给调用方，不然界面里会连刷十几遍。
   const blockWarnings = [];
   const res = processHtml(html, (js, idx, blockMeta) => {
-    // HTML 模式逐块混淆，**跳过引导层**（bannerSkip）。理由与旧的"文件头横幅"无关，
+    // HTML 模式逐块混淆，跳过引导层（bannerSkip）。理由与旧的"文件头横幅"无关，
     // 改成引导层后有两点：引导层逐块注入没有额外价值（它不是面向页面的署名，而是
-    // 产物自校验的载体），而且内联块之间**共享全局作用域**——每块各写一个
+    // 产物自校验的载体），而且内联块之间共享全局作用域——每块各写一个
     // `global[随机名]` 健康载体会互相覆盖，后写的把先写的冲掉，字符串池的密钥偏移
     // 就算得错。要在 HTML 模式启用耦合，正确做法是整页只注入一次引导、在所有块
     // 之前执行，那是另一件事，不在这里顺手改。其余增强保护照常生效。
@@ -277,8 +277,8 @@ function obfuscateDocument(html, options) {
     obfuscatedSize = out.obfuscatedSize;
     return out.code;
   });
-  // HTML2MEM：把文本节点与属性值加密成密文 + 一个还原 loader。放在**内联脚本混淆
-  // 之后**：脚本块里若有 `</script>` 字面量会被 HTML 解析器提前截断，混淆后的
+  // HTML2MEM：把文本节点与属性值加密成密文 + 一个还原 loader。放在内联脚本混淆
+  // 之后：脚本块里若有 `</script>` 字面量会被 HTML 解析器提前截断，混淆后的
   // 产物更可能带上这种东西；先混淆完再扫，扫描器看到的就已经是最终形态，不会把
   // 载荷的一部分误当属性值加密掉。
   let memStats = null;

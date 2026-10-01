@@ -278,7 +278,7 @@ export function guiOptions() {
   }
   for (const key of Object.keys(DEFAULTS)) {
     if (!BOOL_OPTIONS.has(key)) continue;
-    // VALUE_OPTIONS 已经描述过的键**不能**再从这条旧路径推一条出来。
+    // VALUE_OPTIONS 已经描述过的键不能再从这条旧路径推一条出来。
     // BOOL_OPTIONS 是「DEFAULTS 里所有布尔」的集合，所以任何一个既是布尔默认值、
     // 又登记进 VALUE_OPTIONS 的选项都会被推两遍——界面出现两个同名开关，其中一个
     // 显示原始键名、还落在 BOOL_GROUPS 的默认组（'structure'）而不是登记的组。

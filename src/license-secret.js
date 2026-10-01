@@ -1,14 +1,14 @@
 /**
  * License 密钥与自身摘要表。
  *
- * **B64_CODE_KEY 是对称卡密密钥**（base64，32 字节）：v5 卡密的信息段加密与
+ * B64_CODE_KEY 是对称卡密密钥（base64，32 字节）：v5 卡密的信息段加密与
  * 校验码都由它派生（见 license-codec.js）。签发方（tools/issue/keygen.js）与
  * 所有验签方（浏览器 / Worker）用同一把。
  *
  * ## 安全模型的诚实说明
  *
- * 密钥必须随源码分发（浏览器要本地验卡），所以**拿到源码的人可以自己签发
- * 卡密**——历史上 v4 曾用 Ed25519 避开这一点（公钥验签、私钥签发），v5 应
+ * 密钥必须随源码分发（浏览器要本地验卡），所以拿到源码的人可以自己签发
+ * 卡密——历史上 v4 曾用 Ed25519 避开这一点（公钥验签、私钥签发），v5 应
  * 签发方要求改回对称，安全边界随之降级。真正的强制在服务端：
  *
  *   - /api/obfuscate 逐请求用密钥校验卡密；
@@ -38,7 +38,7 @@ const B64_MACHINE_SALT = 'SnNMYWJ5cmludGgvTGljZW5zZS92MTo6bWFjaGluZTo6c2FsdDo6Mm
  *
  * 每条形如 sha256(rel + '\n' + 归一化文本) XOR HMAC(CODE_KEY, 'JSLB/SELF/' + i)。
  *
- * **掩码的密钥是卡密密钥，也就是随源码公开的**，所以这张表只能挡住"随手改一行
+ * 掩码的密钥是卡密密钥，也就是随源码公开的，所以这张表只能挡住"随手改一行
  * 源码"这类改动，挡不住有心人（他们能自己算出掩码、重算整张表）。对称体系里
  * 库里没有秘密可供派生掩码，这是 v5 的固有属性。真正的强制在服务端（见上）。
  *
@@ -50,11 +50,11 @@ const B64_MACHINE_SALT = 'SnNMYWJ5cmludGgvTGljZW5zZS92MTo6bWFjaGluZTo6c2FsdDo6Mm
  * node tools/issue/selfdigest.js --write
  */
 const SELF_DIGESTS = [
-  'b86407c77a98ed729acdefb0f44a7c86b129c055e644a8a1c522059db14fcc8a',
-  '384ec2d2a739a748405722b023ca377b5a9fdaf0b93f47635b67aed2f5219963',
-  'fe38ab6869e1c52089c71a100e03feafd00414c556353d798545384347a1dee3',
-  '5631edc1d3af426efad4788124db69cb4cb072a82ddbfc6d1a0d85b4d821d075',
-  '6e74dfb9d2f9178b87bfb75fca35d94f5ef7a64ae3aaed1d411342f920ecf4db',
+  'ee4b6ee6fd990cfcd0abf3683a7f62dfbbcdc6b371be06538c0b28e771bbe5c6',
+  'efe34f6e4e4f04076450026b1d1d84ab93698b31c50e2cf78994197e13a43dd0',
+  'f3df4992c3f8eef142e104d711e207d6bfc6f5d7df4639b8f700c8fef54d551b',
+  '8e7ad2da1a02242305201c5936c49a1bd9aec7ffd2065b621b5d53a45db2cd43',
+  '5495647d913e5f498cb898bd6f89112f1ee1b8941cd49d766ad1fff6c9f2cbfb',
 ];
 
 export default { B64_CODE_KEY, B64_MACHINE_SALT, SELF_DIGESTS };

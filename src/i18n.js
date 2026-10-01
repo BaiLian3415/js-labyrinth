@@ -187,7 +187,7 @@ const STRINGS = {
     webActivateFailed: '激活失败: {reason}',
     webDeactivated: '已解除激活',
 
-    // 服务端文案。语言按**请求**判定，见 server/handler.js 的 resolveLang()：
+    // 服务端文案。语言按请求判定，见 server/handler.js 的 resolveLang()：
     // 显式头 X-JSLB-Lang > Accept-Language > 环境变量/默认。
 
     // 网页版：界面

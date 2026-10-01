@@ -201,7 +201,7 @@ function buildWasm(segs, dispParams, cnParams, rotParams) {
   // 内存布局。真数据段之后排 junk 段与诱饵 scratch 页
   const pages = Math.max(2, Math.ceil((dataBytes.length + 4096) / 65536) + randInt(0, 1));
   const SCRATCH = pages * 16384 - randInt(32, 96);   // dWORD 下标（末页顶）
-  // junk 段位置，**字下标**。诱饵函数按 (x + JUNK_ADDR) * 4 读它，所以这里必须是
+  // junk 段位置，字下标。诱饵函数按 (x + JUNK_ADDR) * 4 读它，所以这里必须是
   // 字下标；而写数据段时用的是字节地址，下面 segDefs 里要乘 4。
   //
   // 必须落在真数据段之后。原先把 JUNK_ADDR 直接当字节地址写进数据段，等于把它
@@ -212,7 +212,7 @@ function buildWasm(segs, dispParams, cnParams, rotParams) {
   const junkBytes = [];
   for (let k = 0; k < randInt(256, 1024); k++) junkBytes.push(randInt(0, 255));
 
-  // junk 段。addr 是数据段里的**字节**偏移；JUNK_ADDR 是字下标（诱饵函数按
+  // junk 段。addr 是数据段里的字节偏移；JUNK_ADDR 是字下标（诱饵函数按
   // (x + JUNK_ADDR) * 4 读它），两者差一个乘 4。这里只算一次，之后 segDefs 直接
   // 引用同一个对象，杜绝"两处写法不一致"。
   const junkSeg = { addr: JUNK_ADDR * 4, bytes: junkBytes };

@@ -8,8 +8,8 @@ import t from '../ast/types.js';
  *     折。结果必须有限（除零、取模 0、幂溢出这些 NaN/Infinity 不折），且避开
  *     -0（-0 与 0 在 Object.is 下不等，`1/x` 会因此分岔到 ±Infinity）。
  *   死代码消除 —— if(false){...}、while(false){...} 整块删除；if(true)A、if(true)
- *     A else B 这类直接换成保留下来的那一支。被删块**永不执行**，删除不改变任何
- *     可观察行为；替换时**保留 block 原样**（不展开 body），let/const/class 的块
+ *     A else B 这类直接换成保留下来的那一支。被删块永不执行，删除不改变任何
+ *     可观察行为；替换时保留 block 原样（不展开 body），let/const/class 的块
  *     作用域不变。
  *   空语句清除 —— 只清 Program / BlockStatement 体内的空语句，循环体/if 体的
  *     `;` 必须保留（for(;;); 删了会变语法错误）。
@@ -238,7 +238,7 @@ function statementParent(path) {
  *   1) 没有引用、也没有任何赋值写入（写入本身可能有副作用，删了会留下悬空赋值）；
  *   2) 不在导出面里（export 出去的名字是模块接口，删了外部就断链）；
  *   3) 初始化器无副作用（见 pureInit）；
- *   4) 作用域私有：函数/块内的都算私有；**脚本**顶层不算——那是全局对象的属性，
+ *   4) 作用域私有：函数/块内的都算私有；脚本顶层不算——那是全局对象的属性，
  *      删掉可能被页面别处引用（模块顶层则是私有的，可以删）。
  * 出现 with 语句时整体跳过：它会改变名字解析，绑定分析不再可靠。
  * 解构声明不处理（`var {a} = o` 的删除要判别 pattern 里每个名字，收益低风险高）。
@@ -273,7 +273,7 @@ function eliminateUnused(ast, traverse, stat) {
     if (!binding || binding.identifier !== idNode) return;
     if (binding.declarationIds && binding.declarationIds.length) return;
     if (binding.referencePaths && binding.referencePaths.length) return;         // 有读取
-    // 有真正的写入就不删。**声明点自身也会被登记成一次"写入"**（var/let/const 的
+    // 有真正的写入就不删。声明点自身也会被登记成一次"写入"（var/let/const 的
     // id 是左值），那不是赋值，必须排掉——不排掉的话所有变量都会因为这一条被留下。
     const realWrite = (binding.constantViolations || [])
       .some((v) => v && v.node && v.node.type !== 'VariableDeclarator');

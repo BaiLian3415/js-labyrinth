@@ -6,7 +6,7 @@
  *
  * 两层处理，取决于 --cloud：
  *   默认        混淆核心照旧进 dist（自混淆 + 模块体加密），浏览器内执行；
- *   --cloud     混淆核心**不进 dist**，只有公开模块下发，混淆一律由服务端的
+ *   --cloud     混淆核心不进 dist，只有公开模块下发，混淆一律由服务端的
  *               /api/obfuscate 执行。Vercel 部署走这一支（vercel.json 的
  *               buildCommand），这是"源码不出服务端"的落点。
  *
@@ -25,7 +25,7 @@
  *   dist/404.html                                     自定义 404
  *
  * 不含 tools/、server/、vercel/、license.lic 等：发卡工具、服务端实现与本地许可证
- * 不该出现在公开站点上。api/ 与 vercel/ 是**服务端**代码，由托管平台的函数运行，
+ * 不该出现在公开站点上。api/ 与 vercel/ 是服务端代码，由托管平台的函数运行，
  * 同样不进 dist。
  */
 import fs from 'node:fs';
@@ -51,12 +51,12 @@ function sleepSync(ms) {
 /**
  * 递归删除目录。
  *
- * Windows 上删"刚生成的产物目录"会间歇撞 EPERM，而且**不是瞬时**的：本项目就在
+ * Windows 上删"刚生成的产物目录"会间歇撞 EPERM，而且不是瞬时的：本项目就在
  * 同步盘目录下，实测锁能持续好几秒，rmSync 自带的重试（10 次 × 500 ms）也被耗光
  * 仍会失败，且报错路径是目录本身而不是某个子文件——说明有进程正持有这个目录的句柄
  * （同步盘客户端、杀软、搜索索引都会这么干）。
  *
- * 所以这里再加一层更长的退避重试；仍删不掉时**退化为清空内容**并打印警告：目录本身
+ * 所以这里再加一层更长的退避重试；仍删不掉时退化为清空内容并打印警告：目录本身
  * 留着不影响构建（随后每个文件都会被重写），比直接让构建失败要好。
  */
 function rmrf(p) {
@@ -134,7 +134,7 @@ function collectModules(entryAbs, outDirAbs) {
     try { text = fs.readFileSync(file, 'utf8'); } catch (e) { continue; }
     // import/export 说明符扫描。
     //
-    // 前瞻用 [^\w$.] 而不是枚举几个标点：**必须能匹配到 `}`**。自混淆 + compact
+    // 前瞻用 [^\w$.] 而不是枚举几个标点：必须能匹配到 `}`。自混淆 + compact
     // 之后，注入的 RT 内核以函数声明结尾，紧跟其后的第一个 import 前面正好是 `}`；
     // 早前的字符类 [\s;{(] 不含 `}`，于是每个「第一个 import 紧跟内核」的文件都
     // 漏掉（实测 dist/src/plan.js 与 dist/src/license-web.js 各漏一个，对应
@@ -188,14 +188,14 @@ function injectIndex(outDir, cloud) {
 }
 
 /**
- * 兜底告警：产物里存在、但没进 modulepreload 清单的**公开模块**。
+ * 兜底告警：产物里存在、但没进 modulepreload 清单的公开模块。
  *
  * collectModules 是正则扫源码，漏扫只会表现为「首屏多几轮串行往返」——不报错、
  * 不影响功能，所以光靠人看产物发现不了。这里把「已下发但未预载」显式喊出来，
  * 让扫描器的漏报当场暴露而不是静默劣化。
  *
  * 只查公开模块（isGatedModuleId 为 false 的）：受保护模块在非 --cloud 构建里是
- * **运行时才物化**的 stub（__jslb_core.js 的 materialize() 走 Blob URL 动态
+ * 运行时才物化的 stub（__jslb_core.js 的 materialize() 走 Blob URL 动态
  * import），刻意不进静态图——预载它们等于首屏把 42 个 stub 全拉一遍，正好抵消
  * 按需加载的意义。公开模块才是 app.js 静态 import 链上的那批，理应全部预载。
  */
@@ -294,11 +294,11 @@ function listJs(dir, base) {
 /**
  * 自混淆用的混淆选项。
  *
- * **按实测挑 pass，不按直觉**。逐项实测（`tools/build/bench-selfobf.js` 可复现，
+ * 按实测挑 pass，不按直觉。逐项实测（`tools/build/bench-selfobf.js` 可复现，
  * 同一输入、同一 seed，混淆后的核心 vs 原核心，11 次取中位数）：
  *
  *   对象键编码 objectKeyEncoding   21.37×  ← 每次属性访问变成分段解密取键 + 计算下标
- *   不透明谓词 opaquePredicates     2.99×  ← **单项第二贵**，旧文档漏了这条
+ *   不透明谓词 opaquePredicates     2.99×  ← 单项第二贵，旧文档漏了这条
  *   字符串池 stringArray            2.59×  ← 全量；阈值降到 0.10 仍要 1.65×
  *   数字混淆 numberObfuscation      1.11×
  *   条件混淆 conditionObfuscation   1.04×
@@ -306,12 +306,12 @@ function listJs(dir, base) {
  *   逻辑表达式 logicalExpressions   1.02×
  *   死代码注入 deadCodeInjection    1.02×
  *
- * 注意基线（关掉全部昂贵项）自身就是 **0.99×**——混淆后的核心并不比原核心慢，
+ * 注意基线（关掉全部昂贵项）自身就是 0.99×——混淆后的核心并不比原核心慢，
  * 旧文档里"3.6× / 1.63×"两个数字都已过时，且把昂贵项指成了 objectKey/stringArray，
  * 漏掉了真正第二贵的 opaquePredicates。
  *
- * 于是本配置 = **免费的部分全开 + 昂贵项全关**：控制流 / 死码 / 逻辑 / 条件 /
- * 数字混淆五项，实测综合 **1.31×**，在"运行期不超过 1.5×"的预算内还剩 0.19× 余量。
+ * 于是本配置 = 免费的部分全开 + 昂贵项全关：控制流 / 死码 / 逻辑 / 条件 /
+ * 数字混淆五项，实测综合 1.31×，在"运行期不超过 1.5×"的预算内还剩 0.19× 余量。
  * 字符串池哪怕压到阈值 0.10 也要 1.65×，装不进预算，所以字符串仍是明文——
  * 这一层靠下面的模块体加密（见 tools/build/enc-loader.js）来补。
  *
@@ -339,15 +339,15 @@ function selfObfOptions(preset) {
  * 用项目自己的混淆器把 src/** 跑一遍再写进 dist/。
  *
  * 为什么值得做：dist/ 里原本就是逐字节的完整源码，顺着首页的 modulepreload 清单
- * 可以一次性把几十个模块全拉走。Vercel 部署更进一步——受保护模块**根本不发**
+ * 可以一次性把几十个模块全拉走。Vercel 部署更进一步——受保护模块根本不发
  * （--cloud），所以这一层是给"浏览器内执行"的自建部署再抬一道逆向门槛：混淆后的
  * 代码仍然是合法 ESM，import 绑定与文件路径原样保留，所以逐文件混淆不会破坏跨文件引用。
  *
  * 关键约束与代价：
- *   - **必须逐文件混淆**，不能合并成 bundle：项目是原生 ESM，界面按文件路径 import。
- *   - **产物必须仍是合法 ESM**：functionWrapper 检测到 import/export 会自行跳过
+ *   - 必须逐文件混淆，不能合并成 bundle：项目是原生 ESM，界面按文件路径 import。
+ *   - 产物必须仍是合法 ESM：functionWrapper 检测到 import/export 会自行跳过
  *     （见 src/passes/functionWrapper.js），否则包进 IIFE 会把 export 吞掉。
- *   - **种子固定**，保证同一份源码每次构建得到相同产物，线上版本可比对。
+ *   - 种子固定，保证同一份源码每次构建得到相同产物，线上版本可比对。
  *   - 体积约 1.4 倍，运行期约 3.6 倍（见 selfObfOptions 的实测表）。
  *   - 调试线上问题时用 `--plain` 跳过这一步，产物与源码逐字节一致。
  *
@@ -369,7 +369,7 @@ async function writeObfuscatedSrc(outDir, opts) {
   };
   const t0 = Date.now();
   for (const rel of listJs(path.join(ROOT, 'src'), '')) {
-    // 云端执行（--cloud）：受保护模块**根本不进 dist**——混淆在服务端跑，浏览器
+    // 云端执行（--cloud）：受保护模块根本不进 dist——混淆在服务端跑，浏览器
     // 不需要也不该拿到核心源码。公开模块（激活表单的静态依赖）照旧自混淆后下发。
     if (opts.publicOnly && isGatedModuleId(rel)) continue;
     const code = fs.readFileSync(path.join(ROOT, 'src', rel), 'utf8');
@@ -429,7 +429,7 @@ function writeEncryptedCore(outDir, opts) {
       throw new Error('受保护模块在 dist 里不存在，无法加密: ' + rel);
     }
 
-    // 导出名从**原始**源码枚举：自混淆产物里 export 语句的形态可能被生成器改写，
+    // 导出名从原始源码枚举：自混淆产物里 export 语句的形态可能被生成器改写，
     // 原始源码是最可靠的依据。枚举不全会让浏览器 import 到 undefined，且只在走到
     // 那条 import 时才炸，所以 collectExportNames 对 export * 是直接抛错的。
     const original = fs.readFileSync(path.join(ROOT, 'src', rel), 'utf8');
@@ -440,7 +440,7 @@ function writeEncryptedCore(outDir, opts) {
 
     modules[rel] = fs.readFileSync(obfPath, 'utf8');
 
-    // stub → 引导层的相对说明符。ESM 说明符必须是 POSIX 分隔符，且**必须**以 ./
+    // stub → 引导层的相对说明符。ESM 说明符必须是 POSIX 分隔符，且必须以 ./
     // 或 ../ 开头：裸的名字会被当成包名去 node_modules 找。
     let toLoader = path.relative(path.dirname(obfPath), loaderAbs).split(path.sep).join('/');
     if (!toLoader.startsWith('.')) toLoader = './' + toLoader;
@@ -487,7 +487,7 @@ function main(argv) {
 
   // 核心默认自混淆后写入；--plain 或 JSLB_BUILD_PLAIN=1 时退回逐字节复制（调试用）
   const plain = argv.includes('--plain') || process.env.JSLB_BUILD_PLAIN === '1';
-  // 云端执行（--cloud 或 JSLB_BUILD_CLOUD=1）：受保护模块与加密层**完全不进 dist**，
+  // 云端执行（--cloud 或 JSLB_BUILD_CLOUD=1）：受保护模块与加密层完全不进 dist，
   // 只留公开模块供激活表单使用，混淆全交由服务端的 /api/obfuscate 跑。
   const cloud = argv.includes('--cloud') || process.env.JSLB_BUILD_CLOUD === '1';
   const obfPreset = process.env.JSLB_BUILD_OBF_PRESET || 'low';

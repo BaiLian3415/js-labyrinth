@@ -57,7 +57,7 @@ function describe(name) {
     limits: p.limits,
     gates: p.gates,
     // 该档在云端（服务端执行）单文件能上传到多少字节：预设的成本决定它，通常
-    // **小于** limits.maxFileBytes 之外还会再被压一次。界面用它做预检提示，
+    // 小于 limits.maxFileBytes 之外还会再被压一次。界面用它做预检提示，
     // 免得用户按 limits 的数字选好文件、点下去才收到 413。
     cloudCapBytes: hostLimits.presetInputCap(p.preset),
   };
