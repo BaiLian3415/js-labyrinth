@@ -433,6 +433,63 @@ section('端到端激活（v5 卡密）');
   }
 }
 
+// ------------------------------------------------------------ 裸键串扰防护
+//
+// 背景（2026-10-01 线上实测）：存储键按请求设备码隔离（scopedKey），无设备头时
+// 回落到裸键。暖实例上 restore() 会读到别的租户激活过的记录——实测匿名请求拿到了
+// pack100 权益，Free 卡的闸门全被绕过（Free+html2mem 照样 200）。
+//
+// 本节钉住两道防线（都是 server/handler.js handleObfuscate 在用）：
+//   ① restoredMatchesKey：复用的记录必须与出示的卡密是同一张卡（比卡密编号）；
+//   ② ensure({trialOnly:true})：既无卡密又无有效记录时跳过 restore，只能是试用。
+section('裸键串扰防护（restore 必须匹配出示的卡密）');
+{
+  platform.setKv(null);
+  platform.setStorage(platform.newMemoryStorage());
+  licenseWeb.setKeyMaterial(TEST_CODE_KEY, null);
+  licenseWeb.resetRequestState();
+  // 签发日取今天（与上节同口径，否则 restore 先验过期）。
+  const today = Math.floor((Date.now() - codec.DAY_ZERO) / 86400000);
+  const cardA = codec.issueCode(TEST_CODE_KEY, 'pack100', 0, '91001', today);
+  const cardB = codec.issueCode(TEST_CODE_KEY, 'free', 365, '91002', today);
+
+  // A 激活 → 记录落盘（模拟暖实例上留下的别人记录）。
+  const actA = await licenseWeb.activate(cardA);
+  ok(actA.ok && actA.plan === 'pack100', 'pack100 卡激活成功（串扰场景的 A 方）');
+
+  // ① 出示同一张卡 → 匹配，可复用；出示另一张卡 → 不匹配，走 activate。
+  ok(await licenseWeb.restoredMatchesKey(cardA), '出示同一张卡：记录匹配，可复用');
+  ok(!(await licenseWeb.restoredMatchesKey(cardB)), '出示另一张卡：记录不匹配，不可复用');
+  ok(!(await licenseWeb.restoredMatchesKey('JSLB-NOT-A-KEY')), '出示非法卡密：不匹配');
+
+  // 无记录时一律不匹配（调用方回落到 activate，由它报 401 原因）。
+  licenseWeb.resetRequestState();
+  platform.setStorage(platform.newMemoryStorage());
+  ok(!(await licenseWeb.restoredMatchesKey(cardA)), '无存储记录时不匹配');
+
+  // ② 先证明现场是真的：不清存储只清 state（模拟新请求落到暖实例），
+  //    不带 trialOnly 的 ensure 会复用别人的记录——这正是要堵的洞。
+  //    （不断言它是"对的"，只用它证明下面的 trialOnly 测试不是空转。）
+  licenseWeb.resetRequestState();
+  platform.setStorage(platform.newMemoryStorage());
+  ok((await licenseWeb.activate(cardA)).ok, '重建串扰现场：pack100 记录已落盘');
+  licenseWeb.resetRequestState();
+  const leak = await licenseWeb.ensure({ selfAnchored: true });
+  const leakEnt = licenseWeb.entitlements();
+  ok(leak.ok && leakEnt && leakEnt.plan === 'pack100',
+    '对照组：不清存储时 ensure 确实复用了他人记录（pack100）',
+    leakEnt ? leakEnt.plan : '无权益');
+
+  // 同一现场加 trialOnly → 绝不能是 pack100（试用或直接拒绝，看 requireLicense 配置）。
+  licenseWeb.resetRequestState();
+  const gated = await licenseWeb.ensure({ selfAnchored: true, trialOnly: true });
+  const gatedEnt = licenseWeb.entitlements();
+  ok(!gatedEnt || gatedEnt.trial === true || gatedEnt.plan !== 'pack100',
+    'trialOnly 下不复用他人记录', gatedEnt ? (gatedEnt.trial ? 'trial' : gatedEnt.plan) : '无权益');
+
+  licenseWeb.resetRequestState();
+  platform.setStorage(null);
+}
 
 // ------------------------------------------------------------ 自锚定校验
 

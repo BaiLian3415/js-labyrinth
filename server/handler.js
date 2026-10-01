@@ -204,8 +204,13 @@ async function handleObfuscate(request, env) {
   //
   // 失败不在这里报错：交给下面的 ensure() 统一判定（无效记录不会被写入，
   // 也就不可能因此放行任何东西）。
+  //
+  // importedOk 供下面的 trialOnly 判定：只有本次呈现的记录被成功采纳，才允许
+  // 复用存储记录。呈现了无效记录 → 同样只能是试用，否则 restore 仍可能命中
+  // 别人的残留记录（import 失败不写盘，但盘里可能早有别人的）。
+  let importedOk = false;
   if (body.record && typeof body.record === 'object') {
-    await licenseWeb.importRecord(body.record);
+    importedOk = (await licenseWeb.importRecord(body.record)).ok;
   }
 
   // 卡密也可以放在请求体里，方便不熟请求头的调用方
@@ -215,7 +220,12 @@ async function handleObfuscate(request, env) {
     // KV 里留有有效记录，直接复用；重复 activate 会被赎回登记判成 'used'。
     // 只有记录缺失或已过期时才真正走激活（此时传的应是另一张未赎回的卡）。
     const had = await licenseWeb.restore({ selfAnchored: true });
-    if (!had.ok) {
+    // 裸键串扰防护：复用的记录必须与出示的卡密是同一张卡。无设备头时所有请求
+    // 共用同一存储键，暖实例上 restore() 会读到别的租户的记录；不校验就直接复用
+    // 等于跨租户提权（2026-10-01 线上实测：Free 卡请求复用了 pack100 记录，
+    // 闸门全被绕过）。不匹配时回落到 activate，由它报 401 原因。
+    const reuse = had.ok && await licenseWeb.restoredMatchesKey(key);
+    if (!reuse) {
       const act = await licenseWeb.activate(key);
       if (!act.ok) {
         return json({
@@ -226,7 +236,11 @@ async function handleObfuscate(request, env) {
       }
     }
   } else {
-    const ens = await licenseWeb.ensure({ selfAnchored: true });
+    // 本次呈现了有效记录（刚在上面 importRecord 成功采纳）才允许复用存储记录；
+    // 既无卡密、又无有效记录 → 只能是试用，跳过 restore（同上，防裸键串扰）。
+    // 注意：界面每次混淆都带 body.record（见上面注释），合法流程不受影响；
+    // 唯一的行为变化是"无凭据却读到他人记录"的请求回到试用/402——那正是要堵的洞。
+    const ens = await licenseWeb.ensure({ selfAnchored: true, trialOnly: !importedOk });
     if (!ens.ok) {
       return json({
         ok: false,

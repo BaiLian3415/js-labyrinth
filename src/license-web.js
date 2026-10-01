@@ -816,6 +816,31 @@ export async function importRecord(record) {
   return { ok: true, plan: res.plan, adopted: true };
 }
 
+/**
+ * 复用的存储记录是否与出示的卡密是同一张卡。
+ *
+ * 用途见 server/handler.js handleObfuscate：无设备头时所有请求共用同一存储键，
+ * 暖实例上 restore() 会读到别的租户的记录。不校验就直接复用等于跨租户提权——
+ * Free 卡的请求会顶着别人的 pack100 权益把闸门全绕过（2026-10-01 线上实测）。
+ *
+ * 比的是卡密编号（id）而不是套餐：同一设备先后用两张卡，以 presented 为准；
+ * 不同卡即使同套餐也不得共用记录（一卡一机按卡登记）。
+ * 两边都用 codeKey 重验签名，伪造的记录过不了 parseCode。
+ *
+ * @param {string} rawKey 出示的卡密原文
+ * @returns {Promise<boolean>} 同一张卡时 true；无记录、记录损坏、卡密非法、
+ *   不是同一张卡时一律 false（调用方回落到 activate，由它报 401 原因）
+ */
+export async function restoredMatchesKey(rawKey) {
+  const rec = await exportRecord();
+  if (!rec || typeof rec.code !== 'string') return false;
+  const a = codec.parseCode(codeKey, String(rawKey == null ? '' : rawKey).trim());
+  if (!a.ok) return false;
+  const b = codec.parseCode(codeKey, String(rec.code).trim());
+  if (!b.ok) return false;
+  return String(a.id) === String(b.id) && a.plan === b.plan;
+}
+
 /** 清除本地授权与试用计数，回到未激活状态。 */
 export async function deactivate() {
   await storeDel(K_LICENSE);
@@ -839,10 +864,22 @@ export function current() {
  */
 export async function ensure(opts) {
   loadKeysFromEnv();
-  const r = await restore(opts);
-  if (r.ok) return { ok: true, trial: false };
+  // trialOnly：无卡密、无记录的请求只能是试用——绝不能复用存储里的他人记录。
+  //
+  // 背景（裸键串扰，2026-10-01 线上实测确认）：存储键按请求设备码隔离
+  // （scopedKey），无设备头时回落到裸键。暖实例上 restore() 会读到别的租户
+  // 激活过的记录（实测：匿名请求拿到了 pack100 权益，闸门全被绕过）。
+  // 调用方在呈现了有效凭据（卡密走 activate，记录走 importRecord）时传 false；
+  // 既无卡密又无记录时传 true。
+  const trialOnly = !!(opts && opts.trialOnly);
+  let reason = 'missing';
+  if (!trialOnly) {
+    const r = await restore(opts);
+    if (r.ok) return { ok: true, trial: false };
+    reason = r.reason || 'missing';
+  }
   const cfg = platform.getWebConfig();
-  if (cfg.requireLicense) return { ok: false, reason: r.reason || 'missing' };
+  if (cfg.requireLicense) return { ok: false, reason };
   if (!state) {
     state = {
       plan: null,
@@ -1000,6 +1037,7 @@ export default {
   activate,
   exportRecord,
   importRecord,
+  restoredMatchesKey,
   deactivate,
   ensure,
   entitlements,
