@@ -450,6 +450,8 @@ function obfuscate(code, userOptions) {
   const out = generate(ast, {
     compact: options.compact !== false,
     escapeNonAscii: !!options.escapeNonAscii,
+    // 中文命名时汉字不转义，见 generator 的 _escapeIdent
+    chineseNames: !!options.chineseNames,
     indent: options.indent !== undefined ? options.indent : 2,
     // 命中「保留名单」的文本原样写出（不做 \uXXXX 转义），详见 buildKeepRaw
     keepRaw: ctx.keepRaw,

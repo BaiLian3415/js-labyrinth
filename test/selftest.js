@@ -16,6 +16,7 @@
  *   web-pipeline     runJob 浏览器侧链路、服务端路由、云存储 RESP
  *   zip              ZIP 打包结构
  *   passes-basic     逻辑表达式、数值常量、多态可复现、控制流扁平化
+ *   chinese-names    中文命名：字典、命名池、四档预设、转义与套餐闸门
  *   passes-defense   自防御、密钥耦合、多时钟源、ESM 绑定、BigInt
  *   vm               VM 保护、动态操作码、分发表密文化、寄存器模型
  *   anti-analysis    Anti-CDP 与域名锁定
@@ -46,6 +47,7 @@ const FILES = [
   'zip.js',
   'passes-basic.js',
   'passes-defense.js',
+  'chinese-names.js',
   'vm.js',
   'anti-analysis.js',
   'minify.js',

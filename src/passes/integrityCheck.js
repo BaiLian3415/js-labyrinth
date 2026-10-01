@@ -150,6 +150,10 @@ export default function integrityCheck(ast, options, ctx) {
     // 的那段文本的哈希，运行期拿 toString() 重算。主生成把命中的中文写成原文
     // 而这里写成 \uXXXX 的话，两边哈希不等，干净产物会被自己的完整性校验投毒。
     keepRaw: ctx && ctx.keepRaw,
+    // 同理：chineseNames 决定汉字标识符在主生成里是原样写出还是转义。漏了这一项
+    // 就会用"转义形态"算哈希、用"原文形态"出产物，产物一加载就被自己投毒——
+    // 症状是 console.log 之类变成 console["l"+"o"+"g"] 却取不到方法。
+    chineseNames: !!options.chineseNames,
   };
 
   // 毒药标志做成多点，N 个独立全局属性全部置位才算完成毒化，解码器

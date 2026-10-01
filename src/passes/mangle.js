@@ -1,6 +1,7 @@
 import t from '../ast/types.js';
 import rand from '../utils/rand.js';
 import DEFAULTS from '../options.js';
+import { cjkNames, uniqueCJKName } from '../utils/cjk.js';
 const { uniqueName, shuffle, RESERVED, HEXD } = rand;
 
 /** 未指定或指定了不存在的 nameStyle 时的兜底，与 options.js 的默认值同源。 */
@@ -358,8 +359,14 @@ export default function mangle(ast, options, ctx) {
   // 命名策略：四档都从命名池按序发放，池空时退回随机名。档名不存在（拼错、大小写
   // 不对、还是旧档名 random/short）一律回落到默认值，而不是抛异常或静默出一份
   // 没有约定的产物。
-  const makePool = NAME_POOLS.get(options.nameStyle) || NAME_POOLS.get(DEFAULT_NAME_STYLE);
-  const pool = makePool();
+  //
+  // chineseNames 打开时改用汉字池，取代 nameStyle 的四档：用户要的就是"名字是
+  // 中文"，再从 a/b/c… 那几档里挑没有意义。escapeNonAscii 对本档无效——生成器
+  // 那侧单独放行（见 generator 的 _escapeIdent），否则四个预设默认开的
+  // escapeNonAscii 会把汉字写成 \uXXXX，产物里根本看不到中文。
+  const pool = options.chineseNames
+    ? cjkNames(options.chineseDictionary || '')
+    : (NAME_POOLS.get(options.nameStyle) || NAME_POOLS.get(DEFAULT_NAME_STYLE))();
   const nextName = () => {
     for (;;) {
       const it = pool.next();
@@ -379,8 +386,11 @@ export default function mangle(ast, options, ctx) {
   for (const { name, binding } of targets) {
     if (reservedRe.length && reservedRe.some((re) => re.test(name))) continue;
     // 命名池用尽（词典档约四千个名字，>15 万个绑定才可能触发）时退回随机名，
-    // 不静默复用名字——复用会撞名并改变语义
-    const newName = nextName() || uniqueName(used, prefix);
+    // 不静默复用名字——复用会撞名并改变语义。中文档的兜底仍是中文名，见
+    // uniqueCJKName。
+    const newName = nextName() || (options.chineseNames
+      ? uniqueCJKName(used, options.chineseDictionary || '')
+      : uniqueName(used, prefix));
     try {
       // 声明点。同一条绑定的重复声明（var 重复、Annex B 提升上来的块级函数
       // 声明）都要改，漏掉任何一处都会留下旧名，运行期读到的就不是同一个绑定

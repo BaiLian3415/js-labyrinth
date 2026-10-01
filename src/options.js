@@ -22,6 +22,14 @@ export default {
   // 属性，叠加高风险名白名单。与外部代码共享属性可能被破坏（safe 模式固有局限）。
   // Paid 档（plus+）可用；free 档闸门锁死 false。
   "renameProperties": false,
+  // 中文命名（chineseNames）：把标识符与属性名换成汉字（甲乙丙丁…）。打开时
+  // 取代 nameStyle 的四档——要的就是"名字是中文"，再从 a/b/c… 里挑没意义。
+  // 产物里汉字原样写出、不做 \uXXXX 转义（见 generator 的 _escapeIdent），
+  // 因此要求产物按 UTF-8 提供；四个预设默认都是关的，属于风格开关。
+  "chineseNames": false,
+  // 汉字字典。留空用内置默认字典（1024 字，起手甲乙丙丁戊己庚辛壬癸）。
+  // 自定义时逐构建打乱后发名，所以顺序只影响"哪些字会被用到"，不影响可复现性。
+  "chineseDictionary": "",
   "stringArray": true,
   "stringArrayEncoding": "rc4",
   "stringArrayMixedEncoding": true,

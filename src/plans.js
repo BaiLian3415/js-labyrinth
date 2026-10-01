@@ -31,6 +31,10 @@ export default {
       "nameStyle": [
         "Mangled"
       ],
+      // 中文命名也是一种"非 Mangled"的命名风格，与上面那条同一个口径：
+      // free 档的命名风格锁死在 Mangled，因此这一项对 free 也锁死。放开与否
+      // 是套餐策略决定，这里按现状对齐，不擅自给 free 扩能力。
+      "chineseNames": false,
       "renameProperties": false,
       "debugPoison": false,
       "selfDefending": false,

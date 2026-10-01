@@ -1,6 +1,7 @@
 import keys from './keys.js';
 const { VISITOR_KEYS } = keys;
 import i18n from '../i18n.js';
+import { isCJKName } from '../utils/cjk.js';
 const { t: msg } = i18n;
 /**
  * 自研 AST 到代码的生成器，接口取 @babel/generator 的子集。
@@ -85,6 +86,8 @@ class Generator {
     this.options = options || {};
     this.compact = this.options.compact !== false;
     this.escapeNonAscii = !!this.options.escapeNonAscii;
+    // 中文命名：汉字标识符原样写出，不受 escapeNonAscii 影响（见 _escapeIdent）
+    this.chineseNames = !!this.options.chineseNames;
     this.indent = options && options.indent !== undefined ? options.indent : 2;
     // keepRaw：命中「不混淆项」名单的文本原样写出，不做 \uXXXX 转义。
     //
@@ -738,7 +741,12 @@ class Generator {
   // escapeNonAscii 打开时把标识符里的非 ASCII 字符写成 \uXXXX，
   // 标识符位置的转义在语法上合法，var \u4e00 = 1 能正常解析。
   // 命中 keepRaw 的名字原样写出：用户就是要在产物里搜得到它。
+  //
+  // chineseNames 打开时同样原样写出，否则四个预设默认开的 escapeNonAscii 会把汉字
+  // 全转成 \uXXXX——产物照样能跑，但用户 grep "甲" 一个字都搜不到，等于这功能白做。
+  // 转义与产物可读性冲突时以"看得见中文"为准，与上面 keepRaw 的取舍一致。
   _escapeIdent(name) {
+    if (this.chineseNames && isCJKName(name)) return name;
     if (!this.escapeNonAscii || this._keepRaw(name)) return name;
     let out = '';
     for (let i = 0; i < name.length; i++) {

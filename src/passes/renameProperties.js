@@ -1,5 +1,6 @@
 import t from '../ast/types.js';
 import rand from '../utils/rand.js';
+import { cjkNames, uniqueCJKName } from '../utils/cjk.js';
 const { uniqueName } = rand;
 /**
  * 属性名重命名（renameProperties，对标 obfuscator.io 的 safe 模式）。
@@ -132,6 +133,19 @@ export default function renameProperties(ast, options, ctx) {
   if (!options.renameProperties) return { renamed: 0 };
   const used = new Set(ctx.usedNames);
   const prefix = options.identifierPrefix || '_0x';
+  // 中文属性名与 mangle 共用同一个汉字池与字典，且两边都用同一个 used 集合防撞，
+  // 因此同一构建里"变量叫甲"与"属性也叫甲"不会互相冲突。
+  const pool = options.chineseNames ? cjkNames(options.chineseDictionary || '') : null;
+  const nextName = () => {
+    if (!pool) return uniqueName(used, prefix);
+    for (;;) {
+      const it = pool.next();
+      if (it.done) return uniqueCJKName(used, options.chineseDictionary || '');
+      if (used.has(it.value)) continue;
+      used.add(it.value);
+      return it.value;
+    }
+  };
   const program = ast.type === 'File' ? ast.program : ast;
 
   const defs = new Set();
@@ -143,7 +157,7 @@ export default function renameProperties(ast, options, ctx) {
   for (const name of defs) {
     if (!uses.has(name)) continue;
     if (RESERVED_PROPS.has(name)) continue;
-    if (!map.has(name)) map.set(name, uniqueName(used, prefix));
+    if (!map.has(name)) map.set(name, nextName());
   }
   if (map.size === 0) return { renamed: 0 };
 
