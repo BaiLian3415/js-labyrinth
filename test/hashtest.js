@@ -2,7 +2,7 @@
 /**
  * 纯 JS SHA-256 / SHA-512 / HMAC-SHA256 / Ed25519 与 node:crypto 的一致性测试。
  *
- *   node tools/test/hashtest.js
+ *   node test/hashtest.js
  *
  * 为什么必须有这个测试：卡密与许可证令牌的验签在 Node、浏览器、Worker 三端
  * 走的是 src/utils/hash.js 里的纯 JS 实现，而与 node:crypto 的一致性决定了
@@ -10,8 +10,8 @@
  * 长密钥（>64 字节触发先摘要路径）、中文与代理对。
  */
 import crypto from 'node:crypto';
-import hash from '../../src/utils/hash.js';
-import ed25519 from '../../src/utils/ed25519.js';
+import hash from '../src/utils/hash.js';
+import ed25519 from '../src/utils/ed25519.js';
 
 const { sha256Hex, hmacSha256Hex, utf8Bytes, utf8Length, b64ToText } = hash;
 
@@ -105,7 +105,7 @@ for (const n of [0, 1, 2, 3, 31, 32, 33, 64]) {
 
 // ---- Ed25519：RFC 8032 §7.1 官方测试向量 ----
 //
-// 这里必须用**官方向量**而不是"自签自验"：自签自验对取错基点符号、用错哈希、
+// 这里必须用官方向量而不是"自签自验"：自签自验对取错基点符号、用错哈希、
 // 标量按 P 而不是按 L 归约这几类缺陷都是盲的（它们会自洽地全错）。实现时正是
 // 三个错都犯过一遍，全靠这组向量逐个逼出来。
 const ED_VECTORS = [

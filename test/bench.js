@@ -1,12 +1,12 @@
 // 混淆性能基准：测各预设 × 各规模的耗时，并拆出 per-pass 分布。
 //
-//   node tools/test/bench.js [--pass] [--json]
+//   node test/bench.js [--pass] [--json]
 //
 // 为什么要先测再优化：pass 之间的耗时差好几个数量级，凭直觉猜瓶颈十次九次错。
 // 脚本只用固定 seed，因此结果可复现、可跨版本对比。
 import { execFileSync } from 'node:child_process';
-import obfuscateMod from '../../src/obfuscate.js';
-import presets from '../../src/presets.js';
+import obfuscateMod from '../src/obfuscate.js';
+import presets from '../src/presets.js';
 
 const obfuscate = obfuscateMod.default || obfuscateMod.obfuscate || obfuscateMod;
 const ENT = { plan: 'business', preset: 'max', gates: {}, limits: {} };

@@ -13,7 +13,8 @@ JavaScript 混淆器，**完全运行在 Vercel 上**。界面与 JSON API 同�
 同一套套餐闸门。
 
 `src/`、`web/`、`server/` 里**没有一行 `node:` 引用**，两者都是纯粹的 Web 标准代码。
-`tools/` 下的脚本（发卡、自测、构建）是给维护者在本地用的开发工具，不属于运行时。
+`test/` 与 `tools/` 下的一切（自测、发卡、构建）是给维护者在本地用的开发工具，
+不属于运行时——`test/` 里的文件会 `import` `src/`，方向永远是单向的。
 
 ## 快速开始
 
@@ -154,7 +155,7 @@ import 404。
 - **核心模块图里不能有字符串代码生成**。浏览器的 CSP 与不少函数运行时禁用 `eval` 与
   `new Function`，跑起来直接报 `EvalError: Code generation from strings disallowed`。
   `src/passes/shell.js` 原先用 `(0, eval)(PRIMITIVES)` 保证"产物文本与构建期实现不漂移"，
-  已改成手写等价实现，比对挪进 `tools/test/selftest.js`。自测里有一条守卫会拦住回退，
+  已改成手写等价实现，比对挪进 `test/selftest.js`。自测里有一条守卫会拦住回退，
   改核心时别引入 `eval`/`new Function`。注意产物**里面**的引导器不受这条限制。
 
 
@@ -762,13 +763,15 @@ vercel/             Vercel 接入层
   redis-tcp.js      零依赖 RESP 客户端（走 REDIS_URL 时用，只依赖 node:net + node:tls）
 
 web/                网页界面源码（原生 ESM，无打包器，无第三方依赖）
+test/               测试          selftest.js（入口，按主题拆成 core-obfuscate、license-*、
+                                  passes-*、vm、minify 等若干文件）、hashtest.js、
+                                  semantics.js、bench.js（性能基准）
 tools/
   build/            构建与发布验证  build-web.js（自混淆 + 模块体加密）、
                                   enc-loader.js（加密层实现与引导层生成）、
                                   bench-selfobf.js（自混淆运行期预算基准）、
                                   verify-encryption.js（加密层端到端校验）、
                                   verify-deploy.js（发布验证）
-  test/             测试          selftest.js、hashtest.js、semantics.js、bench.js（性能基准）
   issue/            发卡与密钥    keygen.js（发卡）、signingkey.js（生成密钥对）、
                                   keyrotate.js（轮换）、selfdigest.js
 
@@ -833,7 +836,7 @@ Web 标准代码。构建只复制 `src/` 与 `web/`，所以不需要任何排�
    `import`/`export default`。所有模块都保留默认导出，调用形态基本不变。
 2. **纯 JS 密码学**。`node:crypto` 只在 Node 可用、WebCrypto 又是异步的，卡密验签必须同步且
    三端一致，于是新增 `src/utils/hash.js`（SHA-256、HMAC-SHA256、base64 解码）。
-   与 `node:crypto` 的逐位一致性由 `tools/test/hashtest.js` 覆盖（68 项，含分块边界与长密钥），
+   与 `node:crypto` 的逐位一致性由 `test/hashtest.js` 覆盖（68 项，含分块边界与长密钥），
    改动前签发的卡密与 `license.lic` 仍然有效。
 3. **数据文件 JSON → JS 模块**。原生 ESM 的 JSON 模块在各浏览器支持度不一，
    `options/presets/plans/builtin-*` 改成导出默认值的 `.js`。
@@ -846,24 +849,38 @@ Web 标准代码。构建只复制 `src/` 与 `web/`，所以不需要任何排�
    `process.env.DSH_*` 改成通用实现，`Buffer.byteLength` 改成 `platform.byteLength`。
 6. **新增**：`src/platform.js`、`src/pipeline.js`、`src/options-meta.js`、`src/options-gate.js`、
    `src/index.js`、`src/utils/zip.js`、`src/version.js`、`functions/`、`web/`、
-   `vercel.json`、`api/`、`server/`，以及 `tools/` 下的 `build-web.js`、`selftest.js`、`hashtest.js`。
+   `vercel.json`、`api/`、`server/`，以及 `tools/build/build-web.js` 与 `test/` 下的
+   `selftest.js`、`hashtest.js`。
 7. **版本号**从 `src/version.js` 读（避免浏览器导入 JSON），`tools/issue/selfdigest.js --check`
    会顺带校验它与 `package.json` 一致。
 
 ## 测试
 
 ```bash
-npm test                                 # 核心/HTML/目录/闸门/许可证/网页链路/服务端路由/ZIP/ESM/BigInt + 线上验收
+npm test                                 # 核心/HTML/闸门/许可证/网页链路/服务端路由/ZIP/ESM/BigInt + 线上验收
 JSLB_SKIP_LIVE=1 npm test                # 同上，但不打网络（纯离线段）
-node tools/test/hashtest.js              # 118 项：SHA-256/512、HMAC、base64、Ed25519 与 node:crypto 逐位一致
 npm run semantics                        # 语义保持扫描（42 用例 × 4 预设 × 3 seed = 528 次比对）
 npm run bench                            # 混淆性能基准（各预设 × 各规模 + per-pass 分布）
-node tools/issue/selfdigest.js --check   # 自身摘要表与版本号一致性
-node tools/test/webfp.js                 # 浏览器指纹线上实测（playwright + 线上域名）
-npm run build:web && npm run verify:enc  # 加密层端到端校验（对 dist，见 README「构建」一节）
 npm run bench:selfobf                    # 自混淆运行期预算基准（逐 pass 代价，可复现）
+node test/hashtest.js                    # 118 项：SHA-256/512、HMAC、base64、Ed25519 与 node:crypto 逐位一致
+node test/webfp.js                       # 浏览器指纹线上实测（playwright + 线上域名）
+node tools/issue/selfdigest.js --check   # 自身摘要表与版本号一致性
+npm run build:web && npm run verify:enc  # 加密层端到端校验（对 dist，见 README「构建」一节）
 npm run verify                           # 发布验证：打线上域名核对接口、资源与门控
 ```
+
+`npm test` 是入口，它按顺序加载 `test/` 下 14 个用例文件。想只跑其中一部分时给
+`selftest.js` 传一个子串（匹配文件名）：
+
+```bash
+npm test -- core         # core-obfuscate.js
+npm test -- license      # license-codec.js + license-web.js + issue-cli.js
+npm test -- passes       # passes-basic.js + passes-defense.js
+npm run test:vm          # vm.js（含最重的 VM 保护段，单机可能要跑几分钟）
+```
+
+也可以直接 `node test/<文件名>.js` 跑单个文件——每个文件自带断言与退出码，
+不依赖入口。
 
 ### 网络依赖
 
@@ -876,7 +893,7 @@ npm run verify                           # 发布验证：打线上域名核对�
 | `JSLB_SKIP_LIVE=1` | 跳过线上段，纯离线跑（无网环境、受限 CI 用这个） |
 
 线上段失败时先分清两种原因：`站点不可达` 是环境/网络问题，`内容不符` 才是部署问题。
-`tools/test/webfp.js` 与 `npm run verify` 同样需要网络，且都打同一个域名。
+`test/webfp.js` 与 `npm run verify` 同样需要网络，且都打同一个域名。
 
 ### 性能基准
 
@@ -924,12 +941,12 @@ npm run verify                           # 发布验证：打线上域名核对�
 
 ### 语义保持扫描
 
-`tools/test/semantics.js` 不进 `npm test`（太慢），按需跑：
+`test/semantics.js` 不进 `npm test`（太慢），按需跑：
 
 ```bash
-npm run semantics                        # 完整扫描，约十分钟
-node tools/test/semantics.js --quick     # 只跑 low/medium，1 个 seed
-node tools/test/semantics.js -p medium -s 8 -f 逻辑
+npm run semantics                            # 完整扫描，约十分钟
+node test/semantics.js --quick              # 只跑 low/medium，1 个 seed
+node test/semantics.js -p medium -s 8 -f 逻辑   # 指定预设、seed 数与用例名过滤
 ```
 
 做法是每个用例先跑原始源码记下输出，再逐预设逐 seed 混淆后运行，**输出必须逐字符

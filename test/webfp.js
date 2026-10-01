@@ -7,26 +7,26 @@
  * 验不出"同一台机器两次算出同一个机器码"这件事。用 playwright-core + 系统
  * Chrome（agent-browser 不支持 Windows）。
  *
- * 本脚本**不打本地服务器**：直接访问已部署的 Vercel 站点，跑的就是
+ * 本脚本不打本地服务器：直接访问已部署的 Vercel 站点，跑的就是
  * 线上那份 dist（含 /api/* 的授权链路）。因此它验证的是"线上真的能算
  * 出一致的机器码"，而不是"本地构建产物能否算"。
  *
- * 注意 2026-09-25 起机器码改由**服务端签发并与卡密绑定**，设备特征派生只剩
- * **未激活时的兜底**用途。这里测的正是那条兜底路径（未激活状态下界面那一栏
+ * 注意 2026-09-25 起机器码改由服务端签发并与卡密绑定，设备特征派生只剩
+ * 未激活时的兜底用途。这里测的正是那条兜底路径（未激活状态下界面那一栏
  * 显示的值），它依然必须跨会话稳定；已激活卡的机器码恒定性由 selftest 的
  * 「机器码：服务端签发并与卡密永久绑定」一段覆盖。
  *
  * 需要网络。域名下方可用环境变量覆盖：
  *
- *   node tools/test/webfp.js
- *   JSLB_LIVE_ORIGIN=https://your.domain node tools/test/webfp.js
+ *   node test/webfp.js
+ *   JSLB_LIVE_ORIGIN=https://your.domain node test/webfp.js
  *
- * 只自测离线逻辑时不要用本脚本——离线覆盖在 tools/test/selftest.js。
+ * 只自测离线逻辑时不要用本脚本——离线覆盖在 test/selftest.js。
  */
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
+const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const CHROME = process.env.JSLB_CHROME || 'C:/Program Files/Google/Chrome/Application/chrome.exe';
 const ORIGIN = (process.env.JSLB_LIVE_ORIGIN || 'https://jslb.lllm.dpdns.org').replace(/\/+$/, '');
 

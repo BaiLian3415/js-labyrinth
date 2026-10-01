@@ -18,12 +18,12 @@ const B64_ALPHA = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz012345678
 
 // 共享原语，参数为无符号 32 位或有限整数，构建期与运行期行为逐位一致。
 //
-// PRIMITIVES 是**产物里那份文本**，逐字进引导器；下面的直接实现是它在构建期的
+// PRIMITIVES 是产物里那份文本，逐字进引导器；下面的直接实现是它在构建期的
 // 等价物。原先这里用 (0, eval)(...) 把这段文本当场求值，好处是"同一份文本"
 // 天然不会漂移，但浏览器的 CSP 与不少函数运行时禁止一切字符串代码生成——eval 与
 // new Function 一律被拒，跑起来直接报 EvalError: Code generation from strings
 // disallowed。改成手写等价实现后，"不漂移"由
-// tools/test/selftest.js 里那条逐位比对来保证（Node 允许 eval，正好用来当参照）。
+// test/minify.js 里那条逐位比对来保证（Node 允许 eval，正好用来当参照）。
 const PRIMITIVES = [
   'function mul32(_0a,_0b){_0a=_0a>>>0;_0b=_0b>>>0;var _0l=_0a&65535,_0h=_0a>>>16;',
   'return ((_0l*_0b)+(((_0h*_0b)&65535)<<16))>>>0;}',
@@ -82,7 +82,7 @@ const RT = { mul32, lcg, xs32, shfl, ipos, mix };
  * 引导器原语文本，导出给自测用。
  *
  * 自测在 Node 下把它 eval 出来，与上面那组直接实现逐位比对，作为"两份实现
- * 不会漂移"的保证。eval 只出现在 tools/test/selftest.js 里——那里不随 Worker
+ * 不会漂移"的保证。eval 只出现在 test/minify.js 里——那里不随 Worker
  * 上传，而核心模块图里连一处字符串代码生成都不能留。
  */
 export const PRIMITIVES_TEXT = PRIMITIVES;
@@ -143,7 +143,7 @@ function b64encode(bytes, alpha) {
  *
  * 与 makeShellLayer 里 classic 分支的循环逐语句等价：同一个 xs32 反馈链、同一个
  * 位置交织逆查表、同一个 FNV 累积与校验尾拼接，返回值就是 classic 分支算出的
- * _0bd（差量）。原语与表一律**当参数传进来**（xs/mx/ip）而不在核心内重写一份：
+ * _0bd（差量）。原语与表一律当参数传进来（xs/mx/ip）而不在核心内重写一份：
  * 核心每多一个字符，产物就多约 79 字符（实测口径见 jsfuck.js 头注释），
  * 而散列、取模这些原语在引导器作用域里已经有了。
  *
@@ -192,7 +192,7 @@ export const JSFUCK_MAX_CHARS = 512 * 1024;
 /**
  * 生成 JSFuck 核心的预置：`var <name> = <纯 JSFuck 表达式>;`
  *
- * 必须由调用方拼在**流水线之外**：这段表达式里上万次调用一旦过 callProxy，
+ * 必须由调用方拼在流水线之外：这段表达式里上万次调用一旦过 callProxy，
  * 每个调用点都要再包一层间接层，体积翻数倍；它本身已经是最终形态，没有再可
  * 混淆的结构。调用方拿到的字符串应直接拼在（已混淆的）引导层之前。
  *

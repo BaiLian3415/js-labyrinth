@@ -9,7 +9,7 @@
  * SHA-512 是 Ed25519 的内部哈希（RFC 8032 §5.1.5 规定用 SHA-512 摘要私钥），
  * 少了它就没法把签名换成非对称。
  *
- * 与 node:crypto 的等价性由 tools/test/hashtest.js 覆盖（SHA-256、SHA-512、HMAC、
+ * 与 node:crypto 的等价性由 test/hashtest.js 覆盖（SHA-256、SHA-512、HMAC、
  * 空串、长密钥、超 64 字节密钥、中文与代理对）。
  */
 

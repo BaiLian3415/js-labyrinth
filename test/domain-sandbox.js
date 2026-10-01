@@ -2,7 +2,7 @@
 /**
  * 域名锁定沙箱（selftest 专用）。用法：
  *
- *   node tools/test/domain-sandbox.js <product.js> <hostname> [hostWithPort]
+ *   node test/domain-sandbox.js <product.js> <hostname> [hostWithPort]
  *
  * hostname 传 "-" 表示不提供 location（Node 直跑形态）。
  *

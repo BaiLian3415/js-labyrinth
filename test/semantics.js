@@ -2,15 +2,15 @@
 /**
  * 语义保持扫描。零依赖，按需跑（不进 npm test，太慢）：
  *
- *   node tools/test/semantics.js                 # 全部用例 × 四个预设 × 3 个 seed
- *   node tools/test/semantics.js --quick         # 只跑 low/medium，1 个 seed
- *   node tools/test/semantics.js -p medium -s 8  # 指定预设与 seed 数
- *   node tools/test/semantics.js -f 逻辑          # 只跑名字含该子串的用例
+ *   node test/semantics.js                 # 全部用例 × 四个预设 × 3 个 seed
+ *   node test/semantics.js --quick         # 只跑 low/medium，1 个 seed
+ *   node test/semantics.js -p medium -s 8  # 指定预设与 seed 数
+ *   node test/semantics.js -f 逻辑          # 只跑名字含该子串的用例
  *
  * 做法：每个用例都是一段自带 console.log 的完整小程序。先跑原始源码记下输出，
  * 再逐预设逐 seed 混淆后运行，输出必须逐字符相同。
  *
- * 为什么要有这个：今天（2026-09-19）连撞两个**静默**缺陷——wasm junk 段随机压坏
+ * 为什么要有这个：今天（2026-09-19）连撞两个静默缺陷——wasm junk 段随机压坏
  * 参数表、logicalExpr 把 `a || b` 交换成 `b || a`（`||` 返回操作数的值，不是布尔）。
  * 两者都不报错，产物"看起来能跑"，只是结果不对。单元断言抓不到这种，必须真的
  * 把产物跑起来比对输出。
@@ -23,10 +23,10 @@ import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
-import obfuscateMod from '../../src/obfuscate.js';
+import obfuscateMod from '../src/obfuscate.js';
 
 const { obfuscate, resolveOptions } = obfuscateMod;
-const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
+const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
 /**
  * 用例集。每条都是一段能独立跑出确定输出的程序。
@@ -123,7 +123,7 @@ function parseArgs(argv) {
     else if (a === '-s' || a === '--seeds') out.seeds = Number(argv[++i]) || 3;
     else if (a === '-f' || a === '--filter') out.filter = argv[++i] || '';
     else if (a === '-h' || a === '--help') {
-      console.log('用法: node tools/test/semantics.js [--quick] [-p 预设] [-s seed数] [-f 过滤]');
+      console.log('用法: node test/semantics.js [--quick] [-p 预设] [-s seed数] [-f 过滤]');
       process.exit(0);
     }
   }

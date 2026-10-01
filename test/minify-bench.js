@@ -5,8 +5,8 @@
 //   npm install --no-save javascript-obfuscator   再加一列 obfuscator.io 同口径数据
 //
 // 为什么这么量：
-//   - 以 terser 为基准（`compress + mangle`，事实标准的 minifier），比的是**同输入
-//     产物体积的倍数**。倍数比"缩小了百分之几"更能跨输入比较，也不受输入本身松紧影响。
+//   - 以 terser 为基准（`compress + mangle`，事实标准的 minifier），比的是同输入
+//     产物体积的倍数。倍数比"缩小了百分之几"更能跨输入比较，也不受输入本身松紧影响。
 //   - 输入取本仓库真实源码（手写、无死代码）+ 一段"打包产物式"模块（批量死角函数），
 //     两类都报：前者代表正常源码，后者代表 bundle——DCE 的价值只在前者缺失、后者常见。
 //   - 固定 seed，同输入同选项可复现；只比体积，语义由 npm test 兜底。
@@ -17,9 +17,9 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import obfuscateMod from '../../src/obfuscate.js';
+import obfuscateMod from '../src/obfuscate.js';
 
-const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
+const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const obfuscate = obfuscateMod.default || obfuscateMod.obfuscate || obfuscateMod;
 
 const SEED = 20260920;

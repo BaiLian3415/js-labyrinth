@@ -2,7 +2,7 @@
 /**
  * CDP 模拟沙箱（selftest 专用）。用法：
  *
- *   node tools/test/cdp-sandbox.js <product.js> <mode>
+ *   node test/cdp-sandbox.js <product.js> <mode>
  *
  * mode：
  *   clean     干净浏览器环境（window/document/navigator 齐备，console 静默）
