@@ -33,6 +33,7 @@ import { randomBytes } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import plan from '../../src/plan.js';
 import { VERSION } from '../../src/version.js';
+import { ensureProxy } from '../lib/proxy.js';
 
 const args = process.argv.slice(2);
 let base = '';
@@ -55,6 +56,11 @@ if (!base) {
   process.exit(2);
 }
 base = base.replace(/\/+$/, '');
+
+// 本脚本打的是线上站点。Windows 上装了代理客户端时，浏览器自动走代理而 Node 的
+// fetch 不走，直连还会被 DNS 解析到不相干的地址；这里统一改成走系统代理。
+// 需要强制直连时设 JSLB_NO_PROXY=1。放在参数校验之后，免得 --help 也重启一次。
+ensureProxy('verify-deploy.js');
 
 const device = randomBytes(16).toString('hex');
 let failures = 0;

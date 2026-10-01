@@ -18,6 +18,16 @@ import optionsMeta from '../src/options-meta.js';
 import licenseWeb from '../src/license-web.js';
 import secret from '../src/license-secret.js';
 import hash from '../src/utils/hash.js';
+import { ensureProxy } from '../tools/lib/proxy.js';
+
+// 线上验收要打已部署的站点。装了代理客户端的机器上，浏览器自动走代理而 Node 的
+// fetch 不走，直连还可能被 DNS 解析到不相干的地址——切换靠进程启动时的
+// --use-env-proxy，所以必须在任何实际工作之前决定，否则重启会把前面的用例重跑一遍。
+// 仅在本段真的要执行时才重启：离线跑（未设 JSLB_LIVE_ORIGIN 或 JSLB_SKIP_LIVE=1）
+// 不该为此多跑一次全套。强制直连设 JSLB_NO_PROXY=1。
+const wantLive = process.env.JSLB_SKIP_LIVE !== '1'
+  && !!(process.env.JSLB_LIVE_ORIGIN || '').trim();
+if (wantLive) ensureProxy('live-verify.js');
 
 const { obfuscate } = obfuscateMod;
 const { obfuscateDocument } = htmlMod;

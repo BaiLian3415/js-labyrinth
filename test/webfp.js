@@ -24,6 +24,7 @@
  * 只自测离线逻辑时不要用本脚本——离线覆盖在 test/selftest.js。
  */
 import path from 'node:path';
+import { ensureProxy, playwrightProxy } from '../tools/lib/proxy.js';
 import { fileURLToPath } from 'node:url';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -42,6 +43,9 @@ const probe = async (url) => {
   }
 };
 
+// 本脚本要打线上站点：Node 的 fetch 不读系统代理，先切过去（强制直连设 JSLB_NO_PROXY=1）。
+ensureProxy('webfp.js');
+
 const health = await probe(ORIGIN + '/api/health');
 if (!health.ok) {
   console.error('[FAIL] 线上站点不可达：' + ORIGIN + '/api/health -> '
@@ -51,7 +55,7 @@ if (!health.ok) {
 }
 console.log('线上站点：' + ORIGIN + '（health ' + health.status + '）');
 
-const browser = await chromium.launch({ executablePath: CHROME, headless: true });
+const browser = await chromium.launch({ executablePath: CHROME, headless: true, proxy: playwrightProxy() });
 const page = await browser.newPage();
 // 线上是 HTTPS，dist 里的模块由托管平台的静态资源提供，无需任何本地映射。
 await page.goto(ORIGIN + '/index.html', { waitUntil: 'domcontentloaded' });

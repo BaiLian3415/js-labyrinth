@@ -97,6 +97,17 @@ npx vercel --prod              # 发布（npm run deploy 等价）
 npm run verify -- https://你的域名
 ```
 
+出网会**自动走系统代理**：装了代理客户端（Clash/公司 VPN 等）的机器上，浏览器
+自动走代理而 Node 的 `fetch` 不走，直连还可能被 DNS 解析到不相干的地址——表现是
+同一个网址 PowerShell 拿得到 200、这个脚本却 `UND_ERR_CONNECT_TIMEOUT`。因此
+`verify-deploy`、`test/live-verify.js`、`test/webfp.js` 会先探测代理，再用
+`--use-env-proxy` 重启自己一次（探测顺序：`HTTPS_PROXY` 等环境变量 → Windows 系统
+代理注册表 → 直连）。想在代理不适用时强制直连：
+
+```bash
+JSLB_NO_PROXY=1 npm run verify -- https://你的域名
+```
+
 **配置写了、部署没报错，不等于生效。** 2026-09-19 就踩过这个坑：部署配置里
 `JSLB_WEB_CONFIG` 明确写着 `requireLicense: true`，部署输出也把这条列进了
 环境变量，但线上 `/api/plans` 返回的是代码里的默认值 `false`——**站点一直在无卡密
