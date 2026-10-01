@@ -3690,6 +3690,90 @@ if (process.env.JSLB_SKIP_LIVE === '1') {
           onErr ? String(onErr.message).slice(0, 70) : '没抛');
       }
     }
+// 档位闸门：html2mem 是 Plus 及以上的能力（Free 不给）。
+    // 三个容易踩的点，这里都钉住：
+    //   ① 闸门约束的选项必须存在于**每个**预设里，否则 plan.js 的 assertConsistent()
+    //      在加载期就抛「预设 low 达不到闸门要求项 html2mem」；
+    //   ② html2memKey 刻意**不**加闸门——它是附属项，没 html2mem 时本就不起作用，
+    //      单独拦它会让人以为能单独用；
+    //   ③ 闸门在 free 上是 false（挡），plus 及以上**不设**该键（放行），与 antiLLM 同写法。
+    {
+      const gateMod2 = await import('../../src/options-gate.js');
+      const gate2 = gateMod2.default || gateMod2;
+      const presetsMod2 = await import('../../src/presets.js');
+      const PRESETS2 = presetsMod2.default || presetsMod2;
+      const plansMod2 = await import('../../src/plans.js');
+      const PLANS2 = plansMod2.default || plansMod2;
+      const planMod2 = await import('../../src/plan.js');
+      const plan2 = planMod2.default || planMod2;
+
+      // describe() 返回 { name, ... }，而 options-gate 的 upgradeHint / plan.next()
+      // 读的是 ent.plan。真实权益对象来自 licenseWeb.entitlements()（带 plan 字段），
+      // 离线断言拿不到它，所以这里补上 plan，形状与线上一致。
+      //
+      // 这个字段名不一致是既有的（describe 用 name、gate 读 plan），不是本次引入的。
+      const ent = (n) => Object.assign(plan2.describe(n), { plan: n });
+
+      // ① 四个预设都含 html2mem，且默认 false（新功能不改变默认产物形态）
+      {
+        const missing = Object.keys(PRESETS2).filter((k) => !Object.prototype.hasOwnProperty.call(PRESETS2[k], 'html2mem'));
+        ok(missing.length === 0, '所有预设都定义了 html2mem（否则加载期断言会抛）', missing.join(', '));
+        const notFalse = Object.keys(PRESETS2).filter((k) => PRESETS2[k].html2mem !== false);
+        ok(notFalse.length === 0, '所有预设默认 html2mem=false', notFalse.join(', '));
+      }
+
+      // ② Free 挡住
+      {
+      const free = ent('free');
+        const r = gate2.checkOptions({ html2mem: true }, free);
+        ok(!r.ok, 'Free 开启 html2mem 被拒');
+        ok(r.kind === 'options', '拒绝原因是 options 而非预设档', r.kind);
+        ok(r.hits && r.hits[0] && r.hits[0].key === 'html2mem', '命中的键是 html2mem',
+          r.hits && r.hits[0] ? r.hits[0].key : '无');
+        ok(r.hits && r.hits[0] && r.hits[0].kind === 'bool', '按布尔项判定');
+        ok(gate2.checkOptions({ html2mem: false }, free).ok, 'Free 关闭 html2mem 不受影响');
+        ok(gate2.checkOptions({}, free).ok, 'Free 不传该选项也不受影响');
+      }
+
+      // ③ Plus 及以上全部放行（逐档，别只测一个）
+      {
+        const order = Object.keys(PLANS2).sort((a, b) => PLANS2[a].rank - PLANS2[b].rank);
+        const blocked = [];
+        for (const n of order) {
+          if (n === 'free') continue;
+          if (!gate2.checkOptions({ html2mem: true }, ent(n)).ok) blocked.push(n);
+        }
+        ok(blocked.length === 0, 'Plus 及以上每一档都可开启 html2mem', blocked.join(', '));
+        ok(gate2.checkOptions({ html2memKey: 12345 }, ent('free')).ok,
+          'html2memKey 不设闸门（附属项，单独限制无意义）');
+      }
+
+      // ④ 闸门方向：低档不比高档宽
+      {
+        const order = Object.keys(PLANS2).sort((a, b) => PLANS2[a].rank - PLANS2[b].rank);
+        const wrong = [];
+        for (let i = 0; i < order.length - 1; i++) {
+          const lo = PLANS2[order[i]];
+          const hi = PLANS2[order[i + 1]];
+          if (plan2.gateAllows(hi.gates.html2mem, true) === false
+            && plan2.gateAllows(lo.gates.html2mem, true) === true) {
+            wrong.push(order[i] + '→' + order[i + 1]);
+          }
+        }
+        ok(wrong.length === 0, '闸门随档位单调放宽（低档不会比高档更宽）', wrong.join(', '));
+      }
+
+      // ⑤ 拦截文案要带选项名与升级方向
+      {
+        const free = ent('free');
+        const hit = gate2.violationsOf({ html2mem: true }, free)[0];
+        ok(!!hit, 'violationsOf 能列出该违规项');
+        const text = hit ? gate2.violationText(hit, free) : '';
+        ok(/html2mem/.test(text), '拦截文案含选项名', text.slice(0, 60));
+        const hint = gate2.upgradeHint(free);
+        ok(typeof hint === 'string' && hint.length > 0, '给出升级提示', hint.slice(0, 60));
+      }
+    }
   }
 
 cleanTmp();

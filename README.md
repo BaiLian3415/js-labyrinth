@@ -503,6 +503,12 @@ pass 无冲突。Paid 档（plus+）可显式开启，free 档闸门锁死 `fals
 `random`、关掉碎片化与 Anti-LLM；Plus 可以把外壳形态切成 `jsfuck`、
 把命名策略切成 `short`、开碎片化与 Anti-LLM；碎片化与 Anti-LLM 之外的更高强度
 组合留给 Team/Business。
+**HTML2MEM**（`html2mem`）同样受闸门约束：**Free 不可用，Plus 及以上可用**。它会把产物内容换成密文
+并注入运行期解码器，明显改变产物形态，与 `antiLLM`、`debugProtection` 同级。配套的
+`html2memKey`（固定密钥）**刻意不加闸门**——它是 `html2mem` 的附属项，没有 `html2mem` 时本就不起作用，
+单独限制反而会让人以为能单独用。四个预设里 `html2mem` 都默认 `false`，新功能不改变默认产物形态。
+注意：加闸门必须先让该选项存在于**所有**预设里，否则 `plan.js` 的 `assertConsistent()` 在加载期
+就会抛「预设 low 达不到闸门要求项」——这条是硬拦的，写闸门时先改 `presets.js`。
 
 Plus 的预设上限是 `high`，闸门正好卡在 `high` 预设的取值上（能用整套 high，但不能把
 单项往上调），只关掉 `consoleStub` 一个开关；Free 则关掉十二个。Team 与 Business 同为
