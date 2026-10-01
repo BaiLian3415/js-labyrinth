@@ -797,6 +797,36 @@ Web 标准代码。构建只复制 `src/` 与 `web/`，所以不需要任何排�
 > 与配套运行时）；`low` 此前本就关闭该档，产物不变。同类"删功能"改动请一并跑一遍
 > 多 seed 的 medium/high 产物执行比对。
 
+> **例外（2026-10-01，VMP 增强）**：`medium`/`high`/`max` 三档的产物**有意改变**，
+> 逐字节等价不成立。三处改动：
+>   · **覆盖率**：`medium` 的 `vmThreshold` 由 4 降到 2。阈值是"函数体最少多少条语句
+>     才编译成字节码"的闸门。收益比预期窄：拿 20 个不同形态的函数体实测，
+>     thr4 收 10 个、thr2 收 13 个、thr1 收 17 个——多收的全都是**恰好 2~3 条语句**
+>     的小函数（典型是 `var a = n > 0 ? 1 : -1;` 这种两行的）。这类函数在真实代码里
+>     占比不高，四档的 `considered` 里绝大多数候选其实是混淆器注入的运行时函数
+>     （被 `rtNames` 规则排除，编译它们会循环依赖）。代价是体积 +2%。
+>     所以这一项是"补上一档缺失的覆盖"，不是"大幅提升覆盖率"。
+>   · **深度**：`high` 打开 `vmMacroOps`（连续操作数装载融成一条宏指令）与
+>     `vmDynOpcodes`（分发字按链值轮换，同一存储值在不同位置指向不同动作）。
+>     两者改的是字节码自身的可读性，不是外围包装。实测体积 +0.4%，
+>     宏指令 0 → 9 条，动态字空间 256。
+>   · **口径修正**：`max` 的 `vmBlockDecrypt` 由 `true` 改为 `false`。`max` 的
+>     `wasmInterpreter` 为 `true`，而分块自解密在 WASM 解释器内核档没有对应物
+>     （模块内的解释器按绝对下标硬编码，块边界不存在），实测开着与关着产物逐字节
+>     相同——这一项一直是"配了但没用"，现在预设不再声称提供它。
+>
+> 配套地，`vm` pass 的 stats 新增 `ops.shared` 与 `suppressed` 两个字段：
+> WASM 内核档的干扰项不再报 0（改报共享槽里未被占用的个数，此前读起来像"整档没有
+> 干扰项"），且配了但被 `wasmInterpreter` 屏蔽的选项逐项列出，不静默失效。
+> 被屏蔽的共 8 项：`vmJumpsEncoding` / `vmStackEncoding` / `vmMacroOps` /
+> `vmDynOpcodes` / `vmRegisterVM` / `vmAsyncExecutor` / `vmBlockDecrypt` /
+> `vmRuntimeKeyGetter`。
+>
+> 另有一处**不是本次改动引入**的行为：`max` 预设的 `consoleStub` 为 `true`，
+> 会把 `console` 各方法置空，所以 `max` 产物的 `console.log` 在运行期不产生输出。
+> 这是 `debugProtection` 的既定行为，不是 VMP 的问题；验证产物语义时要用
+> `process.stdout.write`，或在该次运行里关掉 `consoleStub`。
+
 为了跨环境，以下几点必须改动：
 
 1. **CommonJS → ESM**。浏览器与服务端函数只认 ESM，`require`/`module.exports` 全部换成

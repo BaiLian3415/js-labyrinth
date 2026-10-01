@@ -174,9 +174,14 @@ export default {
   // ---- WASM 档位（阶段一：恢复能力，默认关闭）----
   // 这两个档位在 e0d5d32 被整体移除（原因见那次提交：它们与 JS 侧多项 VM 特性互斥，
   // 且 wasmInterpreter 与 wasm 两档本身也互斥）。此处按"恢复能力、不动默认"的方式接回：
-  // 选项存在、pass 可跑，但**默认全关**，所以既有四个预设的产物逐字节不变。
-  // 照搬历史默认（medium/high/max 的 wasm:true、max 的 wasmInterpreter:true）会让三个
-  // 预设的产物全变，那属于"改默认"而不是"恢复能力"，应当单独评估、单独提交。
+  // 选项存在、pass 可跑，**本文件（无 preset 的手写选项集）默认全关**。
+  // 历史默认（medium/high/max 的 wasm:true、max 的 wasmInterpreter:true）已由预设承担，
+  // 见 presets.js；不带 preset 的调用仍保持全关。
+  //
+  // 注意 wasmInterpreter 会屏蔽一批栈机专有的选项（vmJumpsEncoding / vmStackEncoding /
+  // vmMacroOps / vmDynOpcodes / vmRegisterVM / vmAsyncExecutor / vmBlockDecrypt /
+  // vmRuntimeKeyGetter）——模块内的解释器按绝对下标与既有指令集硬编码，这些机制在那里
+  // 没有对应物。被屏蔽的项会在 stats 的 suppressed 字段里逐项列出，不静默失效。
   //
   // 互斥关系仍然成立，由 obfuscate 的挂载点保证：
   //   if (options.wasmInterpreter) wasmvm(...); else if (options.wasm) wasm(...);

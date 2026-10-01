@@ -2197,7 +2197,16 @@ function compileFunction(fn, ctx) {
     fn.body.body.unshift(...dirStmtsW);
     if (fn.type === 'ArrowFunctionExpression') fn.expression = false;
     compiledSet.add(fn);
-    return { real: usedOps.size, decoy: 0 };
+    // 共享档不按函数字面量计干扰项，但要让调用方知道这一档换了口径（2026-10-01 修）。
+    //
+    // 这里的 0 是真值——本函数字面量确实没生成干扰处理器（解释器在 WASM 里，
+    // 共享槽里未被占用的槽本身就是干扰字，见上面 decoys = [] 那段）。但
+    // stats.ops.decoy 报 0 会被读成"这一档没有干扰项"：max 档因此看起来比
+    // high 弱一个数量级（ops 45 vs 1280），实际差的是 per-function 与全程序
+    // 共享两种编号空间，干扰强度并不低。
+    //
+    // 三个数统一在 vm() 返回前按共享表重算，这里只带一个 shared 标记让累加处跳过。
+    return { real: usedOps.size, decoy: 0, shared: !!ctx.__vmWasmShared };
   }
 
   // 解释器 case 生成。
@@ -3850,6 +3859,19 @@ function vm(ast, options, ctx) {
     const slots = shuffle(Array.from({ length: space }, (_, i) => i));
     ctx.__vmWasmShared = { wordOf: new Map(), slots, next: 0, total: space };
   }
+  // WASM 解释器内核档屏蔽掉的选项（compileFunction 里每处都带 && !ctx.__vmWasmShared）。
+  //
+  // 为什么要显式报出来：这些项不是"没配"而是"配了也没用"。模块内的解释器按栈机、
+  // 按绝对下标、按既有指令集硬编码，栈机专有的机制（跳转差值编码、栈编码、宏指令、
+  // 动态操作码、寄存器后端、异步执行器、分块自解密、运行期密钥取值）在那里没有对应物。
+  // 静默失效的代价是实测出来的：max 预设里 vmBlockDecrypt 为 true，但关掉它产物
+  // 一个字节都不变——用户以为自己开了分块自解密，实际一直走的是共享分发字。
+  const suppressedByWasm = [];
+  if (ctx.__vmWasmShared) {
+    const OFF = ['vmJumpsEncoding', 'vmStackEncoding', 'vmMacroOps', 'vmDynOpcodes',
+      'vmRegisterVM', 'vmAsyncExecutor', 'vmBlockDecrypt', 'vmRuntimeKeyGetter'];
+    for (const k of OFF) if (options[k]) suppressedByWasm.push(k);
+  }
   // 异步执行器（vmAsyncExecutor）。WASM 解释器内核档的解释器在模块里、没有 await
   // 能力，该档整体忽略本项（allowAsync 为 false，async 函数照旧不编译）。
   const allowAsync = !!options.vmAsyncExecutor && !ctx.__vmWasmShared;
@@ -3943,7 +3965,9 @@ function vm(ast, options, ctx) {
       if (r) {
         compiled++;
         opsReal += r.real;
-        opsDecoy += r.decoy;
+        // 共享编号空间只有一张全程序分发表，逐函数累加没有意义（还会重复计数），
+        // 三个数统一在循环之后按表重算。
+        if (!r.shared) opsDecoy += r.decoy;
         if (r.form !== undefined) formCount['ABCDE'[r.form]]++;
         if (ctx.vmModel) modelCount[ctx.vmModel]++;
         if (r.regs > regsMax) regsMax = r.regs;
@@ -3964,6 +3988,21 @@ function vm(ast, options, ctx) {
       topWrapReason = 'not-compiled';
     }
   }
+  // 共享编号空间（WASM 解释器内核档）下三个数必须换一套口径，否则 total 会混单位。
+  //
+  // 逐函数档：real 是各函数字面量用到的指令种类数之和，decoy 是这些函数字面量各自
+  // 生成的干扰字数之和，两者相加 = 分发器实际要枚举的分发字总数，同单位可比。
+  //
+  // 共享档：全程序只有一张分发表，各函数字面量不生成干扰处理器。此时若仍按函数累加
+  // real（不同函数用到的指令种类会重复计数），再配上"共享槽剩余数"这个全局量，
+  // 相加得到的 total 是两套单位之和——3 个函数时能算出 1040 而表本身只有 1024 槽。
+  // 所以共享档整体改用表的口径：real = 已占槽、decoy = 空槽、total = 表大小。
+  if (ctx.__vmWasmShared) {
+    const sh3 = ctx.__vmWasmShared;
+    const used = Math.min(sh3.next, sh3.slots.length);
+    opsReal = used;
+    opsDecoy = sh3.slots.length - used;
+  }
   return {
     compiled,
     considered: fns.length,
@@ -3972,8 +4011,10 @@ function vm(ast, options, ctx) {
     topLevel: options.vmWrapTopLevel
       ? { wrapped: topWrapped, reason: topWrapped ? 'ok' : topWrapReason }
       : { wrapped: false, reason: 'off' },
-    // 指令集规模。每个编译函数的分发器要枚举 real+decoy 个分发字，干扰项通常不少于 1000
-    ops: { real: opsReal, decoy: opsDecoy, total: opsReal + opsDecoy },
+    // 指令集规模。每个编译函数的分发器要枚举 real+decoy 个分发字，干扰项通常不少于 1000。
+    // shared 为 true 时这三个数换用共享表的口径（real=已占槽、decoy=空槽、total=表大小），
+    // 逐函数档与共享档因此不可直接相减比较，见上面那处说明。
+    ops: { real: opsReal, decoy: opsDecoy, total: opsReal + opsDecoy, shared: !!ctx.__vmWasmShared },
     // vmMacroOps：融合出的宏指令条数，与因此少掉的指令条数（字流相应变短）
     macros: { fused: ctx.__vmMacro.fused, saved: ctx.__vmMacro.saved },
     // vmDynOpcodes：是否真的生效，以及取整后的字空间大小（0 表示本项没生效）
@@ -3984,6 +4025,8 @@ function vm(ast, options, ctx) {
     asyncExec: { funcs: ctx.__vmAsync.funcs },
     forms: formCount,
     models: modelCount,
+    // WASM 内核档屏蔽掉的选项（配了但在本档不生效的）。空数组 = 没有静默失效的项。
+    suppressed: suppressedByWasm,
   };
 };
 

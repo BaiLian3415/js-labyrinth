@@ -1984,9 +1984,11 @@ section('P3：动态操作码（vmDynOpcodes）· 链值驱动轮换');
   ok(bad === '', '链值驱动轮换在各形态/种子下语义正确（开与关都验）', bad);
   ok(dynOn > 0, 'vmDynOpcodes 开启时确实生效（dyn.applied）', 'applied 次数=' + dynOn);
   // 守护一个真实踩过的坑：opWordZ 与 opCanon 必须同开同关。曾经 opWordZ 无条件建，
-  // 而 opCanon 只在 dynOps 下填，于是 **dynOps=false（四个预设的默认值）** 时 opcode
+  // 而 opCanon 只在 dynOps 下填，于是 **dynOps=false 时** opcode
   // 字被不动点循环重算成 (undefined - rot) & mask 的垃圾，整条字节码报废。
-  ok(offOk > 0, '关闭 vmDynOpcodes（四个预设的默认）仍能正确构建并运行', '通过 ' + offOk + ' 次');
+  // 2026-10-01 起 high 预设打开了 vmDynOpcodes，"关闭"这条路径不再由预设默认覆盖，
+  // 所以这个断言改为直接显式关掉来验——覆盖面没变，措辞要跟上。
+  ok(offOk > 0, '显式关闭 vmDynOpcodes 时仍能正确构建并运行', '通过 ' + offOk + ' 次');
 }
 
 section('P3：分发表密文化（vmDispatchEnc）');
@@ -2013,24 +2015,62 @@ section('P3：分发表密文化（vmDispatchEnc）');
     } catch (e) { return 'ERR'; }
   };
 
+  // ---- 形态统计用的样例与 src1 分开（2026-10-01 修正）----
+  //
+  // src1 只有一个函数能编译（work），这是 P3-3「解码清零每次调用执行一遍」的计数
+  // 断言所需要的——它要求已知的调用次数。**但拿它做形态统计是不行的**：每个 seed
+  // 只贡献一次伯努利试验，而形态 D 的设计概率是 75%（vm.js 里
+  // randInt(0,3)===0 ? A/B/C : D）。8 次试验要求 ≥6 次命中，通过概率只有约 90%；
+  // 就算放宽到 24 次 ≥14 次，seed 1..24 这个窗口本身对单函数样例仍可能整体偏低
+  // （实测当前配置 13/24，改动前配置 17/24——扩到 48 seed 两者都是 67~69%，
+  // 差异纯属窗口效应，与配置无关）。
+  //
+  // 真正的修法是**让每个 seed 贡献多次试验**：下面的 src3 有 3 个可编译函数，
+  // 8 个 seed 就是 24 次判定，抖动被压掉。实测命中率在 8/24/48 seed 上分别是
+  // 79%/72%/72%，与设计值 75% 吻合，且对配置改动不敏感（关掉 macro/dyn 是 83%/75%/78%）。
+  const src3 = 'function work(n){var a=0;for(var i=0;i<n;i++){if(i%2===0){a+=i*3;}else{a-=1;}}return a+"|"+(n>3?"big":"small");}\n'
+    + 'function tag(n){var s="";for(var i=0;i<n;i++){s+=String(i%3);}return s.length>2?"long":s;}\n'
+    + 'function range(xs){var t=0;for(var i=0;i<xs.length;i++){if(xs[i]>1){t+=xs[i];}else{t-=1;}}return t;}\n'
+    + 'process.stdout.write(work(9)+" "+tag(5)+" "+range([1,2,3]));';
+
   // 形态统计：关 → D 不出现；开 → D 成为主要形态，且存在「全 D」构建。
-  // 统计循环必须跑满 8 个 seed：allD 只记录不退出，否则 dCount 只累计到
-  // 首个全 D 构建为止，断言会系统性偏低
+  //
+  // **统计用 src3，行为验证用 src1**（两者分工不同，不能互换）：
+  //   · src3 有 3 个可编译函数，每个 seed 贡献 3 次判定，抖动被压掉（见上面说明）；
+  //   · src1 只有 1 个可编译函数，但它的**调用次数是已知的 2 次**，下面 P3-2/P3-3
+  //     的篡改检出与「解码清零每次调用执行一遍」计数断言依赖这个性质。
+  //     若把统计样例换成 src3，allD.code 就会带 3 个函数，计数断言要的 HIT2 变 HIT3。
+  //
+  // 阈值取「占比 ≥ 60%」而不是固定计数：src3 每 seed 3 次判定，8 seed 共 24 次，
+  // 期望 18 次（75%），留 4 次的抖动余量。真退化（D 不再出现）会掉到 0，
+  // 退化到 50% 时期望 12 次 < 14.4，同样会被抓住。
+  const P3_SEEDS = 8;
+  const P3_MIN_RATE = 0.6;
   let offBad = 0;
   let dCount = 0;
-  let allD = null;
-  for (let seed = 1; seed <= 8; seed++) {
-    const off = vmStatOf(obfuscate(src1, { preset: 'high', shell: false, vmDispatchEnc: false, integrityCheck: false, seed }));
+  let fnCount = 0;
+  for (let seed = 1; seed <= P3_SEEDS; seed++) {
+    const off = vmStatOf(obfuscate(src3, { preset: 'high', shell: false, vmDispatchEnc: false, integrityCheck: false, seed }));
     if (!off || off.forms.D !== 0) offBad++;
-    const rOn = obfuscate(src1, { preset: 'high', shell: false, vmDispatchEnc: true, integrityCheck: false, seed });
-    const on = vmStatOf(rOn);
+    const on = vmStatOf(obfuscate(src3, { preset: 'high', shell: false, vmDispatchEnc: true, integrityCheck: false, seed }));
     if (!on) continue;
     dCount += on.forms.D;
-    if (!allD && on.compiled > 0 && on.forms.D === on.compiled) allD = { seed, code: rOn.code };
+    fnCount += on.compiled;
   }
-  ok(offBad === 0, '关闭 vmDispatchEnc 时形态 D 不出现（8 seed）');
-  ok(dCount >= 6, '开启 vmDispatchEnc 时形态 D 成为主要形态（D 计数 ≥ 6/8）', 'D=' + dCount);
-  ok(!!allD, '存在全 D 构建（分发映射全部进密文表）', allD ? '' : '8 个 seed 都没出现全 D');
+  const dRate = fnCount ? dCount / fnCount : 0;
+  ok(offBad === 0, '关闭 vmDispatchEnc 时形态 D 不出现（' + P3_SEEDS + ' seed × 3 函数）');
+  ok(dRate >= P3_MIN_RATE,
+    '开启 vmDispatchEnc 时形态 D 成为主要形态（占比 ≥ ' + Math.round(P3_MIN_RATE * 100) + '%，设计值 75%）',
+    dCount + '/' + fnCount + ' = ' + Math.round(dRate * 100) + '%');
+
+  // 「全 D 构建」取自 src1：下面的双清零签名与计数断言要一个单函数产物
+  let allD = null;
+  for (let seed = 1; seed <= P3_SEEDS; seed++) {
+    const rOn = obfuscate(src1, { preset: 'high', shell: false, vmDispatchEnc: true, integrityCheck: false, seed });
+    const on = vmStatOf(rOn);
+    if (on && on.compiled > 0 && on.forms.D === on.compiled) { allD = { seed, code: rOn.code }; break; }
+  }
+  ok(!!allD, '存在全 D 构建（分发映射全部进密文表）', allD ? 'seed=' + allD.seed : P3_SEEDS + ' 个 seed 都没出现全 D');
 
   // 全 D 构建的行为化验收：定位密文表 → 篡改必被检出 → 解码清零按调用次数执行
   if (allD) {
@@ -3832,6 +3872,144 @@ if (process.env.JSLB_SKIP_LIVE === '1') {
       }
     }
   }
+
+// ------------------------------------------------------------ VMP 增强（2026-10-01）
+// 钉住三项改动，各自有具体的失效形态：
+//   ① 覆盖率（A）：medium 的 vmThreshold 由 4 降到 2，小函数也进字节码；
+//   ② 深度（B）：high 打开 vmMacroOps + vmDynOpcodes；
+//   ③ stats 口径（D）：WASM 解释器内核档的 ops.decoy 与 suppressed。
+// 语义正确性是底线，每个断言都真跑一遍产物比对 stdout。
+section('VMP 增强（覆盖率 / 深度 / stats 口径）');
+{
+  const vmRun = (src, opts) => {
+    const r = obfuscate(src, Object.assign({ seed: 5, consoleStub: false }, opts));
+    const st = r.stats.find((x) => x.pass === 'vm');
+    return { r, st: st ? st.result : null };
+  };
+  // runNode 返回的是 execFileSync 的**字符串**（encoding: 'utf8'），不是 {stdout} 对象。
+  // 这一点与文件里别处的 runSafe 不同，后者自己包了 runSync 才用 .trim()。
+  const runOf = (src) => String(runNode(src)).trim();
+
+  // 样例刻意包含三个「2~3 条语句」的小函数——它们恰好落在 thr2 收、thr4 挡的区间。
+  //
+  // 为什么不用更常见的"三段式 if"样例：那个函数的语句数是 4，thr4 就已经收了它，
+  // thr2 与 thr4 在它上面没有差别，断言会假失败（2026-10-01 首次跑就踩了这个）。
+  // 现在这个组合样例实测 thr4=2 / thr2=3 / thr1=4，且 8 个 seed 上全部稳定。
+  const SMALL = 'function tier(x) {\n'
+    + '  if (x > 100) { return "a"; }\n'
+    + '  if (x > 10) { return "b"; }\n'
+    + '  return "c";\n'
+    + '}\n'
+    + 'function pair(n) {\n'
+    + '  var a = n > 0 ? 1 : -1;\n'
+    + '  var b = n > 1 ? 2 : -2;\n'
+    + '  return a + b;\n'
+    + '}\n'
+    + 'function mul(n) {\n'
+    + '  var r = 1;\n'
+    + '  for (var i = 2; i <= n; i++) { r *= i; }\n'
+    + '  return r;\n'
+    + '}\n'
+    + 'function report(n) {\n'
+    + '  return tier(n) + "|" + pair(n) + "|" + mul(n);\n'
+    + '}\n'
+    + 'process.stdout.write(report(6));';
+  const SMALL_WANT = 'c|3|720';
+
+  // --- ① 覆盖率：medium 的阈值下调让小函数也进 VM ---
+  {
+    const before = vmRun(SMALL, { preset: 'medium', vmThreshold: 4 });
+    const after = vmRun(SMALL, { preset: 'medium' });
+    const base = runOf(SMALL);
+    ok(base === SMALL_WANT, '样例的基准输出符合预期', base);
+    ok(before.st && after.st && after.st.compiled > before.st.compiled,
+      'medium：调低 vmThreshold 后进 VM 的函数变多',
+      before.st.compiled + ' → ' + after.st.compiled);
+    // high 本就 thr1，覆盖率应当等于 thr2 再加一点（单三元的那个函数只有 1 条语句）
+    const hi = vmRun(SMALL, { preset: 'high' });
+    ok(hi.st && hi.st.compiled > after.st.compiled,
+      'high(thr1) 的覆盖率不低于 medium(thr2)（改动只落在 medium 预设上）',
+      'medium=' + after.st.compiled + '  high=' + hi.st.compiled);
+    ok(String(runNode(after.r.code)).trim() === base, 'medium 新阈值下语义一致');
+    ok(String(runNode(before.r.code)).trim() === base, 'medium 旧阈值下语义一致');
+    ok(String(runNode(hi.r.code)).trim() === base, 'high 下语义一致');
+  }
+
+  // --- ② 深度：high 的宏指令融合与动态操作码真的生效 ---
+  {
+    const off = vmRun(SMALL, { preset: 'high', vmMacroOps: false, vmDynOpcodes: false });
+    const on = vmRun(SMALL, { preset: 'high' });
+    ok(on.st && on.st.macros.fused > (off.st ? off.st.macros.fused : 0),
+      'high：宏指令融合条数上升',
+      (off.st ? off.st.macros.fused : '?') + ' → ' + (on.st ? on.st.macros.fused : '?'));
+    ok(on.st && on.st.dyn.applied && !(off.st && off.st.dyn.applied),
+      'high：动态操作码真的生效',
+      'space=' + (on.st ? on.st.dyn.space : '?'));
+    // 动态操作码要求字空间是 2 的幂，且必须 ≥ 实际用到的指令数
+    if (on.st && on.st.dyn.applied) {
+      const sp = on.st.dyn.space;
+      ok(sp > 0 && (sp & (sp - 1)) === 0, '动态字空间是 2 的幂（还原式 &(N-1) 的前提）', String(sp));
+    }
+    ok(String(runNode(on.r.code)).trim() === runOf(SMALL), '打开宏指令 + 动态操作码后语义一致');
+    // 产物确实变了（否则"生效"只是计数动了）
+    ok(on.r.code !== off.r.code, '打开后产物与关闭时不同（不是只有计数变化）');
+  }
+
+  // --- ③ stats 口径：WASM 内核档不再报 decoy:0，并列出被屏蔽的项 ---
+  {
+    const js = vmRun(SMALL, { preset: 'max', wasmInterpreter: false });
+    const wasm = vmRun(SMALL, { preset: 'max' });
+    ok(js.st && js.st.ops.shared === false, 'JS 档：ops.shared 为 false');
+    ok(wasm.st && wasm.st.ops.shared === true, 'WASM 内核档：ops.shared 为 true');
+    // 修复前 wasm 档的 decoy 恒为 0，看起来像"整档没有干扰项"
+    ok(wasm.st && wasm.st.ops.decoy > 100,
+      'WASM 内核档：ops.decoy 按共享槽报，不再是 0', String(wasm.st && wasm.st.ops.decoy));
+    ok(js.st && js.st.ops.decoy > 100, 'JS 档：ops.decoy 仍有值', String(js.st && js.st.ops.decoy));
+
+    // 共享档三个数必须同单位：real=已占槽、decoy=空槽、total=表大小。
+    // 若 real 仍按函数字面量累加（不同函数用到的指令种类会重复计数），再与全局的
+    // 空槽数相加，total 会超过表大小——3 个函数时能算出 1040 而表只有 1024 槽。
+    ok(wasm.st && wasm.st.ops.real + wasm.st.ops.decoy === wasm.st.ops.total,
+      '共享档：real + decoy == total（同单位）',
+      wasm.st ? wasm.st.ops.real + '+' + wasm.st.ops.decoy + '=' + wasm.st.ops.total : '?');
+    ok(wasm.st && wasm.st.ops.total === 1024,
+      '共享档：total 等于共享表大小（max 的 vmDecoyOps=1024）', String(wasm.st && wasm.st.ops.total));
+    ok(js.st && js.st.ops.real + js.st.ops.decoy === js.st.ops.total,
+      '逐函数档：real + decoy == total');
+
+    // suppressed：配了但被 wasmInterpreter 屏蔽的项
+    ok(Array.isArray(wasm.st && wasm.st.suppressed), 'suppressed 是数组');
+    ok(wasm.st && wasm.st.suppressed.length === 0,
+      'max 预设不再声称提供实际不存在的保护（2026-10-01 前这里是 vmBlockDecrypt）',
+      JSON.stringify(wasm.st && wasm.st.suppressed));
+    ok(js.st && (!js.st.suppressed || js.st.suppressed.length === 0),
+      'JS 档：没有静默失效的项');
+
+    // 逐项上报：显式配几项，逐项都该被列出来
+    const many = vmRun(SMALL, {
+      preset: 'max', vmJumpsEncoding: true, vmStackEncoding: true,
+      vmMacroOps: true, vmDynOpcodes: true, vmRegisterVM: true,
+    });
+    const sup = many.st ? many.st.suppressed : [];
+    ok(sup.length === 5, 'WASM 内核档逐项报出被屏蔽的 5 项', sup.join(','));
+    ok(!sup.includes('vmAsyncExecutor'), '未配置的项不进 suppressed（不制造噪声）');
+
+    // 屏蔽是"配置无效"而非"降级出错"：产物仍能跑
+    ok(String(runNode(wasm.r.code)).trim() === runOf(SMALL), 'WASM 内核档产物语义一致');
+  }
+
+  // --- 回归：low 档不开 VM，其余三档都开 ---
+  {
+    const low = vmRun(SMALL, { preset: 'low' });
+    ok(!low.st || low.st.compiled === 0, 'low 档不开 VMP（改动未波及）',
+      low.st ? String(low.st.compiled) : '(无 vm pass)');
+    for (const p of ['medium', 'high', 'max']) {
+      const v = vmRun(SMALL, { preset: p });
+      ok(v.st && v.st.compiled > 0, p + ' 档有函数进 VM');
+      ok(String(runNode(v.r.code)).trim() === runOf(SMALL), p + ' 档语义一致');
+    }
+  }
+}
 
 cleanTmp();
 
