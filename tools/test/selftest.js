@@ -3534,6 +3534,162 @@ if (process.env.JSLB_SKIP_LIVE === '1') {
         '既有的 numberObfuscationMBA 重复也消了（此前一直显示原始键名）',
         stillLegacy.map((o) => o.group + '/' + o.zh).join(', '));
     }
+// HTML2MEM 的 JS 侧：嵌在 JS 里的 HTML 字面量。
+    //
+    // 与上面文档模式那节是两回事：那边改的是整篇 HTML 的文本与属性值、靠 loader 遍历
+    // DOM 还原；这边改的是代码里的字符串/模板字面量，靠注入的解码器拼回字符串。
+    // 关键差别：这边**不需要 DOM**，所以产物在 Node / worker 里照样能跑。
+    section('HTML2MEM（JS 内嵌 HTML）');
+    {
+      const lit = (src, extra) => {
+        const r = obfuscate(src, Object.assign(
+          { preset: 'low', seed: 5, html2mem: true, html2memKey: 424242, selfCheck: false },
+          extra || {}));
+        const st = r.stats.find((x) => x.pass === 'html2memJs');
+        return { r, pass: st ? st.result : null };
+      };
+      const touched = (src, extra) => {
+        const p = lit(src, extra).pass;
+        return !!(p && !p.skipped);
+      };
+
+      // --- 静态：内容不留明文 ---
+      {
+        const src = [
+          'globalThis.__a = "<div class=\\"box\\" data-cfg=\\"secret-value-123\\">机密正文内容</div>";',
+          'var u = { name: "张三" };',
+          'globalThis.__b = `<p>机密模板文本 ${u.name} 结尾</p>`;',
+        ].join('\n');
+        const r = obfuscate(src, {
+          preset: 'low', seed: 5, html2mem: true, html2memKey: 424242, selfCheck: false,
+        });
+        ok(!r.code.includes('机密正文内容'), 'JS 侧：HTML 文本不留明文');
+        ok(!r.code.includes('secret-value-123'), 'JS 侧：HTML 属性值不留明文');
+        ok(!r.code.includes('机密模板文本'), 'JS 侧：模板里的 HTML 文本不留明文');
+        ok(/TextDecoder/.test(r.code) && /atob\(/.test(r.code), 'JS 侧：注入了解码器');
+        const st = r.stats.find((x) => x.pass === 'html2memJs');
+        ok(!!st && st.result && st.result.templates > 0, 'JS 侧：pass 报告了模板与值数',
+          JSON.stringify(st && st.result));
+      }
+
+      // --- 零误伤：非 HTML 字符串绝不能被改写 ---
+      // 判定放宽一点就是灾难：`a < b`、`Map<string,X>`、`i<length` 全会被当 HTML 改掉。
+      {
+        const NOT_HTML = [
+          ['小于比较', 'var q = 1, w = 2, r = (q<w);'],
+          ['泛型写法', 'var t = "Map<string,number>";'],
+          ['长度比较', 'var arr = [1,2,3], i = 0, n = arr.length;'],
+          ['XML 路径', 'var pp = "a/b<c>d";'],
+          ['数学式', 'var ss = "x<y && y>z";'],
+          ['普通中文', 'var label = "点击这里";'],
+          ['版本号', 'var v = "1.0.0-beta";'],
+          ['URL', 'var u = "https://a.example/p?q=1";'],
+          ['CSS 选择器', 'var sel = "div > p";'],
+        ];
+        const hit = NOT_HTML.filter(([, s]) => touched(s)).map(([n]) => n);
+        ok(hit.length === 0, 'JS 侧：非 HTML 字符串零误伤', hit.join(', '));
+      }
+
+      // --- 该处理的都处理了 ---
+      {
+        const IS_HTML = [
+          ['div 字符串', 'var a = "<div>内容</div>";'],
+          ['带属性', 'var a = "<span class=\\"x\\" id=\\"y\\">t</span>";'],
+          ['插值模板', 'var a = `<div class=\\"row\\">前缀 ${items} 后缀</div>`;'],
+          ['innerHTML 赋值', 'el.innerHTML = "<b>粗体</b>";'],
+          ['document.write', 'document.write("<p>段落</p>");'],
+          ['insertAdjacentHTML', 'el.insertAdjacentHTML("beforeend", "<li>项</li>");'],
+          ['jQuery', 'var h = $("<div>内容</div>");'],
+          ['多行 HTML', 'var a = "<div>\\n  <p>段</p>\\n</div>";'],
+          ['实体', 'var a = "<p>A &amp; B &lt;tag&gt; 保留</p>";'],
+        ];
+        const miss = IS_HTML.filter(([, s]) => !touched(s)).map(([n]) => n);
+        ok(miss.length === 0, 'JS 侧：各类内嵌 HTML 都被改写', miss.join(', '));
+
+        // 漏判之外还要看内容是否真的没留在明文
+        const leak = [];
+        for (const [n, s] of IS_HTML) {
+          const r = obfuscate(s, {
+            preset: 'low', seed: 5, html2mem: true, html2memKey: 424242, selfCheck: false,
+          });
+          if (r.code.includes('内容') || r.code.includes('粗体') || r.code.includes('段落')) {
+            leak.push(n);
+          }
+        }
+        ok(leak.length === 0, 'JS 侧：改写后内容不残留明文', leak.join(', '));
+      }
+
+      // --- 全是变量、没有静态内容的插值模板：跳过是合理的 ---
+      {
+        // `<ul>${items}</ul>` 里没有文本/属性值可加密，套一层空调用只是白白变长
+        ok(!touched('var a = `<ul>${items}</ul>`;'),
+          'JS 侧：全是变量的插值模板被跳过（无静态内容可加密）');
+      }
+
+      // --- reservedStrings 逃生舱 ---
+      {
+        ok(!touched('var a = "<div>保留内容</div>";', { reservedStrings: ['^<div>'] }),
+          'JS 侧：reservedStrings 能排除掉内嵌 HTML');
+      }
+
+      // --- 运行期：逐字还原，含实体、插值、空白 ---
+      {
+        const src = [
+          'globalThis.__r = [];',
+          'var u = { name: "李四", tags: ["a","b"] };',
+          'globalThis.__r.push("<div class=\\"c\\" data-v=\\"值1\\">正文 &amp; 符号</div>");',
+          'globalThis.__r.push(`<p>变量 ${u.name} 在 ${u.tags.length} 个标签中</p>`);',
+          'globalThis.__r.push("<pre>  保留空白\\n  第二行  </pre>");',
+          'globalThis.__r.push(`<ul>${u.tags.map(function(t){return "<li>"+t+"</li>";}).join("")}</ul>`);',
+        ].join('\n');
+        const want = [
+          '<div class="c" data-v="值1">正文 &amp; 符号</div>',
+          '<p>变量 李四 在 2 个标签中</p>',
+          '<pre>  保留空白\n  第二行  </pre>',
+          '<ul><li>a</li><li>b</li></ul>',
+        ];
+        const r = obfuscate(src, {
+          preset: 'low', seed: 5, html2mem: true, html2memKey: 424242, selfCheck: false,
+        });
+        // harness 里 document 在 Node 下不存在，补个最小桩
+        const out = runNode('var document={getElementById:function(){return {};}};\n'
+          + r.code + '\nconsole.log(JSON.stringify(globalThis.__r));');
+        let got = null;
+        try { got = JSON.parse(out.trim().split(/\r?\n/).pop()); } catch (e) { /* 下面按不一致报 */ }
+        if (!got) {
+          ok(false, 'JS 侧：产物可执行且输出可解析', out.trim().slice(0, 120));
+        } else {
+          ok(got.length === want.length, 'JS 侧：还原项数一致', got.length + ' vs ' + want.length);
+          for (let i = 0; i < Math.max(got.length, want.length); i++) {
+            ok(got[i] === want[i], 'JS 侧：第 ' + (i + 1) + ' 项逐字还原',
+              got[i] === want[i] ? ''
+                : '期望 ' + JSON.stringify(want[i]) + ' 实得 ' + JSON.stringify(got[i]));
+          }
+        }
+        // 实体语义：JS 侧必须按**原样字符**加密。若照文档模式那样先解码成 `&`，
+        // 还原出的字符串里会是字面 `&`，浏览器当纯文本处理，内容被改写。
+        ok(got && got[0] !== undefined && got[0].indexOf('&amp;') >= 0,
+          'JS 侧：实体保持 &amp; 原样（不解码，避免浏览器当纯文本）',
+          got && got[0] !== undefined ? JSON.stringify(got[0]) : '');
+      }
+
+      // --- 带标签的模板：项目既有缺陷，不因本功能而恶化 ---
+      {
+        // 实测 `html\`…\`` 在开不开 html2mem 时都抛同一个错（generator._taggedTemplate
+        // 读 node.quasis 时 undefined），是混淆器本来就有的问题，不在这里顺手修。
+        const src = 'var t = html`<div class="a">x</div>`;';
+        let offErr = null;
+        let onErr = null;
+        try { obfuscate(src, { preset: 'low', seed: 5, selfCheck: false }); } catch (e) { offErr = e; }
+        try {
+          obfuscate(src, { preset: 'low', seed: 5, html2mem: true, selfCheck: false });
+        } catch (e) { onErr = e; }
+        ok(!!offErr, 'JS 侧：带标签模板的崩溃是既有的（不开 html2mem 也一样）');
+        ok(!!onErr && !!offErr && String(onErr.message) === String(offErr.message),
+          'JS 侧：开 html2mem 抛的是同一个错（未引入新问题）',
+          onErr ? String(onErr.message).slice(0, 70) : '没抛');
+      }
+    }
   }
 
 cleanTmp();

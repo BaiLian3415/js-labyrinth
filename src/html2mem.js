@@ -129,7 +129,7 @@ function crypt(text, key) {
 const transform = crypt;
 const untransform = crypt;
 
-export { packValues, unpackValues, transform, untransform, decodeEntities };
+export { packValues, unpackValues, crypt, transform, untransform, decodeEntities, scramble, pickMarkers };
 
 /**
  * 选一组不与原文冲突的标记字符。
@@ -160,7 +160,16 @@ function pickMarkers(src) {
  * @param {{open:string,close:string}} mk
  * @returns {{html:string, values:string[]}}
  */
-function scramble(html, mk) {
+function scramble(html, mk, opts) {
+  // keepEntities：JS 侧的字面量要**不解码**实体。
+  //
+  // 文档模式必须解码（见文件头第 1 点）：写回用 textContent，要的是 DOM 里真正出现的值。
+  // JS 侧相反——字面量里的 `&amp;` 就是 5 个字符，赋给 innerHTML 后由**浏览器**解码。
+  // 若这里解码成 `&`，还原出来的字符串里就是字面的 `&`，浏览器当纯文本处理，
+  // `A &amp; B` 会显示成 `A & B` 而不是 `A & B`（原意）——内容被改写了。
+  // 所以 JS 侧按原样字符加密，解密回来仍逐字相同，语义不变。
+  const keepEntities = !!(opts && opts.keepEntities);
+  const norm = keepEntities ? (s) => s : decodeEntities;
   const values = [];
   const n = html.length;
   let out = '';
@@ -211,7 +220,7 @@ function scramble(html, mk) {
       const raw = html.slice(i, tagEnd + 1);
       const m = /^<\s*(\/?)([a-zA-Z][a-zA-Z0-9:_-]*)/.exec(raw);
       const name = m ? m[2].toLowerCase() : '';
-      out += processTag(raw, name, take);
+      out += processTag(raw, name, take, norm);
       i = tagEnd + 1;
       if (name && SKIP_CONTENT.has(name) && !m[1]) skipUntil = name;
       continue;
@@ -232,7 +241,7 @@ function scramble(html, mk) {
     if (text.trim() !== '') {
       // 纯空白（含换行与缩进）保留：去掉会让源码挤成一行，也会改变部分 CSS 选择器
       // 的语义（相邻兄弟选择器依赖文本节点存在）
-      out += take(decodeEntities(text));
+      out += take(norm(text));
     } else {
       out += text;
     }
@@ -268,7 +277,7 @@ function indexOfCloseTag(html, from, name) {
 }
 
 /** 处理一个标签：只改属性值，标签名与其他内容原样。 */
-function processTag(raw, name, take) {
+function processTag(raw, name, take, norm) {
   if (!name) return raw;
   const head = /^<\s*\/?\s*[a-zA-Z][a-zA-Z0-9:_-]*/.exec(raw);
   if (!head) return raw;
@@ -290,11 +299,11 @@ function processTag(raw, name, take) {
     if (eq === undefined) {
       out += attrName;                       // 无值属性（disabled 之类）
     } else if (dq !== undefined) {
-      out += attrName + eq + '"' + encAttr(dq, attrName, take) + '"';
+      out += attrName + eq + '"' + encAttr(dq, attrName, take, norm) + '"';
     } else if (sq !== undefined) {
-      out += attrName + eq + "'" + encAttr(sq, attrName, take) + "'";
+      out += attrName + eq + "'" + encAttr(sq, attrName, take, norm) + "'";
     } else {
-      out += attrName + eq + encAttr(bare, attrName, take);
+      out += attrName + eq + encAttr(bare, attrName, take, norm);
     }
     last = m.index + m[0].length;
   }
@@ -302,10 +311,10 @@ function processTag(raw, name, take) {
   return out + tail;
 }
 
-function encAttr(v, attrName, take) {
+function encAttr(v, attrName, take, norm) {
   if (v === '') return '';
   if (SKIP_ATTRS.has(attrName.toLowerCase())) return v;
-  return take(decodeEntities(v));
+  return take(norm(v));
 }
 
 /**
@@ -376,4 +385,7 @@ export function html2mem(html, options) {
   return { html: out, values: values.length, bytes: cipher.length, key, skipped: null };
 }
 
-export default { html2mem, packValues, unpackValues, transform, untransform, decodeEntities };
+export default {
+  html2mem, packValues, unpackValues, crypt, transform, untransform,
+  decodeEntities, scramble, pickMarkers,
+};

@@ -211,6 +211,24 @@ curl -s -X POST https://<host>/api/obfuscate \
 
 `node tools/issue/keygen.js --plans` 可打印完整的选项与套餐对照表。
 
+### JS 内嵌 HTML（同一个开关）
+
+同一个 `html2mem` 也管**嵌在 JS 代码里的 HTML**：`innerHTML = "<div>…"`、`document.write`、
+`insertAdjacentHTML`、`$(`…`)` 这些位置的字符串，以及带插值的模板 `<div>${x}</div>`，都会被换成
+一个运行期解码调用，产物里只剩密文。
+
+| 项 | 说明 |
+| --- | --- |
+| 与文档模式的差别 | 这边**不需要 DOM**：解码器只做「按标记把占位换回值、返回字符串」，所以产物在 Node / worker / ServiceWorker 里照样能跑（文档模式必须有 `document`） |
+| 识别的两种来源 | ① 标签白名单命中 `<tag` / `</tag`；② 出现在 `innerHTML`/`outerHTML` 赋值右侧、`insertAdjacentHTML`/`document.write`/`createContextualFragment` 实参、jQuery 风格调用里。取**并集** |
+| 为什么用白名单 | 避免把 `a < b`、`Map<string,X>`、`i<length` 误判成 HTML。代价是自定义标签（`<my-widget>`）在非 DOM 赋值处会漏，可用 `reservedStrings` 排除 |
+| 插值模板 | 逐个静态片段加密，重建成 `_h(0)+x+_h(1)`；**全是变量、没有静态内容**的（`<ul>${items}</ul>`）会跳过，没有可加密的东西 |
+| 实体 | 按**原样字符**加密（`&amp;` 仍是 5 个字符）。这与文档模式相反——那边要先解码成 `&`，因为写回用 `textContent` 要的是 DOM 值；这边字面量赋给 `innerHTML` 后由浏览器解码，先解码反而会把内容改写 |
+| 不处理 | 带标签的模板（lit-html 的 `html\`…\``）。准星位置必须是真正的 TemplateLiteral，替换会让生成器抛错；且标签函数约定收到 `(strings, ...values)`，语义也变了。用普通模板 + `innerHTML` 赋值可覆盖绝大多数写法 |
+
+执行顺序上它排在 `templateToConcat` 与 `stringArray` **之前**：`stringArray` 会把字面量收进池、
+`templateToConcat` 会把模板拆成 `"a"+x+"b"`，两者都会让 HTML 认不出来。
+
 ### HTML 文本加密（HTML2MEM）
 
 把 HTML 的**文本节点与属性值**（`href` / `src` / `integrity` / `nonce` 除外）加密成一段密文，页面里只留密文 + 一个还原 loader。
