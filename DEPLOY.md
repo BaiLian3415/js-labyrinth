@@ -182,7 +182,7 @@ npm run verify -- https://<你的域名>
 | --- | --- | --- |
 | 函数请求体上限 | 4.5 MB | 超了平台直接 413 `FUNCTION_PAYLOAD_TOO_LARGE`；入口预检会先回一句可读的 413 |
 | 单次上传上限 | 2 MiB（`JSLB_MAX_UPLOAD_BYTES`） | 入口预检回 413 + 建议拆分 |
-| 每日 CPU 预算 | 300 s（`JSLB_DAILY_CPU_SECONDS`） | 用尽即 503（`hostBudgetExhausted`），明日恢复 |
+| 每日 CPU 预算 | 500 s（`JSLB_DAILY_CPU_SECONDS`） | 用尽即 503（`hostBudgetExhausted`），明日恢复 |
 | 单次回执上限 | 64 MiB（`JSLB_MAX_RESPONSE_BYTES`） | 超过回 413；正常回执走**流式**，不受 4.5 MB 限制 |
 | 函数时长 | Hobby 硬上限 300 s | `vercel.json` 的 `maxDuration: 300` 与 `src/host-limits.js` 的 `functionMaxSeconds` 必须一致；单任务 CPU 预算留 60 s 余量（`perRunCpuSeconds: 240`） |
 

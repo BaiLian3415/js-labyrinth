@@ -23,7 +23,7 @@
  * 全部数字都能用环境变量放宽（升级到 Pro 后应放宽）：
  *   JSLB_MAX_UPLOAD_BYTES     单次上传上限（字节，默认 2 MiB；平台硬线 4.5 MB）
  *   JSLB_PER_RUN_CPU_SECONDS  单次运行 CPU 预算（默认 240 s）
- *   JSLB_DAILY_CPU_SECONDS    全网每日 CPU 预算（默认 300 s）
+ *   JSLB_DAILY_CPU_SECONDS    全网每日 CPU 预算（默认 500 s）
  *   JSLB_MAX_RESPONSE_BYTES   单次回执上限（默认 64 MiB）
  */
 import PRESETS from './presets.js';
@@ -44,8 +44,8 @@ export const HOST = {
   maxUploadBytes: 2097152,
   /** 单次运行允许消耗的 CPU 秒数（240 s，给平台开销留 60 s 余量）。 */
   perRunCpuSeconds: 240,
-  /** 全网每日 CPU 预算（免费档 Active CPU 额度折算，保守值）。 */
-  dailyCpuSeconds: 300,
+  /** 全网每日 CPU 预算（500 s，向上放宽后的值；仍按 Vercel Hobby 的 Active CPU 额度保守取）。 */
+  dailyCpuSeconds: 500,
   /** 单次回执上限：流式回执照写，但别把带宽一下子跑光。 */
   maxResponseBytes: 67108864,
 };
