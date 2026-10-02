@@ -229,10 +229,12 @@ export function jsfuckPrelude(name, maxChars) {
  *        层形态变体，tailOrder 为校验尾字节序（0 大端，1 小端），evalStyle
  *        为取值器形态（0 用 (0,eval)，1 用 Function 间接取器），posHash 决定
  *        FNV 是否混合位置；省略时随机
- * @param {{cjs?:boolean}} [mode] cjs 为真时用「带 CommonJS 形参的函数内直接
- *        eval」放行载荷：require/module/exports/__dirname/__filename 因此在
- *        载荷作用域内可用，`var` 声明也不再落进全局
- * @returns {string} 引导器源码，自执行，末尾复原并 eval 载荷
+ * @param {{cjs?:boolean, esm?:boolean}} [mode] cjs 为真时用「带 CommonJS 形参的
+ *        函数内直接 eval」放行载荷：require/module/exports/__dirname/__filename
+ *        因此在载荷作用域内可用，`var` 声明也不再落进全局。esm 为真时改用
+ *        「blob 优先、data URL 兜底」的 import() 放行，让 ESM 载荷（含
+ *        top-level await）能整套壳，见 esmTake 的注释
+ * @returns {string} 引导器源码，自执行，末尾复原并放行载荷
  */
 function makeShellLayer(payload, variant, mode) {
   const plain = utf8Bytes(payload);
@@ -317,9 +319,25 @@ function makeShellLayer(payload, variant, mode) {
     ? '(((_0q[_0L]<<24)|(_0q[_0L+1]<<16)|(_0q[_0L+2]<<8)|_0q[_0L+3])>>>0)'
     : '(((_0q[_0L+3]<<24)|(_0q[_0L+2]<<16)|(_0q[_0L+1]<<8)|_0q[_0L])>>>0)';
   const isCjs = !!(mode && mode.cjs);
+  const isEsm = !!(mode && mode.esm);
   const evalTake = evalStyle === 0 ? '(0,eval)' : 'Function("return eval")()';
   // CommonJS 载荷：形参名必须与载荷引用的绑定名逐字一致，直接 eval 才能看见它们
   const cjsTake = 'Function("require","module","exports","__dirname","__filename","payload","return eval(payload)")';
+  // ESM 载荷：eval 与 Function 都跑不了 import/export（实测 "Cannot use import
+  // statement outside a module"），只有 import() 行得通，top-level await 也只有
+  // 在真模块里才合法。
+  //
+  // 候选按「成功概率」排，逐个试到加载成功为止。两个坑都踩过：
+  //   - 浏览器：data: URL 有约 2MB 上限，多层壳后轻易到 10MB+，必须走 blob。
+  //   - Node：URL.createObjectURL 存在，但返回 blob:nodedata:…，而 Node 的 ESM
+  //     loader 明确拒收（ERR_UNSUPPORTED_ESM_URL_SCHEME）。
+  // 所以两个候选都要放进列表，且不能靠「特性是否存在」筛——blob 在 Node 上
+  // 存在却不可用，data 在浏览器上存在却可能超限。判据只能是「真的加载成不成功」，
+  // 因此 catch 的是 import() 的失败并顺次退到下一个。
+  const esmTake = '(function(s){var u=[];try{u.push(URL.createObjectURL(new Blob([s],{type:"text/javascript"})));}' +
+    'catch(e){}u.push("data:text/javascript;charset=utf-8,"+encodeURIComponent(s));' +
+    'var i=0;function nx(){if(i>=u.length){return Promise.reject(new Error("esm loader unavailable"));}' +
+    'var v=u[i++];return import(v).catch(function(){return nx();});}return nx();})(_0s2)';
 
   const B = [];
   const put = (...xs) => B.push(...xs);
@@ -394,6 +412,11 @@ function makeShellLayer(payload, variant, mode) {
   if (isCjs) {
     put('var _0cm={exports:{}};');
     put(cjsTake + '.call(_0cm.exports,typeof require==="function"?require:void 0,_0cm,_0cm.exports,"","",_0s2);');
+  } else if (isEsm) {
+    // import() 返回 Promise，这里不吞：吞了的话载荷里 top-level await 拒绝时会变成
+    // unhandledrejection，模块的失败对调用方不可见。壳层只负责把字节还原出来，
+    // 之后的事交给宿主。
+    put(esmTake + ';');
   } else {
     put(evalTake + '(_0s2);');
   }
@@ -418,7 +441,7 @@ function makeShellLayer(payload, variant, mode) {
  * @returns {{code:string, layers:number, jsfuckChars:number}} 套壳后的源码、
  *        实际层数与 jsfuck 预置的字符数（0 表示 classic 形态）
  */
-function shellWrap(code, options, bootObfuscate, cjs) {
+function shellWrap(code, options, bootObfuscate, cjs, esm) {
   const depth = Math.max(1, options.shellDepth | 0 || 1);
   const jsfuck = options.shellForm === 'jsfuck';
   const jfUsed = new Set();
@@ -426,7 +449,10 @@ function shellWrap(code, options, bootObfuscate, cjs) {
   let jsfuckChars = 0;
   let cur = code;
   for (let l = 0; l < depth; l++) {
-    const mode = { cjs: !!cjs };
+    // esm 与 cjs 互斥：ESM 载荷本来就没有自由 CommonJS 绑定，且 import() 放行
+    // 时那几个形参也无从谈起。每一层都继承形态——内层壳解密出来的是外层壳的
+    // 源码，它同样需要 import() 才能跑。
+    const mode = { cjs: !esm && !!cjs, esm: !!esm };
     let pre = '';
     if (jsfuck) {
       mode.jsfuck = true;

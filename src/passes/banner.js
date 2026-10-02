@@ -78,6 +78,33 @@ function globalRef() {
 }
 
 /**
+ * 保留名单的明文清单。
+ *
+ * 为什么要它：外壳把载荷当字节流加密，产物文本里再没有任何用户代码。用户按
+ * reservedNames/reservedStrings 的约定 grep 产物做对接与核对，命中不了——这正是
+ * 2026-09-29 那次「名单非空就整个关掉外壳」要解决的问题。关外壳是拆东墙补西墙：
+ * 防护没了，名单也只是「不改名」，并不在产物里可见。
+ *
+ * 现在的取舍：外壳照套（全量加密，防护不降），名单项在壳外另留一份明文清单。清单
+ * 里的每一项都取自 AST 中真实存在、且确实未被改写的名字/字面量，所以 grep 到的
+ * 就是产物运行时会用的那个，不是另抄一份给用户看的旁证。
+ *
+ * 清单是死数据（不参与任何执行），但它进盐互锁：删改清单，引导层算出的盐就与外壳
+ * 密钥流对不上，载荷解不开。
+ *
+ * @param {object} opts { keepNames, keepStrings }
+ * @returns {string} 清单源码；名单为空时返回空串
+ */
+function keepManifest(opts) {
+  const items = (opts.keepNames || []).concat(opts.keepStrings || []);
+  if (items.length === 0) return '';
+  const list = items.map((s) => JSON.stringify(s)).join(',');
+  return '(function(){var G=' + globalRef() + ';try{Object.defineProperty(G,"__jsl_keep",' +
+    '{configurable:false,enumerable:false,writable:false,value:Object.freeze([' +
+    list + '])});}catch(e){}})();\n';
+}
+
+/**
  * 生成引导源码，返回 `{ code, salt, saltVar, nonce }`。
  *
  * @param {object} opts { couple, poisonKey, shellForm, ctx, privateVar }
@@ -135,7 +162,7 @@ export function guardSource(opts) {
  * 给最终产物套上引导层。返回值里的 code 已含引导与（可选）外壳层。
  *
  * @param {string} code 已完成全部变换的产物源码（不含 shebang）
- * @param {object} opts { cjs, poisonKey, shellForm, ctx }
+ * @param {object} opts { cjs, esm, poisonKey, shellForm, ctx, keepNames, keepStrings }
  * @returns {{code:string, salt:number, saltVar:string, wrapped:boolean, nonce:string}}
  */
 export function guardLayer(code, opts) {
@@ -144,11 +171,17 @@ export function guardLayer(code, opts) {
   // privateVar 只在无外壳时开启：有外壳时 shell.js 会在全局作用域读 `(saltVar|0)`，
   // 把引导收进 IIFE 会让它变 undefined、载荷解不开。无外壳时没人读它，可以私有化。
   const g = guardSource({ couple: ctx.couple || null, poisonKey: opts.poisonKey, ctx, privateVar: noShell });
+  // 保留名单的明文清单放在最外层：载荷被整段加密后，产物里唯一还能 grep 到的
+  // 就是这份清单。见 keepManifest 的注释。
+  const manifest = keepManifest(opts);
   if (noShell) {
-    // ESM 或用户显式关掉外壳：不套 eval 层，引导仍注入（健康载体与盐照常）
-    return { code: g.code + '\n' + code, salt: g.salt, saltVar: g.saltVar, wrapped: false, nonce: g.nonce };
+    // 用户显式关掉外壳：不套 eval 层，引导仍注入（健康载体与盐照常）
+    return {
+      code: manifest + g.code + '\n' + code,
+      salt: g.salt, saltVar: g.saltVar, wrapped: false, nonce: g.nonce,
+    };
   }
-  const mode = { cjs: !!opts.cjs, saltVar: g.saltVar, salt: g.salt };
+  const mode = { cjs: !opts.esm && !!opts.cjs, esm: !!opts.esm, saltVar: g.saltVar, salt: g.salt };
   let pre = '';
   if (opts.shellForm === 'jsfuck') {
     // 与 shellWrap 同一套：核心预置不进流水线（引导层本来就不进），名字先注册
@@ -159,7 +192,10 @@ export function guardLayer(code, opts) {
   }
   const layer = shell.makeShellLayer(code, undefined, mode);
   const randomized = randomizeNames(layer, ctx.usedNames, ctx.identifierPrefix || '_0x');
-  return { code: g.code + '\n' + pre + randomized, salt: g.salt, saltVar: g.saltVar, wrapped: true, nonce: g.nonce };
+  return {
+    code: manifest + g.code + '\n' + pre + randomized,
+    salt: g.salt, saltVar: g.saltVar, wrapped: true, nonce: g.nonce,
+  };
 }
 
 export default { fnv32, guardSource, guardLayer };

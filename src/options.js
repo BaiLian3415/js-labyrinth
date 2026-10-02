@@ -275,6 +275,11 @@ export default {
   // 不收费门控）。
   "reservedNames": [],
   "reservedStrings": [],
+  // ESM 载荷的基准 URL。套壳后载荷经 blob:/data: URL 加载，这两种地址没有目录
+  // 上下文，`./dep.js` 一律解析失败，所以带相对说明符的 ESM 必须给这个值，
+  // 构建期会改写成绝对地址。形如 'file:///D:/app/' 或 'https://cdn/app/'。
+  // 只对 ESM 载荷有意义；非 ESM 忽略。
+  "moduleBase": "",
   // HTML2MEM：把 HTML 的文本节点与属性值加密成密文，运行期由 loader 解回 DOM。
   // 只在 HTML 输入时起作用（JS 输入没有这一步）。这是混淆不是保密——密钥和
   // 解密逻辑都在页面里，打开开发者工具的人照样能 dump 出还原后的 DOM。

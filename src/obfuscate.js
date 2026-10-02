@@ -140,6 +140,204 @@ function buildKeepRaw(options) {
   return (text) => res.some((re) => re.test(text));
 }
 
+/**
+ * 判断源码是不是 ESM。三类依据，缺一不可：
+ *
+ * 1. import/export 声明。够用但不完整。
+ * 2. 顶层 await。eval 与 Function 里都非法（"await is only valid in async
+ *    functions"），壳必须走 import()。
+ * 3. 动态 import()。它是 CallExpression 的 callee，不是 ImportDeclaration，
+ *    只看声明会漏。
+ *
+ * 顶层 await 有两种 AST 形态：自研 parser 对它产出
+ * UnaryExpression{operator:'await'}，Babel 惯例是 AwaitExpression。两个都要认。
+ *
+ * 必须在解析后、任何 pass 之前调用，见 obfuscate.js 里 sourceIsModule 的注释。
+ *
+ * @param {object} ast 刚 parse 出来的 AST
+ * @param {Function} traverse 自研遍历器
+ * @returns {boolean} true 表示要按 ESM 处理
+ */
+function detectModuleSource(ast, traverse) {
+  const prog = ast.type === 'File' ? ast.program : ast;
+  if (prog.body.some((s) =>
+    s.type === 'ImportDeclaration' || s.type === 'ExportNamedDeclaration' ||
+    s.type === 'ExportDefaultDeclaration' || s.type === 'ExportAllDeclaration')) {
+    return true;
+  }
+  let topLevelAwait = false;
+  let dynamicImport = false;
+  let metaProperty = false;
+  traverse(ast, {
+    // 只看顶层：函数体内的 await/import() 由那个函数自己的模块语义管，
+    // 不构成整个文件是 ESM 的证据。
+    Function(path) { path.skip(); },
+    AwaitExpression() { topLevelAwait = true; },
+    UnaryExpression(path) {
+      if (path.node.operator === 'await') topLevelAwait = true;
+    },
+    Import() { dynamicImport = true; },
+    // import.meta / new.target 里的 import.meta 形态：MetaProperty 的 meta 名
+    // 是 Identifier 'import'。它在经典脚本里直接抛 "Cannot use 'import.meta'
+    // outside a module"，壳必须走 import()。
+    MetaProperty(path) {
+      const m = path.node.meta;
+      if (m && m.type === 'Identifier' && m.name === 'import') metaProperty = true;
+    },
+    noScope: true,
+  });
+  return topLevelAwait || dynamicImport || metaProperty;
+}
+
+/**
+ * 把 ESM 载荷里的相对模块说明符改写成绝对 URL。
+ *
+ * 套壳后载荷经 blob:/data: URL 加载，这两种 URL 没有目录上下文，`./x.js` 必然
+ * 解析失败（data: 报 "Failed to resolve module specifier"）。运行期无法补救——
+ * URL 在 import() 调用前就定型了——所以只能在构建期改。
+ *
+ * 覆盖 import/export 声明与 import()/export() 的动态说明符。裸说明符（'fs'、
+ * 'node:path'）不动，它们由解析器自己解析，与 base 无关。
+ *
+ * @param {object} ast 载荷 AST（原地改写 source.value）
+ * @param {Function} traverse 自研遍历器
+ * @param {string} base 基准 URL 或路径，形如 'file:///D:/app/' 或 'https://h/app/'
+ * @returns {{rewritten:string[], skipped:string[]}} 改写与未能改写的说明符
+ */
+function absolutizeModuleSpecifiers(ast, traverse, base) {
+  const rewritten = [];
+  const skipped = [];
+  const toAbsolute = (spec) => {
+    if (typeof spec !== 'string' || spec === '') return null;
+    // 裸说明符、协议相对（//host/x）、绝对 URL 都不需要改
+    if (!spec.startsWith('./') && !spec.startsWith('../')) return null;
+    try {
+      return new URL(spec, base).href;
+    } catch (e) {
+      return null;
+    }
+  };
+  const handle = (node) => {
+    if (!node) return;
+    const abs = toAbsolute(node.value);
+    if (abs === null) {
+      if (typeof node.value === 'string' &&
+          (node.value.startsWith('./') || node.value.startsWith('../'))) {
+        skipped.push(node.value);
+      }
+      return;
+    }
+    rewritten.push(node.value + ' -> ' + abs);
+    node.value = abs;
+    node.raw = JSON.stringify(abs);
+  };
+  traverse(ast, {
+    ImportDeclaration(path) { handle(path.node.source); },
+    ExportNamedDeclaration(path) { handle(path.node.source); },
+    ExportAllDeclaration(path) { handle(path.node.source); },
+    // 动态 import(x) / export(x) 的说明符是第一个实参
+    CallExpression(path) {
+      const c = path.node.callee;
+      const isDynamic = c && (c.type === 'Import' ||
+        (c.type === 'Identifier' && c.name === 'export'));
+      if (isDynamic) handle(path.node.arguments && path.node.arguments[0]);
+    },
+    noScope: true,
+  });
+  return { rewritten, skipped };
+}
+
+/**
+ * 收集载荷里所有相对模块说明符（只读，不改写）。
+ *
+ * 用于「没有 moduleBase、改写没做」时点名提醒：这类说明符在套壳后必然加载失败
+ * （blob:/data: URL 没有目录上下文），属于产物坏了，必须说出来而不是静默发出去。
+ *
+ * @param {object} ast 载荷 AST
+ * @param {Function} traverse 自研遍历器
+ * @returns {string[]} 去重后的相对说明符
+ */
+function collectRelativeSpecifiers(ast, traverse) {
+  const out = new Set();
+  const add = (node) => {
+    const v = node && node.value;
+    if (typeof v !== 'string') return;
+    if (v.startsWith('./') || v.startsWith('../')) out.add(v);
+  };
+  traverse(ast, {
+    ImportDeclaration(path) { add(path.node.source); },
+    ExportNamedDeclaration(path) { add(path.node.source); },
+    ExportAllDeclaration(path) { add(path.node.source); },
+    CallExpression(path) {
+      const c = path.node.callee;
+      if (c && (c.type === 'Import' ||
+          (c.type === 'Identifier' && c.name === 'export'))) {
+        add(path.node.arguments && path.node.arguments[0]);
+      }
+    },
+    noScope: true,
+  });
+  return [...out];
+}
+
+/**
+ * 收集产物里真实保留下来（未被改名）的绑定名，用于壳外明文清单。
+ *
+ * 取的是 AST 里的具体名字，不是用户写的正则：用户填 `^myPublic`，产物里出现的是
+ * `myPublicApi` 这个标识符，清单里要写的就是后者，用户 grep 才命中。
+ *
+ * @param {object} ast 产物 AST
+ * @param {Function} traverse 自研遍历器
+ * @param {object} options 含 reservedNames（正则文本数组）
+ * @returns {string[]} 去重后的名字
+ */
+function collectKeptNames(ast, traverse, options) {
+  const patterns = compileKeepPatterns(options.reservedNames);
+  if (patterns.length === 0) return [];
+  const out = new Set();
+  traverse(ast, {
+    Identifier(path) {
+      const n = path.node.name;
+      for (const re of patterns) if (re.test(n)) { out.add(n); return; }
+    },
+    noScope: true,
+  });
+  return [...out];
+}
+
+/**
+ * 收集产物里真实保留下来（未进字符串池）的字符串字面量，用于壳外明文清单。
+ *
+ * @param {object} ast 产物 AST
+ * @param {Function} traverse 自研遍历器
+ * @param {object} options 含 reservedStrings（正则文本数组）
+ * @returns {string[]} 去重后的字面量值
+ */
+function collectKeptStrings(ast, traverse, options) {
+  const patterns = compileKeepPatterns(options.reservedStrings);
+  if (patterns.length === 0) return [];
+  const out = new Set();
+  traverse(ast, {
+    StringLiteral(path) {
+      const v = path.node.value;
+      if (typeof v !== 'string' || v === '') return;
+      for (const re of patterns) if (re.test(v)) { out.add(v); return; }
+    },
+    noScope: true,
+  });
+  return [...out];
+}
+
+/** 把保留名单里的正则文本编译成 RegExp；非法项忽略（与 mangle 侧口径一致）。 */
+function compileKeepPatterns(list) {
+  if (!Array.isArray(list)) return [];
+  const out = [];
+  for (const s of list) {
+    try { out.push(new RegExp(s)); } catch (e) { /* 非法正则：各处一致忽略 */ }
+  }
+  return out;
+}
+
 /** 判断载荷是否自由引用 CommonJS 绑定（require/module/exports/__dirname/__filename）。
  *  套壳经 (0,eval) 在全局求值，全局无这些绑定，故 CommonJS 源跳过套壳。 */
 function usesFreeCommonJs(ast, traverse) {
@@ -202,6 +400,16 @@ function obfuscate(code, userOptions) {
   });
   const parseMs = platform.nowMs() - tParse;
 
+  // 载荷是不是 ESM，在解析完的当场就定下来。
+  //
+  // 不能等到套壳前再判（2026-10-02 踩过）：那时 AST 已经被十几个 pass 改过，
+  // 顶层 await 会被 functionWrapper 之类裹进函数、或被条件改写掉，顶层 import
+  // 也可能已经被搬走。实测 `const v = await f(); g(v)` 在 medium/max 下判出来
+  // 是脚本，于是壳走了 eval 路径，产物加载即抛
+  // "await is only valid in async functions"——而报错点在密文里，用户无从定位。
+  // 解析后的 AST 还没被任何 pass 碰过，是唯一可靠的判定时机。
+  const sourceIsModule = detectModuleSource(ast, traverse);
+
   const tNames = platform.nowMs();
   const usedNames = new Set();
   traverse(ast, {
@@ -210,7 +418,9 @@ function obfuscate(code, userOptions) {
   });
   const namesMs = platform.nowMs() - tNames;
 
-  const ctx = { traverse, t, usedNames, options, rng: () => rand() };
+  // sourceIsModule 挂在 ctx 上给 functionWrapper 用：它在流水线中段执行，那时 AST
+  // 已被前面的 pass 改过，现场扫描会把 ESM 误判成脚本（见 functionWrapper 的注释）。
+  const ctx = { traverse, t, usedNames, options, sourceIsModule, rng: () => rand() };
   // 保留名在生成期的字面形态。归一化之后就能建，挂 ctx 给主生成与
   // integrityCheck 的自哈希共用——两处必须用同一份，否则构建期哈希算的是
   // \uXXXX 形态、运行期读到的是原文，完整性校验必然假失配、把干净产物投毒。
@@ -305,6 +515,19 @@ function obfuscate(code, userOptions) {
 
   // 模板串降级，先拆开，片段才能进 stringArray
   if (options.templateToConcat) applyPass(templateToConcat, 'templateToConcat');
+
+  // ESM 相对说明符改写。必须排在 stringArray **之前**：那个 pass 会把所有字符串
+  // 字面量搬进加密池，源节点上的 value 就被换成了访问器调用，届时再改写已经找不到
+  // 说明符了（2026-10-02 实测：改写排在 stringArray 之后时，动态 import 的相对
+  // 说明符仍是 "./dep2.mjs"，产物加载即失败）。
+  //
+  // 原因：壳把载荷塞进 blob:/data: URL 再 import()，这两种 URL 没有目录上下文，
+  // `./dep.mjs` 无从解析（data: 报 "Failed to resolve module specifier"）。运行期
+  // 补不了——URL 在 import() 调用前就定型了——只能构建期改。
+  let esmSpecifiers = null;
+  if (sourceIsModule && options.moduleBase) {
+    esmSpecifiers = absolutizeModuleSpecifiers(ast, traverse, options.moduleBase);
+  }
 
   // 字符串数组
   if (options.stringArray) applyPass(stringArray, 'stringArray');
@@ -433,6 +656,7 @@ function obfuscate(code, userOptions) {
   if (options.wasmInterpreter) timePass('wasmvm', () => wasmvm(ast, options, ctx));
   else if (options.wasm) timePass('wasm', () => wasm(ast, options, ctx));
   if (options.mangle) timePass('mangle', () => mangle(ast, options, ctx));
+
   if (options.integrityCheck) timePass('integrityCheck', () => integrityCheck(ast, options, ctx));
 
   if (options.selfCheck !== false) {
@@ -443,6 +667,17 @@ function obfuscate(code, userOptions) {
         n: problems.length,
         shown: shown.join('\n'),
         more: problems.length > 10 ? msg('selfCheckMore') : '',
+      }));
+    }
+  }
+
+  // 相对说明符没被改写 = 产物运行期必然加载失败。不静默：点名提醒，并说清补救。
+  if (sourceIsModule && !esmSpecifiers) {
+    const rel = collectRelativeSpecifiers(ast, traverse);
+    if (rel.length > 0) {
+      warnings.push(msg('warnEsmRelative', {
+        n: rel.length,
+        shown: rel.slice(0, 5).join(', '),
       }));
     }
   }
@@ -465,64 +700,67 @@ function obfuscate(code, userOptions) {
 
   let finalCode = out.code;
 
-  // 载荷形态判定：ESM 不套 eval 外壳，CJS 用带形参的直接 eval 放行
+  // 载荷形态：ESM 走 import() 放行的独立壳，CJS 用带形参的直接 eval 放行。
+  // isModuleSrc 用解析期定下的 sourceIsModule，不用此时的 AST —— 此刻的 AST 已被
+  // pass 改过，顶层 await/import 可能已经不在顶层了，判错会让产物直接抛错。
   const progNode = ast.type === 'File' ? ast.program : ast;
-  const isModuleSrc = progNode.body.some((s) =>
-    s.type === 'ImportDeclaration' || s.type === 'ExportNamedDeclaration' ||
-    s.type === 'ExportDefaultDeclaration' || s.type === 'ExportAllDeclaration');
+  const isModuleSrc = sourceIsModule;
   const payloadCjs = !isModuleSrc && usesFreeCommonJs(ast, traverse);
 
   const tShell = platform.nowMs();
-  // ---- 保留名单与外壳层的互锁（2026-09-29）---
+  // ---- 保留名单与外壳层：从「二选一」改成「名单项明文留在壳外」----
   //
-  // 外壳把已完成的产物当载荷字节流加密（反馈密钥流 + 交织置换 + 乱序 base64），
-  // 产物文本里不再有任何用户代码——被保留的标识符/字符串即便在载荷内部一字未改，
-  // 静态上也看不到，与「保留名单保持原样出现在产物中」这条承诺直接冲突。实测
-  // medium/high/max 三档（预设置 shell: true）下，设了保留名的产物里连一个名
-  // 都找不到，用户看到的正是"勾了还是混淆了"。
+  // 原设计（2026-09-29）：名单非空就整个关掉外壳。理由是外壳把产物当字节流加密，
+  // 被保留的名字即便在载荷内部一字未改，产物文本里也搜不到。实测 medium/high/max
+  // 三档下设了保留名的产物里连一个名字都找不到，用户看到的正是「勾了还是混淆了」。
   //
-  // 方向选择与 domainLock↔wasm 那条互锁一致：关外壳，保名单。名单是用户显式
-  // 选定、要拿产物做核对/对接的输入，外壳只是防护层，关掉产物照样正确；反过来把
-  // 名单悄悄丢进密文里才是 fail-open。名单为空时一切照旧（产物逐字节不变）。
+  // 现在的做法：照常套壳（全量加密，防护不降），名单项在壳外另存明文清单供 grep。
   const keepRequested = ['reservedNames', 'reservedStrings']
     .some((k) => Array.isArray(options[k]) && options[k].length > 0);
-  const shellByKeepSkipped = keepRequested && options.shell !== false && !isModuleSrc;
-  if (options.shell !== false && !shellByKeepSkipped) {
-    if (isModuleSrc) {
-      stats.push({ pass: 'shell', result: { skipped: 'module' } });
-    } else {
-      const cjs = payloadCjs;
-      // 引导器子集：关掉 VM/字符串池/反调试等无法自举的 pass
-      const bootOpts = Object.assign({}, options, {
-        seed: randInt(1, 1000000000),
-        shell: false,
-        vmProtection: false, wasm: false,
-        stringArray: false,
-        debugProtection: false, envFingerprint: false,
-        antiCDP: false,
-        integrityCheck: false, selfCheck: false,
-        // 域名锁定只锁载荷：外壳引导层自身不注入（payload 里的校验已经
-        // 覆盖整个产物，重复注入只会让引导代码在非授权域先崩在半路）
-        domainLock: [],
-        // simplify 同样只作用于载荷：引导层代码本就精简，不重复压缩
-        simplify: false,
-        controlFlowFlattening: true, logicalExpressions: true,
-        conditionObfuscation: true, opaquePredicates: true,
-        deadCodeInjection: true, objectKeyEncoding: true,
-        templateToConcat: true, functionWrapper: true,
-        callProxy: true, mangle: true,
-      });
-      const sr = shellWrap(finalCode, options, (src) => obfuscate(src, bootOpts), cjs);
-      finalCode = sr.code;
-      stats.push({
-        pass: 'shell',
-        result: { layers: sr.layers, cjs, form: options.shellForm === 'jsfuck' ? 'jsfuck' : 'classic', jsfuckChars: sr.jsfuckChars },
-      });
-    }
-  } else if (shellByKeepSkipped) {
-    // 跳过不是静默降级：统计里点名原因，warnings 里给一句人话，界面两处都看得到
-    stats.push({ pass: 'shell', result: { skipped: 'keep-list' } });
-    warnings.push(msg('warnShellSkipped'));
+  // 名单明文清单的内容：从 AST 里取真实存在、且确实没被改写的项。正则本身不能直接
+  // 写进清单——用户写的是 ^myPublic 这样的模式，产物里出现的是 myPublicApi 这个
+  // 具体名字，grep 模式匹配不到。
+  const keepNames = keepRequested ? collectKeptNames(ast, traverse, options) : [];
+  const keepStrings = keepRequested ? collectKeptStrings(ast, traverse, options) : [];
+  if (options.shell !== false) {
+    const cjs = payloadCjs;
+    // 引导器子集：关掉 VM/字符串池/反调试等无法自举的 pass
+    const bootOpts = Object.assign({}, options, {
+      seed: randInt(1, 1000000000),
+      shell: false,
+      vmProtection: false, wasm: false,
+      stringArray: false,
+      debugProtection: false, envFingerprint: false,
+      antiCDP: false,
+      integrityCheck: false, selfCheck: false,
+      // moduleBase 必须清空。引导层源码里没有真的模块说明符，唯一的字符串是那段
+      // base64 载荷——它以 "./" 或 "../" 开头时会（极小概率）被当成相对说明符改写成
+      // 绝对地址，载荷当场损坏，产物静默不执行。2026-10-02 实测：shellDepth=2 且填了
+      // moduleBase 时载荷永不运行，depth=1 正常——正是内层引导层被改坏。
+      moduleBase: '',
+      // 域名锁定只锁载荷：外壳引导层自身不注入（payload 里的校验已经
+      // 覆盖整个产物，重复注入只会让引导代码在非授权域先崩在半路）
+      domainLock: [],
+      // simplify 同样只作用于载荷：引导层代码本就精简，不重复压缩
+      simplify: false,
+      controlFlowFlattening: true, logicalExpressions: true,
+      conditionObfuscation: true, opaquePredicates: true,
+      deadCodeInjection: true, objectKeyEncoding: true,
+      templateToConcat: true, functionWrapper: true,
+      callProxy: true, mangle: true,
+    });
+    const sr = shellWrap(finalCode, options, (src) => obfuscate(src, bootOpts), cjs, isModuleSrc);
+    finalCode = sr.code;
+    stats.push({
+      pass: 'shell',
+      result: {
+        layers: sr.layers,
+        cjs,
+        esm: isModuleSrc,
+        form: options.shellForm === 'jsfuck' ? 'jsfuck' : 'classic',
+        jsfuckChars: sr.jsfuckChars,
+      },
+    });
   }
   const shellMs = platform.nowMs() - tShell;
 
@@ -544,9 +782,13 @@ function obfuscate(code, userOptions) {
   if (options.bannerSkip !== true) {
     const bw = bannerMod.guardLayer(finalCode, {
       cjs: payloadCjs,
-      // 只有套了外壳的载荷才用盐互锁；ESM、显式 shell:false，或因不混淆名单
-      // 跳过外壳时只做引导（没有外壳层密钥可互锁）
-      wrap: !isModuleSrc && options.shell !== false && !shellByKeepSkipped,
+      esm: isModuleSrc,
+      // 壳外明文清单：载荷整段加密后，产物里能 grep 到的保留项全靠它
+      keepNames,
+      keepStrings,
+      // 套了外壳的载荷才用盐互锁；显式 shell:false 时只做引导（没有外壳层密钥可互锁）。
+      // ESM 现在也走完整外壳（mode.esm），所以这里不再按 isModuleSrc 排除。
+      wrap: options.shell !== false,
       // 引导层在最外层：壳形式必须一路传到它这里，
       // 否则 jsfuck 产物只有内层是 JSFuck、外包一层 classic 引导
       shellForm: options.shellForm,

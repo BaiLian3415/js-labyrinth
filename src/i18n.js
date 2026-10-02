@@ -66,6 +66,9 @@ const STRINGS = {
     warnShellSkipped: '已跳过外壳层：不混淆名单非空时外壳会把被排除的名字一并加密，' +
       '产物文本里就看不到明文了——两者不可兼得，按「名单优先」处理。' +
       '要外壳保护请清空保留名单（或直接关掉 shell）。',
+    warnEsmRelative: '产物里有 {n} 个相对模块说明符（{shown}），套壳后无法解析：' +
+      '外壳把载荷放进 blob:/data: URL 再 import()，这两种地址没有目录上下文，' +
+      '"./x.js" 找不到。填 moduleBase（产物所在目录的 URL）即可在构建期改写成绝对地址。',
     badIdentifierPrefix: 'identifierPrefix 非法："{p}" 不是合法标识符前缀' +
       '（不得以数字开头、不得含标识符字符集以外的符号）。' +
       '正确的十六进制风格前缀是 "_0x"（下划线开头），而非 "0x"。',
@@ -389,6 +392,10 @@ const STRINGS = {
     warnShellSkipped: 'Outer shell skipped: with a non-empty exclusion list the shell would ' +
       'encrypt the excluded names too, leaving no plaintext in the artifact — the two cannot ' +
       'both hold, so the list wins. Clear the exclusion list (or turn shell off) to keep the shell.',
+    warnEsmRelative: 'The artifact contains {n} relative module specifier(s) ({shown}) that cannot ' +
+      'resolve once shelled: the shell loads the payload through a blob:/data: URL, which has no ' +
+      'directory context, so "./x.js" is not found. Set moduleBase to the artifact\'s directory URL ' +
+      'to rewrite them to absolute at build time.',
     badIdentifierPrefix: 'invalid identifierPrefix: "{p}" is not a legal identifier prefix ' +
       '(must not start with a digit and must contain only identifier characters). ' +
       'The correct hex-style prefix is "_0x" (underscore first), not "0x".',
