@@ -400,6 +400,14 @@ function renderOption(opt) {
       : (state.touched.has(opt.key) ? state.touched.get(opt.key) : presetValue(opt.key));
     ctl.value = String(dv);
     if (ctl.value !== String(dv)) ctl.value = String(opt.def);
+  } else if (opt.kind === 'string' && opt.multiline) {
+    // 词表类长文本：单行输入框只能看到头几个字/词，1024 字的汉字字典挤在一行
+    // 根本没法校对。文本框与 <input> 在取值（.value）、事件（change/input）、
+    // id/htmlFor 关联上完全一致，所以下面 commit/mark 那套逻辑一字不用改。
+    ctl = document.createElement('textarea');
+    ctl.rows = 4;          // 四行够看清一屏词，也不至于把下面的选项挤走
+    ctl.spellcheck = false;
+    ctl.value = String(currentValue(opt.key));
   } else {
     ctl = document.createElement('input');
     ctl.type = opt.kind === 'string' ? 'text' : 'number';

@@ -298,6 +298,24 @@ section('命名策略（nameStyle）与动态 import');
     'chineseDictionary 只在 chineseNames 打开时显示', JSON.stringify(optionsMeta.VALUE_OPTIONS.chineseDictionary.showWhen));
     ok(optionsMeta.KNOWN_OPTION_KEYS.has('nameDictionary'), 'nameDictionary 是已知选项（GUI/CLI 都能识别）');
     ok(guiOpt('nameDictionary') !== null, 'nameDictionary 出现在界面选项表里');
+    // 词表渲染成多行文本框：1024 字的汉字字典与几十词的词典表塞进单行输入框没法看。
+    // 只给这两项，其余字符串项（identifierPrefix / reservedNames 等）是短值。
+    ok(guiOpt('nameDictionary').multiline === true, 'nameDictionary 渲染为多行');
+    ok(guiOpt('chineseDictionary').multiline === true, 'chineseDictionary 渲染为多行');
+    const ml = optionsMeta.guiOptions().filter((o) => o.multiline).map((o) => o.key).sort().join(',');
+    ok(ml === 'chineseDictionary,nameDictionary', '只有两处词表是多行', ml);
+    for (const k of ['identifierPrefix', 'reservedNames', 'domainLock', 'vmCompileKey']) {
+      ok(guiOpt(k).multiline !== true, k + ' 仍是单行（短值不必多行）');
+    }
+    // app.js 里要有 textarea 分支，且 CSS 要有对应规则——缺任一半都会退回单行外观
+    const appTxt = fs.readFileSync(path.join(ROOT, 'web', 'app.js'), 'utf8');
+    const cssTxt = fs.readFileSync(path.join(ROOT, 'web', 'styles.css'), 'utf8');
+    ok(/createElement\('textarea'\)/.test(appTxt), 'renderOption 会建 textarea');
+    ok(/opt\.kind === 'string' && opt\.multiline/.test(appTxt), 'textarea 只用于 string+multiline');
+    ok(/\.opt-row textarea\.opt-ctl/.test(cssTxt), 'CSS 有 textarea 的整行/尺寸规则');
+    ok(/min-height:\s*\d+px/.test(cssTxt.slice(cssTxt.indexOf('.opt-row textarea.opt-ctl'))),
+      'textarea 有最小高度（不是浏览器的单行默认高）');
+    ok(/resize:\s*vertical/.test(cssTxt), 'textarea 允许用户纵向拉高');
   }
   {
     // 显隐规则真的作用在"用户手动切档位"上——这条是被真实 bug 逼出来的。

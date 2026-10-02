@@ -806,6 +806,27 @@ html.light .opt-card { box-shadow: var(--shadow-pane), inset 0 1px 0 rgba(255, 2
 }
 .opt-row input.opt-ctl.wide { width: 100%; flex: 1 1 100%; margin-left: 0; }
 .opt-row input.dirty, .opt-row select.dirty { border-color: var(--accent); }
+
+/* 词表类长文本的文本框。.opt-row 是 flex-wrap 容器，文本框要自己断到下一行并占满整行：
+   与 input.wide 同一套要求，但选择器必须单独写——上面 input[type="text"] 那条规则
+   匹配不到 textarea，不补这一段就会退回浏览器的默认单行外观与尺寸。
+   min-height 给四行，resize 让用户自己拉高（词表长的可以拉到满屏看全）。 */
+.opt-row textarea.opt-ctl {
+  width: 100%;
+  flex: 1 1 100%;
+  margin-left: 0;
+  min-height: 76px;
+  resize: vertical;
+  background-color: var(--bg);
+  background-image: var(--grad-well);
+  color: var(--fg);
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  padding: 4px 6px;
+  font: 12px var(--mono);
+  line-height: 1.5;
+}
+.opt-row textarea.dirty { border-color: var(--accent); }
 .opt-row input[type="checkbox"].dirty { outline: 1px solid var(--accent); outline-offset: 1px; }
 
 .hint { color: var(--fg-dim); font-size: 12px; margin: 2px 0; }
