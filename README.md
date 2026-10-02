@@ -241,7 +241,7 @@ curl -s -X POST https://<host>/api/obfuscate \
 执行顺序上它排在 `templateToConcat` 与 `stringArray` **之前**：`stringArray` 会把字面量收进池、
 `templateToConcat` 会把模板拆成 `"a"+x+"b"`，两者都会让 HTML 认不出来。
 
-### HTML 文本加密（HTML2MEM）
+### HTML Encrypt（`html2mem`）
 
 把 HTML 的**文本节点与属性值**（`href` / `src` / `integrity` / `nonce` 除外）加密成一段密文，页面里只留密文 + 一个还原 loader。
 运行期 loader 解密进内存，按占位标记把 DOM 还原成与原文语义相同的样子。产物里不再有
@@ -555,7 +555,7 @@ parser 与 generator 也不拦。
 `random`、关掉碎片化与 Anti-LLM；Plus 可以把外壳形态切成 `jsfuck`、
 把命名策略切成 `short`、开碎片化与 Anti-LLM；碎片化与 Anti-LLM 之外的更高强度
 组合留给 Team/Business。
-**HTML2MEM**（`html2mem`）同样受闸门约束：**Free 不可用，Plus 及以上可用**。它会把产物内容换成密文
+**HTML Encrypt**（`html2mem`）同样受闸门约束：**Free 不可用，Plus 及以上可用**。它会把产物内容换成密文
 并注入运行期解码器，明显改变产物形态，与 `antiLLM`、`debugProtection` 同级。配套的
 `html2memKey`（固定密钥）**刻意不加闸门**——它是 `html2mem` 的附属项，没有 `html2mem` 时本就不起作用，
 单独限制反而会让人以为能单独用。四个预设里 `html2mem` 都默认 `false`，新功能不改变默认产物形态。
