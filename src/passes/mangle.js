@@ -113,8 +113,46 @@ const DICTIONARY_WORDS = [
   'avg', 'temp', 'aux', 'part', 'area', 'span', 'rank', 'gap',
 ];
 
-function* dictionaryNames() {
-  const words = shuffle(DICTIONARY_WORDS.slice());
+/**
+ * 解析用户给的词典：逗号/空白/换行分隔，逐个校验后去重。
+ *
+ * 校验不能省——词表里的名字会直接写成产物里的标识符，一个不合法词就足以让产物
+ * 无法解析。这里按四条过滤：必须是合法 JS 标识符（首字符 ID_Start，其余
+ * ID_Continue）、不能是关键字或保留字（见 rand.js 的 RESERVED）、不能与前面已
+ * 收的词重复、长度上限 64 字符（词表本身就是"可读名"档，超长名字与该档定位相悖）。
+ *
+ * 全部被过滤光时回落到内置词表，而不是交出一个空池——空池会让整份代码退回
+ * uniqueName 随机名，用户看到的是"我填的词一个都没用上"，且没有任何提示。
+ *
+ * @param {string} raw 用户填的词表文本
+ * @returns {string[]} 合法、不重复的词
+ */
+export function normalizeNameDict(raw) {
+  const s = typeof raw === 'string' ? raw : '';
+  if (!s.trim()) return DICTIONARY_WORDS;
+  // 词表本身以字母开头，所以分隔符两侧的空白不会粘进词里；用非标识符字符统一切分，
+  // 顺带让 "foo,bar"、"foo bar"、"foo\nbar"、"foo、bar" 四种写法都能用。
+  const seen = new Set();
+  const out = [];
+  for (const w of s.split(/[^A-Za-z0-9_$]+/)) {
+    if (!w || out.length >= 256) continue;
+    if (w.length > 64) continue;
+    if (RESERVED.has(w)) continue;
+    // 标识符合法性用正则判，不用 `new Function('var ' + w)` 实测——核心里禁止
+    // 字符串代码生成（浏览器的 CSP 与不少函数运行时直接禁 eval / new Function，
+    // 核心里出现就是产物在那边抛 EvalError，见 test/minify.js 的守卫与 README
+    // 「核心模块图里不能有字符串代码生成」）。test/chinese-names.js 里能用
+    // new Function，因为那是测试文件、不进产物依赖图。
+    if (!/^[A-Za-z_$][A-Za-z0-9_$]*$/.test(w)) continue;
+    if (seen.has(w)) continue;
+    seen.add(w);
+    out.push(w);
+  }
+  return out.length ? out : DICTIONARY_WORDS;
+}
+
+function* dictionaryNames(dict) {
+  const words = shuffle(normalizeNameDict(dict).slice());
   const n = words.length;
   // 上限 n*64（约四千个名字）后交回调用方退回随机名，不静默复用名字
   for (let i = 0; i < n * 64; i++) {
@@ -366,7 +404,11 @@ export default function mangle(ast, options, ctx) {
   // escapeNonAscii 会把汉字写成 \uXXXX，产物里根本看不到中文。
   const pool = options.chineseNames
     ? cjkNames(options.chineseDictionary || '')
-    : (NAME_POOLS.get(options.nameStyle) || NAME_POOLS.get(DEFAULT_NAME_STYLE))();
+    // 词典档接用户自定义词表；其余三档的生成器不收参数，多传一个也无副作用，
+    // 但显式只在 Dictionary 档传，免得"参数被静默吞掉"这类漂移看不出来。
+    : (NAME_POOLS.get(options.nameStyle) || NAME_POOLS.get(DEFAULT_NAME_STYLE))(
+      options.nameStyle === 'Dictionary' ? (options.nameDictionary || '') : undefined,
+    );
   const nextName = () => {
     for (;;) {
       const it = pool.next();

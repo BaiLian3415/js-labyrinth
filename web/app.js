@@ -333,6 +333,10 @@ function renderOption(opt) {
   name.className = 'name';
   name.textContent = label;
 
+  // 条件显示：把 showWhen 记在行上，由 refreshOptionVisibility 按当前取值决定
+  // 显不显示。规则本身放在 options-meta 里（见那里的注释），界面只负责执行。
+  if (opt.showWhen) row.dataset.showWhen = JSON.stringify(opt.showWhen);
+
   if (opt.kind === 'bool') {
     const cb = document.createElement('input');
     cb.type = 'checkbox';
@@ -423,6 +427,9 @@ function renderOption(opt) {
   };
   ctl.addEventListener('change', commit);
   ctl.addEventListener('input', () => { ctl.classList.add('dirty'); });
+  // 控制项（如 nameStyle / chineseNames）一改，被它管着的行要立刻跟着显隐。
+  // 不重渲染整个面板：那一行是用户刚操作完的，重建会打断焦点与输入态。
+  ctl.addEventListener('change', refreshOptionVisibility);
 
   row.appendChild(ctl);
   return row;
@@ -651,6 +658,29 @@ function flagLabel(key) {
 }
 
 /**
+ * 按 showWhen 规则收起/放出选项行。
+ *
+ * 规则来自 options-meta（如"命名策略 ≠ Dictionary 就不显示词表"、"中文命名关着就
+ * 不显示汉字字典"）。挂在 data-show-when 上，随 renderOption 一起写进 DOM。
+ *
+ * 判定用的是**生效值**而不是控件的 DOM 值：预设没给这个键时才回退 DEFAULTS，
+ * 与界面各处显示的取值口径一致（见 presetValue）。用 DOM 值会出现"选了 low 预设、
+ * 而 low 恰好没写 nameStyle，于是拿默认的 Mangled 去比"这类不一致。
+ */
+function refreshOptionVisibility() {
+  const rows = document.querySelectorAll('.opt-row[data-show-when]');
+  for (const row of rows) {
+    let rule;
+    try { rule = JSON.parse(row.dataset.showWhen); } catch (e) { continue; }
+    if (!rule || !rule.key) continue;
+    // 用 === 比原始类型：showWhen 的 equals 是按选项声明的取值类型写的
+    // （布尔项写 true，枚举项写 'Dictionary'），松散比较会把 'false' 之类的
+    // 枚举字符串判成真。
+    row.classList.toggle('is-hidden', presetValue(rule.key) !== rule.equals);
+  }
+}
+
+/**
  * 按当前授权给越界的选项加灰：显式选项里被闸门拦下的逐个标注，
  * 用户提交前就能看到哪一项会被拒，而不是等运行后报错。
  */
@@ -672,6 +702,9 @@ function refreshGateStyles() {
     if (hit) row.title = optionsGate.violationText(hit, ent);
     else if (isPreset && presetBlocked) row.title = optionsGate.presetBlockedText(res, ent);
   }
+  // 闸门刷新会读行上的 title/类名，显隐也得在同一趟里跟上——否则"改了预设但
+  // nameStyle 那一档没被预设显式覆盖"时，收起的行会停在旧状态。
+  refreshOptionVisibility();
 }
 
 // ---------- 预设 ----------

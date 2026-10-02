@@ -226,6 +226,10 @@ section('命名策略（nameStyle）与动态 import');
   const declNames = (code) => [...new Set(
     [...code.matchAll(/(?:var|let|const|function)\s+([A-Za-z_$][A-Za-z0-9_$]*)/g)].map((m) => m[1]),
   )];
+  // 界面选项表里查一项。显隐规则在元数据上，用的是 guiOptions() 那份拷贝，
+  // 所以断言要查它而不是查 VALUE_OPTIONS 本身。
+  const guiOpt = (key) => optionsMeta.guiOptions().find((o) => o.key === key) || null;
+  const normalizeNameDict = (await import('../src/passes/mangle.js')).normalizeNameDict;
   {
     // Hexadecimal：字母 + 十六进制位，从 2 字符起步
     const want = runNode(shapeSrc, 'namestyle-shape-raw.js').trim();
@@ -254,6 +258,46 @@ section('命名策略（nameStyle）与动态 import');
     ok(got === want, 'Dictionary 档产物语义不变', got + ' ≠ ' + want);
     ok(obfuscate(shapeSrc, { ...NAMEONLY, nameStyle: 'Dictionary', seed: 9 }).code === dict.code, 'Dictionary 档同 seed 逐字节可复现');
     ok(obfuscate(shapeSrc, { ...NAMEONLY, nameStyle: 'Dictionary', seed: 10 }).code !== dict.code, 'Dictionary 档换 seed 换一套词');
+  }
+  {
+    // Dictionary 的自定义词表。词表里的名字会直接写进产物，所以"过滤规则"和
+    // "真的换池了"两件事都要钉住——只测前者会漏掉选项没接进 mangle 的情况。
+    const DICTONLY = { ...NAMEONLY, nameStyle: 'Dictionary' };
+    const custom = obfuscate(shapeSrc, { ...DICTONLY, nameDictionary: 'zebra,quokka,axolotl', seed: 9 });
+    const mine = (code, ws) => ws.filter((w) => new RegExp('(?<![A-Za-z0-9_$])' + w + '[0-9]*(?![A-Za-z0-9_$])').test(code));
+    const got = mine(custom.code, ['zebra', 'quokka', 'axolotl']);
+    ok(got.length === 3, '自定义词表生效（产物里出现用户填的词）', got.join(' '));
+    ok(mine(custom.code, ['value', 'index', 'result', 'buffer', 'count']).length === 0,
+      '给了自定义词表就不掺内置词', '内置词: ' + mine(custom.code, ['value', 'index', 'result', 'buffer', 'count']).join(' '));
+    // 过滤：关键字、非标识符、重复词都不该进池。留着它们会让产物直接无法解析
+    // （关键字）或名字重复（撞名改语义），所以这三类必须挡掉。
+    const filtered = normalizeNameDict('if while alpha 1abc 9x ok_1 alpha');
+    ok(!filtered.includes('if') && !filtered.includes('while'), '关键字被过滤', filtered.join(' '));
+    ok(!filtered.some((w) => /^[0-9]/.test(w)), '非标识符（数字开头）被过滤', filtered.join(' '));
+    ok(new Set(filtered).size === filtered.length, '重复词被去重', filtered.join(' '));
+    ok(filtered.includes('alpha') && filtered.includes('ok_1'), '合法词被保留', filtered.join(' '));
+    // 全部非法时必须回落到内置词表，而不是交出空池让整份代码退回随机名
+    ok(normalizeNameDict('1abc 9x').length === 64, '全非法时回落到内置 64 词表', String(normalizeNameDict('1abc 9x').length));
+    ok(normalizeNameDict('').length === 64, '留空回落到内置词表', String(normalizeNameDict('').length));
+    // 分隔符：逗号/空白/换行都要能用，且分隔符不粘进词里
+    ok(normalizeNameDict('aa,bb cc\ndd').join(',') === 'aa,bb,cc,dd',
+      '逗号/空白/换行都能分隔', normalizeNameDict('aa,bb cc\ndd').join(','));
+    // 词表只影响标识符档位：中文命名打开时它压根不被读
+    const cjk = obfuscate(shapeSrc, { ...NAMEONLY, chineseNames: true, nameDictionary: 'zebra,quokka' });
+    ok(!mine(cjk.code, ['zebra', 'quokka']).length, '中文命名打开时词表不参与改名',
+      mine(cjk.code, ['zebra', 'quokka']).join(' '));
+    // 元数据：显隐规则 + 闸门口径。free 档锁死 nameStyle=Dictionary 不可选，
+    // 词表随之没有意义，所以与 chineseDictionary 一样不加闸门（与 html2memKey 同一口径）
+    ok(optionsMeta.VALUE_OPTIONS.nameDictionary.showWhen
+      && optionsMeta.VALUE_OPTIONS.nameDictionary.showWhen.key === 'nameStyle'
+      && optionsMeta.VALUE_OPTIONS.nameDictionary.showWhen.equals === 'Dictionary',
+    'nameDictionary 只在 nameStyle=Dictionary 时显示', JSON.stringify(optionsMeta.VALUE_OPTIONS.nameDictionary.showWhen));
+    ok(optionsMeta.VALUE_OPTIONS.chineseDictionary.showWhen
+      && optionsMeta.VALUE_OPTIONS.chineseDictionary.showWhen.key === 'chineseNames'
+      && optionsMeta.VALUE_OPTIONS.chineseDictionary.showWhen.equals === true,
+    'chineseDictionary 只在 chineseNames 打开时显示', JSON.stringify(optionsMeta.VALUE_OPTIONS.chineseDictionary.showWhen));
+    ok(optionsMeta.KNOWN_OPTION_KEYS.has('nameDictionary'), 'nameDictionary 是已知选项（GUI/CLI 都能识别）');
+    ok(guiOpt('nameDictionary') !== null, 'nameDictionary 出现在界面选项表里');
   }
   {
     // Mangled 的定义性质：发名与 seed 无关。用单绑定样本排除干扰——多绑定样本里

@@ -672,6 +672,12 @@ html.light .opt-card { box-shadow: var(--shadow-pane), inset 0 1px 0 rgba(255, 2
 .opt-row.gated { opacity: .55; }
 .opt-row.gated .name { text-decoration: line-through; }
 
+/* 条件显示：不满足 showWhen 的选项整行收起。规则见 options-meta 的 showWhen
+   （如"命名策略不是 Dictionary 就不给看词表"、"中文命名关着就不给看汉字字典"）。
+   用 display:none 而不是 hidden 属性：.opt-row 自身是 display:flex，hidden 属性
+   会被这条规则盖住（[hidden] 的 UA 样式优先级低于类选择器），行就还是显示着。 */
+.opt-row.is-hidden { display: none; }
+
 /* 开关：把原生勾选框重绘成轨道 + 圆钮（appearance:none）。
    仍然是一个真的 <input type="checkbox">，原生语义、键盘行为与 change 事件都不变，
    所以 app.js 的取值/落库逻辑一行没改。 */

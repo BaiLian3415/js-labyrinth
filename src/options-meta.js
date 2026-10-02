@@ -22,8 +22,17 @@ export const VALUE_OPTIONS = {
     hintZh: '把变量名、函数名改成汉字（甲乙丙丁…）。**打开后取代上面四档命名策略**——要的就是名字是中文，再挑 a/b/c 没意义。属性名要一起改还需勾「属性名重命名」。产物里的汉字**原样写出、不做 \\uXXXX 转义**，所以产物需按 UTF-8 提供（页面要有 charset）。**Plus 及以上可用。**',
     hintEn: 'Rename variables and functions to Chinese characters. Overrides the naming styles above. Rename properties too if you also enable renameProperties. Han characters are written literally (no \\uXXXX escaping), so serve the artifact as UTF-8. Requires Plus or above.' },
   chineseDictionary: { kind: 'string', group: 'structure', zh: '汉字字典', en: 'Chinese dictionary',
+    // 显隐规则：中文命名关着时这一项不参与改名（mangle 与 renameProperties 都改走
+    // 汉字池），摆出来只会让人以为填了有用。规则写在元数据里而非散在界面代码中，
+    // 这样 CLI 帮助、Worker API 与网页三端看到的是同一份判断。
+    showWhen: { key: 'chineseNames', equals: true },
     hintZh: '留空用内置默认字典（1024 字，起手甲乙丙丁戊己庚辛壬癸）。自定义时逐构建打乱后发名，所以顺序只影响哪些字会被用到，不影响可复现性。',
     hintEn: 'Empty uses the built-in 1024-character dictionary. Custom text is shuffled per build, so order affects which characters are used, not reproducibility.' },
+  nameDictionary: { kind: 'string', group: 'structure', zh: '词典词表', en: 'Dictionary words',
+    // 同上：只有命名策略选中 Dictionary 档时词表才被读。
+    showWhen: { key: 'nameStyle', equals: 'Dictionary' },
+    hintZh: '仅「命名策略 = Dictionary」时生效。留空用内置 64 词表（value/index/result…）。逗号、空白或换行分隔，逐词校验后去重：不是合法标识符、是关键字、或重复的词会被丢掉；全部非法时回落到内置词表。词越长产物越大。',
+    hintEn: 'Only applies when Naming style is Dictionary. Empty uses the built-in 64-word list (value/index/result…). Separate with commas, spaces or newlines; each word is validated and deduplicated — anything that is not a valid identifier, is a keyword, or repeats is dropped. If every word is rejected the built-in list is used. Longer words mean a larger artifact.' },
   nameStyle: { kind: 'enum', values: ['Mangled', 'Mangled-shuffled', 'Hexadecimal', 'Dictionary'], group: 'structure', zh: '命名策略', en: 'Naming style', hintZh: 'Mangled 规范短名 a/b/c…（体积最小、可复现，指纹最强，默认）；Mangled-shuffled 同形状但字母表逐构建打乱（体积相当且不留字母表指纹，混淆发布用）；Hexadecimal 字母+十六进制位（一样短但完全无规律）；Dictionary 固定词表的可读名（调试友好，产物更大且词表可枚举）。四档命名与 obfuscator.io 的 identifierNamesGenerator 一致。', hintEn: 'Mangled: canonical a/b/c… short names (smallest, reproducible, strongest fingerprint; default); Mangled-shuffled: same shape with the alphabet shuffled per build (same size, no alphabet fingerprint — use this for release); Hexadecimal: letter + hex digits (as short, fully irregular); Dictionary: fixed word list (debuggable, larger and word list is enumerable). Names match obfuscator.io identifierNamesGenerator.' },
   extraGlobals: { kind: 'string', group: 'basic', zh: '宿主全局白名单', en: 'Extra host globals', hintZh: '逗号分隔的宿主全局名（如 WebSocketPair），自校验时视为已定义、不改名。', hintEn: 'Comma-separated host globals (e.g. WebSocketPair) treated as defined and left unrenamed.' },
   reservedNames: { kind: 'string', group: 'basic', zh: '保留名（正则）', en: 'Reserved names', hintZh: '逗号分隔的正则；匹配的变量/函数名不改名（如 ^__webpack）。', hintEn: 'Comma-separated regexes; matching identifiers are never renamed (e.g. ^__webpack).' },
@@ -279,6 +288,8 @@ export function guiOptions() {
       intRange: spec.intRange,
       min: spec.min,
       max: spec.max,
+      // 显隐规则原样传给界面，由界面按当前取值决定这一行是否显示。
+      showWhen: spec.showWhen,
       def: DEFAULTS[key] !== undefined ? DEFAULTS[key] : (spec.def !== undefined ? spec.def : ''),
     });
   }
