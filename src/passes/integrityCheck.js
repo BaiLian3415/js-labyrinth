@@ -132,18 +132,31 @@ export default function integrityCheck(ast, options, ctx) {
 // 三处口径曾经各不相同，于是这个洞一直没被发现——entryCandidates 传的是函数节点
 // （查得到），哈希面传的是语句节点（查不到），看着同一份代码，结果不同。
 //
-// 已知未修：max 预设 + Chinese 仍会抛同样的 console[...] is not a function。
-// 已排除的方向（2026-10-01 实测）：
-//   - 不是 targets 漏排除。插桩打印显示 max 下 all=60 / kept=59，排除的 1 个正是
-//     唯一被搬走的那个，且没有任何"带 VM 标记却被保留"的函数。
-//   - 不是 mangle 造成的：关掉 mangle 仍失败；关掉 integrityCheck 则正常。
-//   - 与 selfCheck / antiCDP / functionWrapper 无关，关掉它们都仍失败。
-//   - 下一个怀疑点：hashTargets = targets + sentinels + deferred，而 sentinels 的
-//     name 来自 uniqueName（约三成概率是汉字）；它的期望哈希是把 retStmt 交给
-//     generate(fn, genOpts) 算的，运行期校验却走 obfStrExpr(marker, ...) 重新编码。
-//     两条路径对同一表达式生成的文本在汉字名下是否一致，尚未验证。max 下
-//     hashTargets 有 3845 个目标且全部含汉字，远多于 targets 的 59 个。
-// 该问题不静默：test/chinese-names.js 的「完整预设矩阵」把它钉成一条失败断言。
+// 已知未修：max 预设 + Chinese 仍会抛 console[...] is not a function。
+//
+// 已确定：责任方是本 pass 的密钥耦合链路，不是哈希面口径问题。
+//
+// 1）哈希面无关。2026-10-01 用运行期探针证伪：在 Node 里 hook
+//    Function.prototype.toString，把本 pass 每次取到的文本与构建期期望值逐一比对，
+//    结果 SEEN_NAMES=69 / MISMATCH=0 —— 哈希校验全部通过，产物照样抛错。
+//
+// 2）责任在本 pass。二分实验：
+//      integrityCheck:false（banner 保留）  -> 正常输出，banner 单独没问题
+//      bannerSkip:true（跳过 ctx.couple）    -> 正常输出
+//      入口校验点 sampleSize 置 0             -> 仍失败
+//      耦合偏移累加改为不执行                  -> 仍失败
+//    机制见 stringArray.js 关于 dk 的注释：解密密钥偏移从健康载体读出，dk===0 时密文
+//    与明文逐位不变，dk≠0 就整池字符串静默乱码。
+//
+// 3）尚未定位到具体哪一行。"哈希全对 + 耦合在被写入 + 结果仍错"三者并存，说明真正
+//    出问题的那一环还没被测到。不要凭上面三条去改任何一行——前两轮改错方向就是
+//    这么来的（曾经误判成 sentinels、误判成 wasmInterpreter，均已实测否证）。
+//
+//    下一步建议：在产物里 hook 健康载体的读写（globalThis["__c..."]），直接打出 dk
+//    的实际值与期望值比对，而不是继续用开关组合猜。
+//
+// 该问题不静默：test/chinese-names.js 的「完整预设矩阵」把 max + Chinese 钉成一条
+// 失败断言。
 const vmStubbed = (s) => !!(s.__vmMeta || s.__wasmCompiled
     || s.__vmCompiled || isVMCompiled(s) || isVMCompiled(s.id));
 
