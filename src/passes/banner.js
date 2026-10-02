@@ -80,8 +80,10 @@ function globalRef() {
 /**
  * 生成引导源码，返回 `{ code, salt, saltVar, nonce }`。
  *
- * @param {object} opts { couple, poisonKey, shellForm, ctx }
+ * @param {object} opts { couple, poisonKey, shellForm, ctx, privateVar }
  *   couple：ctx.couple（健康载体名 + 健康常量 + 域名锁定的 Q），为空时只产生盐
+ *   privateVar：把 saltVar 收进引导自带的 IIFE，产物顶层不留裸 var。
+ *               只有外层没有外壳时才允许，见 guardLayer 对 wrap 的处理。
  * @returns {{code:string, salt:number, saltVar:string, nonce:string}}
  */
 export function guardSource(opts) {
@@ -97,6 +99,10 @@ export function guardSource(opts) {
   const clean = fnv32(nonce);
   const lines = [];
   const P = (s) => lines.push(s);
+  // 私有模式：整个引导（连同 saltVar）塞进一个 IIFE，产物顶层不留任何裸 var。
+  // 不私有时保持原样——外壳层要在全局作用域读 saltVar（shell.js 的 `(saltVar|0)`），
+  // 收进函数里它就成了 undefined，载荷解不开。
+  if (opts.privateVar) P('(function(){');
   P('var ' + saltVar + '=(function ' + nFn + '(){');
   P('  var ' + nLit + '=' + JSON.stringify(nonce) + ';');
   P('  var ' + nH + '=0x811c9dc5>>>0;');
@@ -119,6 +125,9 @@ export function guardSource(opts) {
   }
   P('  return ' + nH + ';');
   P('})();');
+  // 私有模式的收尾。引导已经算完盐并写完健康载体，这里丢弃返回值即可——privateVar
+  // 只在无外壳时开启（见 guardLayer），此时没有外壳层再读全局的 saltVar。
+  if (opts.privateVar) P('})();');
   return { code: lines.join('\n'), salt: clean, saltVar, nonce };
 }
 
@@ -131,8 +140,11 @@ export function guardSource(opts) {
  */
 export function guardLayer(code, opts) {
   const ctx = opts.ctx || { usedNames: new Set(), identifierPrefix: '_0x' };
-  const g = guardSource({ couple: ctx.couple || null, poisonKey: opts.poisonKey, ctx });
-  if (opts.wrap === false) {
+  const noShell = opts.wrap === false;
+  // privateVar 只在无外壳时开启：有外壳时 shell.js 会在全局作用域读 `(saltVar|0)`，
+  // 把引导收进 IIFE 会让它变 undefined、载荷解不开。无外壳时没人读它，可以私有化。
+  const g = guardSource({ couple: ctx.couple || null, poisonKey: opts.poisonKey, ctx, privateVar: noShell });
+  if (noShell) {
     // ESM 或用户显式关掉外壳：不套 eval 层，引导仍注入（健康载体与盐照常）
     return { code: g.code + '\n' + code, salt: g.salt, saltVar: g.saltVar, wrapped: false, nonce: g.nonce };
   }
