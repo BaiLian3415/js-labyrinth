@@ -120,6 +120,50 @@ section('中文命名：转义与自校验');
   ok(onN > 3, '打开后确实以汉字为主', String(onN));
 }
 
+section('中文命名：完整预设矩阵（回归防线）');
+{
+  // 这段刻意**不用** NO_STUB。四档预设里 max 的 consoleStub 默认开着，但真正让
+  // 「产物一加载就被自己的完整性校验投毒」显形的是另一条路径，见下面注释。
+  //
+  // 背景（2026-10-01 定位）：integrityCheck 有两处口径不一致——
+  //   entryCandidates 排除了 !isVMCompiled(fn)，
+  //   而哈希面 targets（更早，收集全部根级函数声明）漏了同一条件。
+  // 被 VM / wasm 搬走函数的桩仍留在 rootBody 里，运行期 fn.toString() 拿到的是桩
+  // 文本，与构建期对同一节点生成的文本形态不同 → 比对必然失配 → 失配的处置就是
+  // 投毒。症状是产物加载即抛 `console[...] is not a function`。
+  //
+  // 为什么之前没被发现：这套用例都带 NO_STUB，而 NO_STUB 只关 consoleStub，
+  // 不影响投毒路径——真正让它绿的原因是本文件原有的四档用例跑的是「console.log
+  // 被改写成字符串池调用」这一形态，而下面的用例构造的是同一形态的最小样本，
+  // 高预设 + 中文命名下必炸。换句话说：原有覆盖是**碰巧**没踩到。
+  const MATRIX = 'function addTotals(alpha,beta){var runningTotal=alpha+beta;return runningTotal;}'
+    + ' console.log(addTotals(3,4));';
+  const WANT = '7';
+
+  for (const preset of ['low', 'medium', 'high', 'max']) {
+    for (const style of ['Chinese', 'Mangled']) {
+      const label = preset + ' + ' + style;
+      let r;
+      try {
+        r = obfuscate(MATRIX, { preset, seed: 9, nameStyle: style });
+      } catch (e) {
+        ok(false, label + ' 构建成功', e.message);
+        continue;
+      }
+      let out;
+      try {
+        out = String(runNode(r.code, 'cjk-matrix-' + preset + '-' + style + '.js')).trim();
+      } catch (e) {
+        const line = String((e && e.stderr) || e.message).split('\n')
+          .find((l) => /Error/.test(l)) || '运行失败';
+        ok(false, label + ' 产物可执行（完整性校验不得投毒）', line.slice(0, 120));
+        continue;
+      }
+      ok(out === WANT, label + ' 产物语义正确', 'got=' + out + ' want=' + WANT);
+    }
+  }
+}
+
 section('中文命名：属性名与套餐闸门');
 {
   const r = obfuscate(SAMPLE, { preset: 'low', seed: 11, nameStyle: 'Chinese', renameProperties: true, ...NO_STUB });

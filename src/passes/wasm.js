@@ -710,6 +710,13 @@ export default function wasm(ast, options, ctx) {
   let crMoved = 0;
   for (const f of fns) {
     const m = f.meta;
+    // 标记「这个函数已被搬进 WASM 模块，宿主侧只剩调用桩」。
+    //
+    // integrityCheck 的哈希面要靠它把这类函数排除掉：桩的函数体与构建期生成的
+    // 文本不是同一形态，运行期 fn.toString() 比对必然失配，而失配的处置是投毒。
+    // vm 走的是 compiledSet（vm.js 的 compiledSet.add），wasm 这条路径不写它，
+    // 所以必须在这里单独打标记——两处口径不一致正是这个洞一直没被发现的原因。
+    f.fn.__wasmCompiled = true;
     let decl = null;
     for (const s of f.fn.body.body) {
       if (s.type !== 'VariableDeclaration') continue;

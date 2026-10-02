@@ -117,7 +117,38 @@ export default function integrityCheck(ast, options, ctx) {
   // 的函数表达式）改了没人发现，而它们恰恰是还原者最先动的地方。现在按"函数
   // 引用 + 显式键"登记：运行期取 fn.toString()，构建期生成同一节点的文本，两
   // 者逐字比对。显式键取代旧的 fn.name 查表，匿名函数表达式也能进表。
-  const targets = rootBody.filter((s) => s.type === 'FunctionDeclaration' && s.id && s.id.name);
+  //
+  // 被 VM / wasm 搬走函数的桩仍留在 rootBody 里（声明还在），但函数体已被替换成
+// "调用字节码解释器"的桩。运行期 fn.toString() 拿到的是桩的文本，与构建期对同一
+// 节点生成的文本不是同一形态（尤其汉字标识符：构建期按 chineseNames 原样写出，
+// 运行期桩里的名字已不同），比对必然失配——而失配的处置是投毒，产物一加载就抛
+// console[...] is not a function。
+//
+// 三个判据都查，因为三条搬走路径各写各的：
+//   __vmMeta    vm.js 在编译任何函数前就写上（候选判定阶段），覆盖面最全；
+//   compiledSet vm.js 编译成功后登记，但登记的是**函数节点**而非语句节点，
+//               直接把 Program.body 里的语句传进去恒为 false；
+//   __wasmCompiled wasm.js 不写 compiledSet，只打自己的标记。
+// 三处口径曾经各不相同，于是这个洞一直没被发现——entryCandidates 传的是函数节点
+// （查得到），哈希面传的是语句节点（查不到），看着同一份代码，结果不同。
+//
+// 已知未修：max 预设 + Chinese 仍会抛同样的 console[...] is not a function。
+// 已排除的方向（2026-10-01 实测）：
+//   - 不是 targets 漏排除。插桩打印显示 max 下 all=60 / kept=59，排除的 1 个正是
+//     唯一被搬走的那个，且没有任何"带 VM 标记却被保留"的函数。
+//   - 不是 mangle 造成的：关掉 mangle 仍失败；关掉 integrityCheck 则正常。
+//   - 与 selfCheck / antiCDP / functionWrapper 无关，关掉它们都仍失败。
+//   - 下一个怀疑点：hashTargets = targets + sentinels + deferred，而 sentinels 的
+//     name 来自 uniqueName（约三成概率是汉字）；它的期望哈希是把 retStmt 交给
+//     generate(fn, genOpts) 算的，运行期校验却走 obfStrExpr(marker, ...) 重新编码。
+//     两条路径对同一表达式生成的文本在汉字名下是否一致，尚未验证。max 下
+//     hashTargets 有 3845 个目标且全部含汉字，远多于 targets 的 59 个。
+// 该问题不静默：test/chinese-names.js 的「完整预设矩阵」把它钉成一条失败断言。
+const vmStubbed = (s) => !!(s.__vmMeta || s.__wasmCompiled
+    || s.__vmCompiled || isVMCompiled(s) || isVMCompiled(s.id));
+
+const targets = rootBody.filter((s) => s.type === 'FunctionDeclaration' && s.id && s.id.name
+    && !vmStubbed(s));
   // 机制层（字符串池访问器）走延迟校验：头部循环插在装载最早期，那时
   // `var accessor = ...` 还没执行，引用到的是 undefined，哈希必然假失配。
   // 于是单独生成一块校验，插到最后一条访问器声明之后——那时函数已就位，
@@ -248,7 +279,9 @@ export default function integrityCheck(ast, options, ctx) {
   // 被排除的函数仍在哈希面内（头部循环照常校验它），只是不作为入口校验点，
   // 也就是不获得"被调用时顺手校验一个 peer"这层交叉检查。
   const entryCandidates = targets.filter((fn) =>
-    !isVMCompiled(fn) && !rtlib.isRtFn(ctx, fn) && fn.body && fn.body.type === 'BlockStatement'
+    // 复用哈希面的同一个判据（vmStubbed），不再单独写 !isVMCompiled。两处各写一份
+    // 是这次投毒事故的直接成因：hash 面与入口点面对"什么算已被搬走"的理解不同步。
+    !vmStubbed(fn) && !rtlib.isRtFn(ctx, fn) && fn.body && fn.body.type === 'BlockStatement'
     && !fn.__earlyInvoked);
   const sampleSize = Math.min(entryCandidates.length, 10);
   const sorted = [...entryCandidates].sort((a, b) =>
