@@ -222,6 +222,26 @@ function presetValue(key) {
   return DEFAULTS[key];
 }
 
+/**
+ * 界面当前显示的取值：用户显式改过的优先，否则取预设/默认值。
+ *
+ * 这与 presetValue 是一回事加上"用户覆盖"这一层，区别只在第一行——手动改过的
+ * 项只存在 state.touched 里，不写回预设，所以任何"按当前生效值判断"的逻辑都
+ * 必须走这里。直接调 presetValue 会读到预设的旧值：用户把命名策略从 Mangled
+ * 切到 Dictionary 之后，presetValue 仍返回 Mangled，于是靠它判断的显隐规则
+ * 永远不成立。
+ *
+ * 之前这个口径在 renderOption 等四处各抄了一遍，彼此漂移过一次（显隐那处漏了
+ * touched，用户切了档位但输入框不出现），所以收在这里。
+ *
+ * @param {string} key 选项键
+ * @returns {*} 当前生效值
+ */
+function currentValue(key) {
+  if (state.touched.has(key)) return state.touched.get(key);
+  return presetValue(key);
+}
+
 /** 渲染选项控件。只在初始化与切换语言时重建。 */
 function renderOptions() {
   const host = $('optCols');
@@ -345,7 +365,7 @@ function renderOption(opt) {
     // 全部布尔项失效（点那一小块轨道才行），读屏也关联不上。
     cb.id = 'opt-' + opt.key;
     name.htmlFor = cb.id;
-    cb.checked = state.touched.has(opt.key) ? !!state.touched.get(opt.key) : !!presetValue(opt.key);
+    cb.checked = !!currentValue(opt.key);
     cb.addEventListener('change', () => mark(opt.key, cb.checked, cb));
     row.append(cb, name);
     row.appendChild(infoBtn(tip));
@@ -390,7 +410,7 @@ function renderOption(opt) {
       if (opt.min !== undefined) ctl.min = String(opt.min);
       if (opt.max !== undefined) ctl.max = String(opt.max);
     }
-    ctl.value = String(state.touched.has(opt.key) ? state.touched.get(opt.key) : presetValue(opt.key));
+    ctl.value = String(currentValue(opt.key));
   }
   ctl.className = 'opt-ctl';
   if (opt.kind === 'string') ctl.classList.add('wide'); // 折行占满整行
@@ -663,9 +683,9 @@ function flagLabel(key) {
  * 规则来自 options-meta（如"命名策略 ≠ Dictionary 就不显示词表"、"中文命名关着就
  * 不显示汉字字典"）。挂在 data-show-when 上，随 renderOption 一起写进 DOM。
  *
- * 判定用的是**生效值**而不是控件的 DOM 值：预设没给这个键时才回退 DEFAULTS，
- * 与界面各处显示的取值口径一致（见 presetValue）。用 DOM 值会出现"选了 low 预设、
- * 而 low 恰好没写 nameStyle，于是拿默认的 Mangled 去比"这类不一致。
+ * 判定用的是**界面当前显示的取值**（currentValue：用户改过的优先，否则预设），
+ * 而不是 presetValue——后者只读预设，读不到用户手动切换的档位，那正是"勾了
+ * 字典模式但词表框不出现"的成因。同样也不能读控件的 DOM 值。
  */
 function refreshOptionVisibility() {
   const rows = document.querySelectorAll('.opt-row[data-show-when]');
@@ -676,7 +696,7 @@ function refreshOptionVisibility() {
     // 用 === 比原始类型：showWhen 的 equals 是按选项声明的取值类型写的
     // （布尔项写 true，枚举项写 'Dictionary'），松散比较会把 'false' 之类的
     // 枚举字符串判成真。
-    row.classList.toggle('is-hidden', presetValue(rule.key) !== rule.equals);
+    row.classList.toggle('is-hidden', currentValue(rule.key) !== rule.equals);
   }
 }
 
@@ -734,9 +754,7 @@ function updatePresetHint() {
   // consoleStub 会把 console.* 全部置空且永久生效，选中后产物运行时的任何
   // console 输出都不会出现。这极易被当成"产物坏了"（在 Node 下跑脚本时表现为
   // 静默退出、一行输出都没有）。只有 max 预设默认开着它，所以选到时必须显式提示。
-  const stub = state.touched.has('consoleStub')
-    ? !!state.touched.get('consoleStub')
-    : !!presetValue('consoleStub');
+  const stub = !!currentValue('consoleStub');
   if (stub) txt += ' ⚠ ' + t('guiConsoleStubWarn');
   els.presetHint.textContent = txt;
 }

@@ -300,6 +300,71 @@ section('命名策略（nameStyle）与动态 import');
     ok(guiOpt('nameDictionary') !== null, 'nameDictionary 出现在界面选项表里');
   }
   {
+    // 显隐规则真的作用在"用户手动切档位"上——这条是被真实 bug 逼出来的。
+    //
+    // 首版 refreshOptionVisibility 调的是 presetValue，而 presetValue 只读预设、
+    // 读不到 state.touched：用户把命名策略从 Mangled 切到 Dictionary 之后，
+    // 判定拿到的仍是预设的 Mangled，于是词表框永远不出现。界面显示控件用的却是
+    // "touched 优先"的口径，两边不一致就露馅了。所以这里跑 web/app.js 里**真实的**
+    // 函数（从源码抽出来 eval，不复刻），并断言读取口径必须走 currentValue。
+    const appSrc = fs.readFileSync(path.join(ROOT, 'web', 'app.js'), 'utf8');
+    const grab = (name) => {
+      const at = appSrc.indexOf('function ' + name + '(');
+      ok(at >= 0, 'app.js 里有 ' + name + '()');
+      let i = appSrc.indexOf('{', at);
+      let depth = 0;
+      for (; i < appSrc.length; i++) {
+        if (appSrc[i] === '{') depth++;
+        else if (appSrc[i] === '}') { depth--; if (depth === 0) return appSrc.slice(at, i + 1); }
+      }
+      return '';
+    };
+    const mkRow = (rule) => ({
+      dataset: { showWhen: JSON.stringify(rule) },
+      classes: new Set(),
+      classList: {
+        toggle(c, on) { if (on) this.owner.classes.add(c); else this.owner.classes.delete(c); },
+        contains(c) { return this.owner.classes.has(c); },
+      },
+      owner: null,
+    });
+    const rowDict = mkRow({ key: 'nameStyle', equals: 'Dictionary' });
+    const rowCjk = mkRow({ key: 'chineseNames', equals: true });
+    for (const r of [rowDict, rowCjk]) r.classList.owner = r;
+    const rows = [rowDict, rowCjk];
+    const vstate = { preset: 'low', touched: new Map() };
+    const PRESETS2 = { low: { nameStyle: 'Mangled', chineseNames: false } };
+    const DEFAULTS2 = { nameStyle: 'Mangled', chineseNames: false };
+    const doc = { querySelectorAll: (s) => (s.indexOf('data-show-when') >= 0 ? rows : []) };
+    const visApi = new Function('PRESETS', 'DEFAULTS', 'state', 'document', [
+      grab('presetValue'), grab('currentValue'), grab('refreshOptionVisibility'),
+    ].join('\n') + '\nreturn { presetValue, currentValue, refreshOptionVisibility };')(
+      PRESETS2, DEFAULTS2, vstate, doc);
+
+    const shown = (r) => !r.classes.has('is-hidden');
+    visApi.refreshOptionVisibility();
+    ok(!shown(rowDict) && !shown(rowCjk), '默认预设下两处都收起',
+      '词表=' + shown(rowDict) + ' 汉字=' + shown(rowCjk));
+    // 关键回归：走 touched（用户手动改的）这一层
+    vstate.touched.set('nameStyle', 'Dictionary');
+    visApi.refreshOptionVisibility();
+    ok(shown(rowDict), '用户切到 Dictionary 后词表框出现（读 touched 而非预设）',
+      'presetValue=' + visApi.presetValue('nameStyle') + ' currentValue=' + visApi.currentValue('nameStyle'));
+    vstate.touched.set('nameStyle', 'Mangled');
+    vstate.touched.set('chineseNames', true);
+    visApi.refreshOptionVisibility();
+    ok(!shown(rowDict) && shown(rowCjk), '关词表、开中文命名后汉字字典框出现',
+      '词表=' + shown(rowDict) + ' 汉字=' + shown(rowCjk));
+    vstate.touched.set('chineseNames', false);
+    visApi.refreshOptionVisibility();
+    ok(!shown(rowDict) && !shown(rowCjk), '两项都关时重新收起',
+      '词表=' + shown(rowDict) + ' 汉字=' + shown(rowCjk));
+    // 口径一致性：显隐用的必须是 currentValue，不能是 presetValue
+    ok(appSrc.slice(appSrc.indexOf('function refreshOptionVisibility('))
+      .indexOf('currentValue(rule.key)') > 0,
+    'refreshOptionVisibility 按 currentValue 判定（touched 优先）');
+  }
+  {
     // Mangled 的定义性质：发名与 seed 无关。用单绑定样本排除干扰——多绑定样本里
     // stringArray 等注入名逐构建随机，比对整体名字集合会被它们污染。
     const one = 'var computeTotals = 1; console.log(computeTotals);';
