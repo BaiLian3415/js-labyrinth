@@ -86,7 +86,12 @@ class Generator {
     this.options = options || {};
     this.compact = this.options.compact !== false;
     this.escapeNonAscii = !!this.options.escapeNonAscii;
-    // 中文命名：汉字标识符原样写出，不受 escapeNonAscii 影响（见 _escapeIdent）
+    // 中文命名：汉字标识符原样写出，不受 escapeNonAscii 影响（见 _escapeIdent）。
+    // 这里读的是 obfuscate.js 传进来的**已归一化布尔值**，不要再从 nameStyle 自行
+    // 推导：generate() 收到的是 {compact, escapeNonAscii, chineseNames, indent,
+    // keepRaw} 这个小对象，里面没有 nameStyle，在此处重算恒为 false——汉字会被
+    // escapeNonAscii 全转成 \uXXXX，产物能跑但用户 grep 不到，且与 integrityCheck
+    // 的哈希口径一漂就被自己的完整性校验投毒。
     this.chineseNames = !!this.options.chineseNames;
     this.indent = options && options.indent !== undefined ? options.indent : 2;
     // keepRaw：命中「不混淆项」名单的文本原样写出，不做 \uXXXX 转义。

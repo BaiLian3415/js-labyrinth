@@ -8,6 +8,7 @@ const { t: msg } = i18n;
 import DEFAULTS from './options.js';
 import PRESETS from './presets.js';
 import randUtil from './utils/rand.js';
+import { isChineseNaming } from './utils/cjk.js';
 const { setSeed, rand, randInt } = randUtil;
 import rtlib from './passes/rtlib.js';
 import simplify from './passes/simplify.js';
@@ -450,8 +451,12 @@ function obfuscate(code, userOptions) {
   const out = generate(ast, {
     compact: options.compact !== false,
     escapeNonAscii: !!options.escapeNonAscii,
-    // 中文命名时汉字不转义，见 generator 的 _escapeIdent
-    chineseNames: !!options.chineseNames,
+    // 中文命名时汉字不转义，见 generator 的 _escapeIdent。
+    // 这里传的是归一化后的 nameStyle，不是布尔项——2026-10-01 之前是 chineseNames。
+    // 若继续传一个已不存在的字段，generator 侧的 isChineseNaming 恒为 false，
+    // 汉字会被 escapeNonAscii 全转成 \uXXXX：产物能跑但用户 grep 不到，且
+    // integrityCheck 两边口径一漂就会被自己的完整性校验投毒。
+    chineseNames: isChineseNaming(options),
     indent: options.indent !== undefined ? options.indent : 2,
     // 命中「保留名单」的文本原样写出（不做 \uXXXX 转义），详见 buildKeepRaw
     keepRaw: ctx.keepRaw,

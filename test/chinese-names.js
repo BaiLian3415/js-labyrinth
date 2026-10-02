@@ -74,7 +74,7 @@ section('中文命名：四档预设');
     let r = null;
     let built = true;
     try {
-      r = obfuscate(SAMPLE, { preset, seed: 11, chineseNames: true, renameProperties: true, ...NO_STUB });
+      r = obfuscate(SAMPLE, { preset, seed: 11, nameStyle: 'Chinese', renameProperties: true, ...NO_STUB });
     } catch (e) {
       built = false;
       ok(false, preset + ' 档构建成功', e.message);
@@ -100,7 +100,7 @@ section('中文命名：转义与自校验');
 {
   // 关掉字符串池，那句"你好"才留在源码里，才能验证字面量的转义口径没被改动
   const r = obfuscate('var s="你好";function f(a){return a+1;}console.log(f(1));',
-    { preset: 'low', seed: 5, chineseNames: true, stringArray: false, ...NO_STUB });
+    { preset: 'low', seed: 5, nameStyle: 'Chinese', stringArray: false, ...NO_STUB });
   ok(/[\u3400-\u9fff]/.test(r.code), '标识符位置是可见汉字（未被转义）');
   ok(String(runNode(r.code, 'cjk-esc.js')).trim() === '2', '开 escapeNonAscii 也能正常执行');
   ok(r.code.includes('\\u4f60'), '字符串字面量里的中文仍按 escapeNonAscii 转义（该开关的口径没变）');
@@ -109,7 +109,7 @@ section('中文命名：转义与自校验');
   // rand.uniqueName 的命名族里本来就有一档 CJK 字形名（约三成），那是既有行为，
   // 与本选项无关。这里比的是密度：开了以后应当是压倒性多数。
   const off = obfuscate(SAMPLE, { preset: 'low', seed: 11, ...NO_STUB });
-  const on = obfuscate(SAMPLE, { preset: 'low', seed: 11, chineseNames: true, ...NO_STUB });
+  const on = obfuscate(SAMPLE, { preset: 'low', seed: 11, nameStyle: 'Chinese', ...NO_STUB });
   const density = (code) => {
     const decls = code.match(/(?:var|let|const|function)\s+[\u3400-\u9fff]/g) || [];
     return decls.length;
@@ -122,15 +122,15 @@ section('中文命名：转义与自校验');
 
 section('中文命名：属性名与套餐闸门');
 {
-  const r = obfuscate(SAMPLE, { preset: 'low', seed: 11, chineseNames: true, renameProperties: true, ...NO_STUB });
+  const r = obfuscate(SAMPLE, { preset: 'low', seed: 11, nameStyle: 'Chinese', renameProperties: true, ...NO_STUB });
   ok(!/result/.test(r.code), '属性名也被换成中文（原名不残留）');
   ok(String(runNode(r.code, 'cjk-prop.js')).trim() === SAMPLE_WANT, '属性改名后语义不变');
 
   // free 档的命名风格锁死在 Mangled，中文命名属于"非 Mangled"，同样锁死
-  ok(gate.violationsOf({ chineseNames: true }, plan.describe('free')).length === 1,
+  ok(gate.violationsOf({ nameStyle: 'Chinese' }, plan.describe('free')).length === 1,
     'free 档被闸门拦下');
   for (const p of ['plus', 'team', 'business']) {
-    ok(gate.violationsOf({ chineseNames: true }, plan.describe(p)).length === 0,
+    ok(gate.violationsOf({ nameStyle: 'Chinese' }, plan.describe(p)).length === 0,
       p + ' 档可用');
   }
   // 四个预设都必须声明这一项，否则 plan.js 的套餐一致性断言会拒绝加载
@@ -138,7 +138,10 @@ section('中文命名：属性名与套餐闸门');
     const r2 = obfuscate(SAMPLE, { preset, seed: 1, ...NO_STUB });
     ok(typeof r2.code === 'string' && r2.code.length > 0, preset + ' 档声明 chineseNames 且可构建');
   }
-  ok(meta.KNOWN_OPTION_KEYS.has('chineseNames'), 'chineseNames 是已知选项（GUI/CLI 都能识别）');
+  ok(meta.VALUE_OPTIONS.nameStyle.values.includes('Chinese'),
+    'Chinese 是 nameStyle 的合法枚举值（GUI/CLI 都能识别）');
+  ok(!meta.KNOWN_OPTION_KEYS.has('chineseNames'),
+    'chineseNames 布尔项已移除（2026-10-01 并入 nameStyle 枚举）');
   ok(meta.KNOWN_OPTION_KEYS.has('chineseDictionary'), 'chineseDictionary 是已知选项');
 }
 

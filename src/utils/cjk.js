@@ -114,6 +114,27 @@ export function isCJKName(name) {
   return typeof name === 'string' && /[\u3400-\u9fff]/.test(name);
 }
 
+/** nameStyle 里代表"汉字命名"的那一档。与 options.js 的注释、options-meta 的枚举同源。 */
+export const CHINESE_NAME_STYLE = 'Chinese';
+
+/**
+ * 这份选项是否走汉字命名池。
+ *
+ * 收在一处是因为判定有三处消费（mangle、renameProperties、ast/generator 的
+ * _escapeIdent），此前它们各写一遍 `options.chineseNames`，布尔项改成枚举后又得
+ * 各改一遍——三处漂移过一次就会出现"名字改成汉字但仍被转义成 \uXXXX"这类产物
+ * 被自己的完整性校验投毒的问题（见 README 与 integrityCheck 的注释）。
+ *
+ * 大小写不敏感：nameStyle 由调用方给，枚举之外的旧值也一律落到非中文。
+ *
+ * @param {object} options 已归一化的选项
+ * @returns {boolean} 是否走汉字命名
+ */
+export function isChineseNaming(options) {
+  const s = options && options.nameStyle;
+  return typeof s === 'string' && s.toLowerCase() === CHINESE_NAME_STYLE.toLowerCase();
+}
+
 /**
  * 命名池用尽后的兜底：仍给一个没被占用的汉字名。
  *

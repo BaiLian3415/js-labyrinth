@@ -1,6 +1,6 @@
 import t from '../ast/types.js';
 import rand from '../utils/rand.js';
-import { cjkNames, uniqueCJKName } from '../utils/cjk.js';
+import { cjkNames, uniqueCJKName, isChineseNaming } from '../utils/cjk.js';
 const { uniqueName } = rand;
 /**
  * 属性名重命名（renameProperties，对标 obfuscator.io 的 safe 模式）。
@@ -135,7 +135,7 @@ export default function renameProperties(ast, options, ctx) {
   const prefix = options.identifierPrefix || '_0x';
   // 中文属性名与 mangle 共用同一个汉字池与字典，且两边都用同一个 used 集合防撞，
   // 因此同一构建里"变量叫甲"与"属性也叫甲"不会互相冲突。
-  const pool = options.chineseNames ? cjkNames(options.chineseDictionary || '') : null;
+  const pool = isChineseNaming(options) ? cjkNames(options.chineseDictionary || '') : null;
   const nextName = () => {
     if (!pool) return uniqueName(used, prefix);
     for (;;) {

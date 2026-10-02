@@ -28,13 +28,15 @@ export default {
       "antiCDP": false,
       "domainLock": [""],
       "simplify": false,
+      // 命名风格。free 档锁死在 Mangled，其余四档（Mangled-shuffled / Hexadecimal /
+      // Dictionary / Chinese）都是 plus+ 才放行。Chinese 原先是独立的
+      // chineseNames 布尔项、单独挂了一条 "chineseNames": false 闸门；并入 nameStyle
+      // 枚举后那条闸门是多余的——上面这个白名单已经把 Chinese 挡在 free 之外，
+      // 同一件事不必写两遍（两处规则漂移过一次就会让 free 意外拿到某一档）。
+      // 放开与否是套餐策略决定，这里按现状对齐，不擅自给 free 扩能力。
       "nameStyle": [
         "Mangled"
       ],
-      // 中文命名也是一种"非 Mangled"的命名风格，与上面那条同一个口径：
-      // free 档的命名风格锁死在 Mangled，因此这一项对 free 也锁死。放开与否
-      // 是套餐策略决定，这里按现状对齐，不擅自给 free 扩能力。
-      "chineseNames": false,
       "renameProperties": false,
       "debugPoison": false,
       "selfDefending": false,

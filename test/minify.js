@@ -283,7 +283,7 @@ section('命名策略（nameStyle）与动态 import');
     ok(normalizeNameDict('aa,bb cc\ndd').join(',') === 'aa,bb,cc,dd',
       '逗号/空白/换行都能分隔', normalizeNameDict('aa,bb cc\ndd').join(','));
     // 词表只影响标识符档位：中文命名打开时它压根不被读
-    const cjk = obfuscate(shapeSrc, { ...NAMEONLY, chineseNames: true, nameDictionary: 'zebra,quokka' });
+    const cjk = obfuscate(shapeSrc, { ...NAMEONLY, nameStyle: 'Chinese', nameDictionary: 'zebra,quokka' });
     ok(!mine(cjk.code, ['zebra', 'quokka']).length, '中文命名打开时词表不参与改名',
       mine(cjk.code, ['zebra', 'quokka']).join(' '));
     // 元数据：显隐规则 + 闸门口径。free 档锁死 nameStyle=Dictionary 不可选，
@@ -293,9 +293,9 @@ section('命名策略（nameStyle）与动态 import');
       && optionsMeta.VALUE_OPTIONS.nameDictionary.showWhen.equals === 'Dictionary',
     'nameDictionary 只在 nameStyle=Dictionary 时显示', JSON.stringify(optionsMeta.VALUE_OPTIONS.nameDictionary.showWhen));
     ok(optionsMeta.VALUE_OPTIONS.chineseDictionary.showWhen
-      && optionsMeta.VALUE_OPTIONS.chineseDictionary.showWhen.key === 'chineseNames'
-      && optionsMeta.VALUE_OPTIONS.chineseDictionary.showWhen.equals === true,
-    'chineseDictionary 只在 chineseNames 打开时显示', JSON.stringify(optionsMeta.VALUE_OPTIONS.chineseDictionary.showWhen));
+      && optionsMeta.VALUE_OPTIONS.chineseDictionary.showWhen.key === 'nameStyle'
+      && optionsMeta.VALUE_OPTIONS.chineseDictionary.showWhen.equals === 'Chinese',
+    'chineseDictionary 只在 nameStyle=Chinese 时显示', JSON.stringify(optionsMeta.VALUE_OPTIONS.chineseDictionary.showWhen));
     ok(optionsMeta.KNOWN_OPTION_KEYS.has('nameDictionary'), 'nameDictionary 是已知选项（GUI/CLI 都能识别）');
     ok(guiOpt('nameDictionary') !== null, 'nameDictionary 出现在界面选项表里');
     // 词表渲染成多行文本框：1024 字的汉字字典与几十词的词典表塞进单行输入框没法看。
@@ -347,12 +347,12 @@ section('命名策略（nameStyle）与动态 import');
       owner: null,
     });
     const rowDict = mkRow({ key: 'nameStyle', equals: 'Dictionary' });
-    const rowCjk = mkRow({ key: 'chineseNames', equals: true });
+    const rowCjk = mkRow({ key: 'nameStyle', equals: 'Chinese' });
     for (const r of [rowDict, rowCjk]) r.classList.owner = r;
     const rows = [rowDict, rowCjk];
     const vstate = { preset: 'low', touched: new Map() };
-    const PRESETS2 = { low: { nameStyle: 'Mangled', chineseNames: false } };
-    const DEFAULTS2 = { nameStyle: 'Mangled', chineseNames: false };
+    const PRESETS2 = { low: { nameStyle: 'Mangled' } };
+    const DEFAULTS2 = { nameStyle: 'Mangled' };
     const doc = { querySelectorAll: (s) => (s.indexOf('data-show-when') >= 0 ? rows : []) };
     const visApi = new Function('PRESETS', 'DEFAULTS', 'state', 'document', [
       grab('presetValue'), grab('currentValue'), grab('refreshOptionVisibility'),
@@ -368,12 +368,11 @@ section('命名策略（nameStyle）与动态 import');
     visApi.refreshOptionVisibility();
     ok(shown(rowDict), '用户切到 Dictionary 后词表框出现（读 touched 而非预设）',
       'presetValue=' + visApi.presetValue('nameStyle') + ' currentValue=' + visApi.currentValue('nameStyle'));
-    vstate.touched.set('nameStyle', 'Mangled');
-    vstate.touched.set('chineseNames', true);
+    vstate.touched.set('nameStyle', 'Chinese');
     visApi.refreshOptionVisibility();
     ok(!shown(rowDict) && shown(rowCjk), '关词表、开中文命名后汉字字典框出现',
       '词表=' + shown(rowDict) + ' 汉字=' + shown(rowCjk));
-    vstate.touched.set('chineseNames', false);
+    vstate.touched.set('nameStyle', 'Mangled');
     visApi.refreshOptionVisibility();
     ok(!shown(rowDict) && !shown(rowCjk), '两项都关时重新收起',
       '词表=' + shown(rowDict) + ' 汉字=' + shown(rowCjk));
@@ -439,7 +438,7 @@ section('命名策略（nameStyle）与动态 import');
   }
   // 元数据枚举与实际实现必须同步：界面上能选、闸门放行，但 mangle 里没有对应池的档位
   // 会静默回落到默认档（选项存在但无效），这类漂移要有断言兜住
-  ok(optionsMeta.VALUE_OPTIONS.nameStyle.values.join(',') === 'Mangled,Mangled-shuffled,Hexadecimal,Dictionary',
+  ok(optionsMeta.VALUE_OPTIONS.nameStyle.values.join(',') === 'Mangled,Mangled-shuffled,Hexadecimal,Dictionary,Chinese',
     'nameStyle 枚举与实现同步', optionsMeta.VALUE_OPTIONS.nameStyle.values.join(','));
   for (const style of optionsMeta.VALUE_OPTIONS.nameStyle.values) {
     const r = obfuscate(namey, { preset: 'low', shell: false, nameStyle: style, seed: 9 });

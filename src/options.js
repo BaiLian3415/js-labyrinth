@@ -7,8 +7,8 @@ export default {
   "simplify": false,
   "identifierPrefix": "_0x",
   "mangle": true,
-  // 命名策略（Paid 档，plus+；free 档闸门锁死 Mangled）。四档，与 obfuscator.io 的
-  // identifierNamesGenerator 同一套命名：
+  // 命名策略（Paid 档，plus+；free 档闸门锁死 Mangled）。五档，与 obfuscator.io 的
+  // identifierNamesGenerator 同一套命名（Chinese 一档为本项目扩展）：
   //   Mangled           规范短名（a、b、c…），决定性、与 seed 无关、可逐字节 diff，
   //                     体积最小，但产物里必然出现发名顺序，指纹最强
   //   Mangled-shuffled  同样形状，字母表逐构建打乱——体积相当且不留字母表指纹，
@@ -16,6 +16,13 @@ export default {
   //   Hexadecimal       字母 + 十六进制位（a7 / f30），一样短但完全无规律
   //   Dictionary        固定 64 词表的可读名，调试友好；产物更大、词表可枚举
   //                     故抗指纹弱，定位是调试档不是发布档
+  //   Chinese           标识符与属性名换成汉字（甲乙丙丁…）。产物里汉字原样写出、
+  //                     不做 \uXXXX 转义（见 generator 的 _escapeIdent），
+  //                     因此要求产物按 UTF-8 提供
+  //
+  // 2026-10-01：Chinese 原本是独立的 chineseNames 布尔开关，勾上会覆盖上面四档。
+  // 两个表示同一件事，界面与闸门都得各写一份规则，故并入本枚举。旧存档与 CLI
+  // 的 --chinese-names 已不再识别（见 options-meta 的旧值迁移）。
   "nameStyle": "Mangled",
   // Dictionary 档的自定义词表。留空用内置的 64 词表（见 passes/mangle.js 的
   // DICTIONARY_WORDS）。逗号/空白/换行分隔，逐词校验后去重：非法标识符、关键字、
@@ -27,13 +34,9 @@ export default {
   // 属性，叠加高风险名白名单。与外部代码共享属性可能被破坏（safe 模式固有局限）。
   // Paid 档（plus+）可用；free 档闸门锁死 false。
   "renameProperties": false,
-  // 中文命名（chineseNames）：把标识符与属性名换成汉字（甲乙丙丁…）。打开时
-  // 取代 nameStyle 的四档——要的就是"名字是中文"，再从 a/b/c… 里挑没意义。
-  // 产物里汉字原样写出、不做 \uXXXX 转义（见 generator 的 _escapeIdent），
-  // 因此要求产物按 UTF-8 提供；四个预设默认都是关的，属于风格开关。
-  "chineseNames": false,
   // 汉字字典。留空用内置默认字典（1024 字，起手甲乙丙丁戊己庚辛壬癸）。
   // 自定义时逐构建打乱后发名，所以顺序只影响"哪些字会被用到"，不影响可复现性。
+  // 只在 nameStyle = Chinese 时被读。
   "chineseDictionary": "",
   "stringArray": true,
   "stringArrayEncoding": "rc4",

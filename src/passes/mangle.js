@@ -1,7 +1,7 @@
 import t from '../ast/types.js';
 import rand from '../utils/rand.js';
 import DEFAULTS from '../options.js';
-import { cjkNames, uniqueCJKName } from '../utils/cjk.js';
+import { cjkNames, uniqueCJKName, isChineseNaming } from '../utils/cjk.js';
 const { uniqueName, shuffle, RESERVED, HEXD } = rand;
 
 /** 未指定或指定了不存在的 nameStyle 时的兜底，与 options.js 的默认值同源。 */
@@ -402,7 +402,11 @@ export default function mangle(ast, options, ctx) {
   // 中文"，再从 a/b/c… 那几档里挑没有意义。escapeNonAscii 对本档无效——生成器
   // 那侧单独放行（见 generator 的 _escapeIdent），否则四个预设默认开的
   // escapeNonAscii 会把汉字写成 \uXXXX，产物里根本看不到中文。
-  const pool = options.chineseNames
+  // Chinese 档接汉字池，取代其余四档的拉丁/十六进制/词表命名——要的就是"名字是
+  // 中文"，再从 a/b/c… 里挑没意义。escapeNonAscii 对本档无效——生成器那侧单独
+  // 放行（见 generator 的 _escapeIdent），否则四个预设默认开的 escapeNonAscii 会
+  // 把汉字写成 \uXXXX，产物里根本看不到中文。
+  const pool = isChineseNaming(options)
     ? cjkNames(options.chineseDictionary || '')
     // 词典档接用户自定义词表；其余三档的生成器不收参数，多传一个也无副作用，
     // 但显式只在 Dictionary 档传，免得"参数被静默吞掉"这类漂移看不出来。
@@ -430,7 +434,7 @@ export default function mangle(ast, options, ctx) {
     // 命名池用尽（词典档约四千个名字，>15 万个绑定才可能触发）时退回随机名，
     // 不静默复用名字——复用会撞名并改变语义。中文档的兜底仍是中文名，见
     // uniqueCJKName。
-    const newName = nextName() || (options.chineseNames
+    const newName = nextName() || (isChineseNaming(options)
       ? uniqueCJKName(used, options.chineseDictionary || '')
       : uniqueName(used, prefix));
     try {
