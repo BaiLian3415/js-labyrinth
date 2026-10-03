@@ -49,14 +49,6 @@ function randAlpha(len) {
   return s;
 }
 
-// CJK 表意字符属于合法 ID_Start/ID_Part,和 Latin 混排后与 _0x/$ 风格没有重叠,
-// 产物里不再有单一的命名风格指纹,按前缀批量识别改名的启发式也就失效了。
-const GLYPH_CHARS = '的一是了我不人在他有这上们来到时大地为子中你说生国年着就那和要她出也得里后自以会家可下而过天去能对小多然于心学么之都好看起发当没成只如事把还用第样道想作种开美总从无情己面最女但现前些所同日手又行意动方期它头经长儿回位分爱老因很给名法间斯知世什两次使身者被高已亲其进此与活正感';
-function randGlyphName(len) {
-  let s = '';
-  for (let i = 0; i < len; i++) s += GLYPH_CHARS[randInt(0, GLYPH_CHARS.length - 1)];
-  return s;
-}
 
 function shuffle(arr) {
   for (let i = arr.length - 1; i > 0; i--) {
@@ -71,9 +63,17 @@ function shuffle(arr) {
 /**
  * 生成一个没被占用的随机标识符。
  * used 由外部收集,是原始代码里全部已占用的名字。
- * 四种命名族混排,CJK 字形约占三成,纯字母约占两成半,符号前缀族占其余四成半,
- * 前缀族里调用方给的 prefix 只有 40% 的概率被采用,其他走前缀池。这样产物里
- * 没有占多数的单一命名样式,按前缀加 hex 批量识别改名的启发式就失效了。
+ * 两族混排:纯字母短名约占五成半,符号前缀族占其余四成半,前缀族里调用方给的
+ * prefix 只有 40% 的概率被采用,其他走前缀池。这样产物里没有占多数的单一
+ * 命名样式,按前缀加 hex 批量识别改名的启发式就失效了。
+ *
+ * 只产 ASCII(2026-10-03 改):早先这里有约三成概率摇出汉字名,理由是混排后没有
+ * 单一风格指纹。但 uniqueName 的产物会被多个 pass 当**原始文本**拼进产物(引导层
+ * banner、外壳层 shell 等),那些位置不经过 AST 生成器,escapeNonAscii 管不到,
+ * 汉字会原样落进产物——既违反用户选的 nameStyle,也违反 escapeNonAscii 的承诺,
+ * 还留下「只有本工具会产出汉字标识符」这种极强的工具指纹。改为在源头只出 ASCII,
+ * 对所有调用点一致生效,不必逐个 pass 排查哪条路径漏了转义。
+ * 中文命名功能无关:它走 utils/cjk.js 的 cjkNames(),与本函数没有交集。
  *
  * @param {Set<string>} used 已占用的名字集合,生成的名字会写进去
  * @param {string} [prefix] 调用方指定的前缀,不一定被采用
@@ -88,10 +88,7 @@ function uniqueName(used, prefix) {
       name = (prefix || '_0x') + guard + randHex(4);
     } else {
       const roll = rand();
-      if (roll < 0.3) {
-        // CJK 字形名,后面由 escapeNonAscii 转成 \uXXXX
-        name = randGlyphName(randInt(2, 4));
-      } else if (roll < 0.55) {
+      if (roll < 0.55) {
         // 纯字母短名可能拼出 var/for/if/class,撞上就重摇
         do {
           name = randAlpha(randInt(4, 9));

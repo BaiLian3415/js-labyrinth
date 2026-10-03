@@ -70,11 +70,22 @@ section('中文命名：可复现性与命名池');
 
 section('中文命名：四档预设');
 {
+  // 这一节刻意关掉 shell：汉字标识符要「看得见」才验得了，而 medium 及以上默认
+  // shell:true 会把整段载荷加密，标识符不再是明文文本——那是外壳的既定行为，不是
+  // 中文命名失效（实测 shell:false 时四档分别有 297/3477/7447/8687 个汉字，
+  // shell:true 时四档都是 0）。
+  //
+  // 顺带记一笔：这条断言以前在 medium/high/max 上是**假绿**——它靠的是引导层与
+  // 外壳前奏里泄漏的汉字机械名（rand.uniqueName 产出、经原始文本路径进产物），
+  // 而那些名字恰好在加密载荷之外。2026-10-03 修掉那个泄漏后断言才变红，说明它
+  // 验的从来不是本特性。现在改成在 shell 关掉的前提下直接验汉字标识符。
   for (const preset of ['low', 'medium', 'high', 'max']) {
     let r = null;
     let built = true;
     try {
-      r = obfuscate(SAMPLE, { preset, seed: 11, nameStyle: 'Chinese', renameProperties: true, ...NO_STUB });
+      r = obfuscate(SAMPLE, {
+        preset, seed: 11, nameStyle: 'Chinese', renameProperties: true, shell: false, ...NO_STUB,
+      });
     } catch (e) {
       built = false;
       ok(false, preset + ' 档构建成功', e.message);
@@ -89,7 +100,7 @@ section('中文命名：四档预设');
       continue;
     }
     ok(out === SAMPLE_WANT, preset + ' 档产物语义与原源码一致', out);
-    ok(/[\u3400-\u9fff]/.test(r.code), preset + ' 档产物含可见汉字');
+    ok(/[\u3400-\u9fff]/.test(r.code), preset + ' 档产物含可见汉字（shell:false，载荷未加密）');
     // integrityCheck 会用同一份 genOpts 重算哈希；漏传 chineseNames 时产物一加载
     // 就被自己投毒，症状是 console.log 取不到方法，所以这一条是回归防线
     ok(!/\balpha\b/.test(r.code), preset + ' 档原变量名已消失');

@@ -72,6 +72,59 @@ export function fnv32(str) {
   return h >>> 0;
 }
 
+/**
+ * FNV-1a 32 的等价写法库，注入时随机挑一种（见 guardSource）。
+ *
+ * 每种给出 emit(L, H, K)：L 字面量名、H 累加器名、K 循环变量名，产出引导里那几行。
+ * 三种写法都严格等价于 fnv32：
+ *   A for 循环，偏移基数与素数都写十六进制
+ *   B while 循环，偏移基数写十进制 2166136261、素数写十六进制 0x01000193
+ *   C while 循环但用 !== 判长度，偏移基数带一次 |0
+ * 常量的十进制/十六进制写法必须相等（0x811c9dc5 === 2166136261，
+ * 16777619 === 0x01000193），否则盐对不上、干净产物会被自己的引导投毒。
+ *
+ * 循环形态不能图省事用 do-while：do-while 至少执行一次，空串会读到
+ * charCodeAt(0)=NaN，算出的盐与 offset basis 对不上。实测踩过（见
+ * test/anti-analysis.js 的引导等价性断言）。
+ */
+const FNV_FORMS = [
+  {
+    id: 'for-hex',
+    emit: (L, H, K) => [
+      '  var ' + H + '=0x811c9dc5>>>0;',
+      '  for(var ' + K + '=0;' + K + '<' + L + '.length;' + K + '++){',
+      '    ' + H + '=(Math.imul(' + H + '^' + L + '.charCodeAt(' + K + '),16777619)>>>0)>>>0;',
+      '  }',
+    ],
+  },
+  {
+    id: 'while-dec',
+    emit: (L, H, K) => [
+      '  var ' + H + '=2166136261>>>0;',
+      '  var ' + K + '=0;',
+      '  while(' + K + '<' + L + '.length){',
+      '    ' + H + '=(Math.imul(' + H + '^' + L + '.charCodeAt(' + K + '),0x01000193)>>>0)>>>0;',
+      '    ' + K + '=(' + K + '+1)|0;',
+      '  }',
+    ],
+  },
+  {
+    id: 'while-ne',
+    emit: (L, H, K) => [
+      '  var ' + H + '=(0x811c9dc5|0)>>>0;',
+      '  var ' + K + '=0;',
+      '  while(' + K + '!==' + L + '.length){',
+      '    ' + H + '=(Math.imul(' + H + '^' + L + '.charCodeAt(' + K + '),16777619)>>>0)>>>0;',
+      '    ' + K + '=(' + K + '+1)|0;',
+      '  }',
+    ],
+  },
+];
+
+// 导出来给测试直接验等价性：测试必须跑真正注入的那份写法，而不是抄一份——
+// 抄的那份会与源码漂移，漂移了就等于没测。
+export { FNV_FORMS };
+
 /** 全局对象引用链，与 shell/stringArray 用的是同一套探测串。 */
 function globalRef() {
   return '(typeof globalThis!=="undefined"?globalThis:typeof self!=="undefined"?self:typeof window!=="undefined"?window:typeof global!=="undefined"?global:{})';
@@ -115,7 +168,17 @@ function keepManifest(opts) {
  */
 export function guardSource(opts) {
   const ctx = opts.ctx || { usedNames: new Set(), identifierPrefix: '_0x' };
-  const uk = () => rand.uniqueName(ctx.usedNames, ctx.identifierPrefix || '_0x');
+  // 标识符里的非 ASCII 要在这里自己转成 \uXXXX。生成器那边的 escapeNonAscii 管不到
+  // 引导层：引导是**直接拼进产物的原始文本**，不经过 AST（见 guardLayer 的注释
+  // 「前插的是已生成的源码字符串、不经过 AST」）。少了这一步，rand.uniqueName 摇出来
+  // 的汉字名（约占三成，见该函数的命名族配比）会原样落进产物，同时违反两件事：
+  // 用户选的 nameStyle（要 Mangled/Hexadecimal 却拿到汉字）与 escapeNonAscii 的承诺；
+  // 还会留下「只有本工具会产出汉字标识符」这种极强的工具指纹（2026-10-03 修）。
+  const escapeId = (name) => (ctx.options && ctx.options.escapeNonAscii
+    ? name.replace(/[^\x00-\x7F]/g,
+      (ch) => '\\u' + ch.charCodeAt(0).toString(16).padStart(4, '0'))
+    : name);
+  const uk = () => escapeId(rand.uniqueName(ctx.usedNames, ctx.identifierPrefix || '_0x'));
   const saltVar = uk();
   const nFn = uk();
   const nLit = uk();
@@ -123,6 +186,9 @@ export function guardSource(opts) {
   const nK = uk();
   // 随机字面量就是比对锚点：盐由它在运行期重算，与构建期写下的 clean 比对。
   const nonce = 'jr' + randHex(16) + randInt(0x1000, 0xffff).toString(36);
+  // 每次构建换一种等价写法（见 FNV_FORMS）。clean 仍由 canonical fnv32 算——三种写法
+  // 与它逐位相等，所以引导运行期重算出来的值必须等于它，对不上就是产物被改过。
+  const fnvForm = FNV_FORMS[randInt(0, FNV_FORMS.length - 1)];
   const clean = fnv32(nonce);
   const lines = [];
   const P = (s) => lines.push(s);
@@ -132,10 +198,7 @@ export function guardSource(opts) {
   if (opts.privateVar) P('(function(){');
   P('var ' + saltVar + '=(function ' + nFn + '(){');
   P('  var ' + nLit + '=' + JSON.stringify(nonce) + ';');
-  P('  var ' + nH + '=0x811c9dc5>>>0;');
-  P('  for(var ' + nK + '=0;' + nK + '<' + nLit + '.length;' + nK + '++){');
-  P('    ' + nH + '=(Math.imul(' + nH + '^' + nLit + '.charCodeAt(' + nK + '),16777619)>>>0)>>>0;');
-  P('  }');
+  for (const line of fnvForm.emit(nLit, nH, nK)) P(line);
   if (opts.couple) {
     // 绝对健康值。域名锁定的 Q 在授权域由它自己的引导补回：这里的 okBase 先减掉 Q，
     // 未授权域补进的是宿主散列折叠值 J≠Q，读取端偏移非零 → 整池乱码。

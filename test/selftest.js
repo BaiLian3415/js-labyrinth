@@ -19,6 +19,7 @@
  *   chinese-names    中文命名：字典、命名池、四档预设、转义与套餐闸门
  *   passes-defense   自防御、密钥耦合、多时钟源、ESM 绑定、BigInt
  *   esm-fold         ESM 模块折叠：形态折叠、绑定改写、活再导出、顶层 await、max 可复现
+ *   guide-fnv        引导层 FNV 多种等价写法：构建期与运行期逐位相同
  *   vm               VM 保护、动态操作码、分发表密文化、寄存器模型
  *   anti-analysis    Anti-CDP 与域名锁定
  *   minify           AST 简化、DCE、命名策略、属性名重命名、杂项
@@ -49,6 +50,7 @@ const FILES = [
   'passes-basic.js',
   'passes-defense.js',
   'esm-fold.js',
+  'guide-fnv.js',
   'chinese-names.js',
   'vm.js',
   'anti-analysis.js',

@@ -226,6 +226,20 @@ section('命名策略（nameStyle）与动态 import');
   const declNames = (code) => [...new Set(
     [...code.matchAll(/(?:var|let|const|function)\s+([A-Za-z_$][A-Za-z0-9_$]*)/g)].map((m) => m[1]),
   )];
+  // 只数 mangle **自己发出的**名字，不数机械名。
+  //
+  // 产物里的声明名有三类：用户标识符（被 mangle 改名）、内核与外壳的机械名（RT
+  // 原语、引导层、VM 桩……由 uniqueName 另行随机化）、以及函数参数。机械名不该算进
+  // 改名结果——上面那段注释本来就写明了这个意图，但一直没真正排除掉：机械名以前很短
+  // （i / k / o），恰好不匹配各档的形状正则，所以看不出来；2026-10-03 RT 内核局部名
+  // 也随机化之后，机械名变成 4~9 位字母，既能撞上 Dictionary 的词名形状，也曾被
+  // mangle 当成普通绑定改过名（于是 Hexadecimal 档一度数到 47 个，远超 8 个用户
+  // 标识符）。两个档的计数因此都在靠巧合过关。
+  //
+  // 做法：同一 seed 下再构建一份 mangle:false 的，机械名逐构建相同（同一个种子），
+  // 两份声明名一减，差集就是 mangle 引入的名字。
+  const declsNoMangle = declNames(obfuscate(shapeSrc, { ...NAMEONLY, mangle: false, seed: 9 }).code);
+  const mangleEmitted = (code) => declNames(code).filter((n) => !declsNoMangle.includes(n));
   // 界面选项表里查一项。显隐规则在元数据上，用的是 guiOptions() 那份拷贝，
   // 所以断言要查它而不是查 VALUE_OPTIONS 本身。
   const guiOpt = (key) => optionsMeta.guiOptions().find((o) => o.key === key) || null;
@@ -235,8 +249,14 @@ section('命名策略（nameStyle）与动态 import');
     const want = runNode(shapeSrc, 'namestyle-shape-raw.js').trim();
     const hex = obfuscate(shapeSrc, { ...NAMEONLY, nameStyle: 'Hexadecimal', seed: 9 });
     const decls = declNames(hex.code);
-    const hexShaped = decls.filter((n) => /^[A-Za-z][0-9a-f]{1,3}$/.test(n));
-    ok(hexShaped.length >= 8, 'Hexadecimal 档发出的名字都是"字母+十六进制"形状', hexShaped.length + '/' + decls.length + '：' + hexShaped.slice(0, 8).join(' '));
+    const emitted = mangleEmitted(hex.code);
+    const hexShaped = emitted.filter((n) => /^[A-Za-z][0-9a-f]{1,3}$/.test(n));
+    // shapeSrc 有 8 个用户标识符，其中 records 是函数参数、不在 declNames 的
+    // 声明名正则覆盖范围内，所以声明名这一侧最多看到 7 个——阈值按 7 定，多一个都
+    // 说明混进了机械名。
+    ok(emitted.length === 7 && hexShaped.length === 7,
+      'Hexadecimal 档发出的名字都是"字母+十六进制"形状',
+      '发出 ' + emitted.length + ' 个，其中合规 ' + hexShaped.length + ' 个：' + hexShaped.join(' '));
     ok(hexShaped.every((n) => n.length >= 2), 'Hexadecimal 档不发 1 字符名（否则退回 Mangled 的序列感）', hexShaped.filter((n) => n.length < 2).join(' '));
     ok(!ORIG_NAMES.some((n) => hex.code.includes(n)), 'Hexadecimal 档把用户标识符全部换掉', ORIG_NAMES.filter((n) => hex.code.includes(n)).join(' '));
     let got = 'THREW';
@@ -250,8 +270,10 @@ section('命名策略（nameStyle）与动态 import');
     const want = runNode(shapeSrc, 'namestyle-shape-raw.js').trim();
     const dict = obfuscate(shapeSrc, { ...NAMEONLY, nameStyle: 'Dictionary', seed: 9 });
     const decls = declNames(dict.code);
-    const words = decls.filter((n) => /^[a-z]{3,8}[0-9]*$/.test(n));
-    ok(words.length >= 8, 'Dictionary 档发出的是可读词名', words.length + '/' + decls.length + '：' + words.slice(0, 8).join(' '));
+    const emitted = mangleEmitted(dict.code);
+    const words = emitted.filter((n) => /^[a-z]{3,8}[0-9]*$/.test(n));
+    ok(emitted.length === 7 && words.length === 7, 'Dictionary 档发出的是可读词名',
+      '发出 ' + emitted.length + ' 个，其中合规 ' + words.length + ' 个：' + words.join(' '));
     ok(!ORIG_NAMES.some((n) => dict.code.includes(n)), 'Dictionary 档把用户标识符全部换掉', ORIG_NAMES.filter((n) => dict.code.includes(n)).join(' '));
     let got = 'THREW';
     try { got = runNode(dict.code, 'namestyle-dict.js').trim(); } catch (e) { got = 'THREW'; }

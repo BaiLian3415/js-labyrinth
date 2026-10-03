@@ -171,17 +171,46 @@ function rtlib(ast, options, ctx) {
       }
     }
   }
+  // 局部绑定一起随机化：只改顶层名字的话，函数体在归一化后跨构建完全一致，
+  // 那就是常量签名（见文件头）。内核无嵌套函数、无外层局部被捕获，所以同一原名
+  // 对应唯一绑定，一张全局映射表即可；引入闭包后必须改成按作用域解析。
+  for (const fn of parsed.program.body) {
+    if (fn.type !== 'FunctionDeclaration' || !fn.params) continue;
+    const take = (id) => {
+      if (id && id.type === 'Identifier' && !renames.has(id.name)) {
+        renames.set(id.name, uniqueName(ctx.usedNames, prefix));
+      }
+    };
+    for (const p of fn.params) take(p);
+    const locals = (n) => {
+      if (!n || typeof n !== 'object') return;
+      if (Array.isArray(n)) { n.forEach(locals); return; }
+      if (n.type === 'VariableDeclaration') { for (const d of n.declarations) take(d.id); }
+      else if (n.type === 'FunctionDeclaration' && n.id) take(n.id);
+      for (const key of Object.keys(n)) {
+        if (key === 'loc' || key === 'start' || key === 'end' || key === 'extra') continue;
+        locals(n[key]);
+      }
+    };
+    locals(fn.body);
+  }
+
   // 声明与引用一起改名，内核自包含，没有需要排除的外部标识符
-  const walk = (n) => {
+  // parent/parentKey 用来区分「变量引用」与「属性名」：非计算的属性键改了就是改
+  // 语义（`{ o: 1 }` 变成 `{ 新名: 1 }`），必须跳过。
+  const walk = (n, parent, parentKey) => {
     if (!n || typeof n !== 'object') return;
-    if (Array.isArray(n)) { n.forEach(walk); return; }
-    if (n.type === 'Identifier' && renames.has(n.name)) n.name = renames.get(n.name);
+    if (Array.isArray(n)) { n.forEach((x) => walk(x, parent, parentKey)); return; }
+    if (n.type === 'Identifier' && renames.has(n.name)) {
+      const isKey = (parentKey === 'property' || parentKey === 'key') && parent && parent.computed === false;
+      if (!isKey) n.name = renames.get(n.name);
+    }
     for (const key of Object.keys(n)) {
       if (key === 'loc' || key === 'start' || key === 'end' || key === 'extra' || key === 'name') continue;
-      walk(n[key]);
+      walk(n[key], n, key);
     }
   };
-  walk(parsed.program);
+  walk(parsed.program, null, null);
 
   // 标记 __rtKernel 让结构变换 pass 经 vmBoundary 的 insideVmFunction 整函数
   // 豁免，热原语体内不注入 logicalExpr、conditionObf、objectKeys，这些包装按
