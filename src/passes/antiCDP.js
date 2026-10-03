@@ -49,7 +49,7 @@ const ARTIFACTS = [
 export default function antiCDP(ast, options, ctx) {
   const program = ast.type === 'File' ? ast.program : ast;
   const rt = ctx.rt || {};
-  const M = (s) => obfStrExpr(s, rt.tblCall);
+  const M = (s) => obfStrExpr(s, rt.tblCall, rt.fcc);
   // 原生字符串原语改走 RT 内核调用，无内核时回退原生，保证降级后仍可运行
   const IOF = (s, needle) => rt.iof ? rt.iof + '(' + s + ',' + needle + ')' : '(' + s + ').indexOf(' + needle + ')';
   const { varSource: cdpVarSource } = makeDbgHelpers(rt.tblCall);

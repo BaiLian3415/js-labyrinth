@@ -18,6 +18,7 @@
  *   passes-basic     逻辑表达式、数值常量、多态可复现、控制流扁平化
  *   chinese-names    中文命名：字典、命名池、四档预设、转义与套餐闸门
  *   passes-defense   自防御、密钥耦合、多时钟源、ESM 绑定、BigInt
+ *   esm-fold         ESM 模块折叠：形态折叠、绑定改写、活再导出、顶层 await、max 可复现
  *   vm               VM 保护、动态操作码、分发表密文化、寄存器模型
  *   anti-analysis    Anti-CDP 与域名锁定
  *   minify           AST 简化、DCE、命名策略、属性名重命名、杂项
@@ -47,6 +48,7 @@ const FILES = [
   'zip.js',
   'passes-basic.js',
   'passes-defense.js',
+  'esm-fold.js',
   'chinese-names.js',
   'vm.js',
   'anti-analysis.js',

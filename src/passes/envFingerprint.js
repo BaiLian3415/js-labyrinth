@@ -58,8 +58,9 @@ const NEEDLES = {
 // crypto 熵求值并冻结进常量，导致同一 seed 跨进程构建不可复现。
 const buildChecks = (rt) => {
   const tbl = rt && rt.tblCall;
-  const needleDecl = (varName, needle) => 'var ' + varName + '=' + obfStrExpr(NEEDLES[needle], tbl) + ';';
-  const rawDecl = (varName, s) => 'var ' + varName + '=' + obfStrExpr(s, tbl) + ';';
+  const fcc = rt && rt.fcc;
+  const needleDecl = (varName, needle) => 'var ' + varName + '=' + obfStrExpr(NEEDLES[needle], tbl, fcc) + ';';
+  const rawDecl = (varName, s) => 'var ' + varName + '=' + obfStrExpr(s, tbl, fcc) + ';';
   const IOF = (s, needle) => rt && rt.iof ? rt.iof + '(' + s + ',' + needle + ')' : '(' + s + ').indexOf(' + needle + ')';
   return [
   { pre: needleDecl('_0xwd', 'webdriver'),

@@ -278,7 +278,7 @@ const targets = rootBody.filter((s) => s.type === 'FunctionDeclaration' && s.id 
       node: t.functionDeclaration(t.identifier(name), [], t.blockStatement([retStmt])),
       // 运行期子串校验器，marker 经掩码恒等式重组，去空白走内核 WS，与构建期
       // stripWs 同表，不构造 RegExp，也没有 /\s+/g 字面量和固定 marker 字节序列
-      markerExpr: '(function(){var ' + qm + '=' + obfStrExpr(marker, rt && rt.tblCall) + ';return function(' + qf +
+      markerExpr: '(function(){var ' + qm + '=' + obfStrExpr(marker, rt && rt.tblCall, rt && rt.fcc) + ';return function(' + qf +
         '){return ' + (rt && rt.iof
           ? rt.iof + '(' + (rt.ws ? rt.ws + '("" + ' + qf + ')' : '("" + ' + qf + ').replace(new RegExp("[\\\\s]","g"),"")') + ',' + qm + ')>-1;};})()'
           : '("" + ' + qf + ').replace(new RegExp("["+' + obfStrExpr(WS_CHARS) + '+"]","g"),"").indexOf(' + qm + ')>-1;};})()'),
@@ -443,7 +443,7 @@ const targets = rootBody.filter((s) => s.type === 'FunctionDeclaration' && s.id 
   // 内建成员换成钩子，这里在装载时抽查两处仍为原生实现，非原生即投毒。探针只
   // 在装载时跑一次，特征串经掩码重组，产物里没有 "native code" 明文。
   {
-    const nat = obfStrExpr('native code', rt && rt.tblCall);
+    const nat = obfStrExpr('native code', rt && rt.tblCall, rt && rt.fcc);
     const iof = (hay, needle) => (rt && rt.iof
       ? rt.iof + '(' + hay + ',' + needle + ')'
       : '(' + hay + ').indexOf(' + needle + ')');

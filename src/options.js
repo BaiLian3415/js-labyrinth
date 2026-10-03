@@ -232,6 +232,7 @@ export default {
   "opaquePredicatesProbability": 1,
   "opaquePredicatesMax": 6,
   "templateToConcat": true,
+  "esmFold": true,
   "functionWrapper": true,
   "callProxy": true,
   "deadCodeInjection": true,

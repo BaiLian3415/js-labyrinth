@@ -45,6 +45,7 @@ export default {
     "opaquePredicatesProbability": 0.3,
     "opaquePredicatesMax": 2,
     "templateToConcat": true,
+    "esmFold": false,
     "functionWrapper": true,
     "callProxy": false,
     "deadCodeInjection": true,
@@ -101,10 +102,15 @@ export default {
     "controlFlowLoopFlattening": true,
     "vmProtection": true,
     "vmMode": "global",
-    // 2026-10-01 �?4 降到 2（VMP 覆盖率增强）。阈值是"函数体最少多少条语句才进
-    // VM"的闸门�?    //
-    // 收益范围要说准，别夸大（2026-10-01 实测）：�?20 个不同形态的函数体跑�?    // thr4 �?10 个、thr2 �?13 个、thr1 �?17 个。多收的全是恰好 2~3 条语句的
-    // 小函数（典型�?`var a = n > 0 ? 1 : -1;`），这类在真实代码里占比不高�?    // 体积代价 +2%。所以这一项是补上一档缺失的覆盖，不是大幅提升覆盖率�?    // 1 档留�?high/max�?    "vmThreshold": 2,
+    // 2026-10-01 由 4 降到 2（VMP 覆盖率增强）。阈值是"函数体最少多少条语句才进
+    // VM"的闸门。
+    //
+    // 收益范围要说准，别夸大（2026-10-01 实测）：拿 20 个不同形态的函数体跑，
+    // thr4 收 10 个、thr2 收 13 个、thr1 收 17 个。多收的全是恰好 2~3 条语句的
+    // 小函数（典型如 `var a = n > 0 ? 1 : -1;`），这类在真实代码里占比不高。
+    // 体积代价 +2%。所以这一项是补上一档缺失的覆盖，不是大幅提升覆盖率。
+    // 1 档留给 high/max。
+    "vmThreshold": 2,
     "vmDecoyOps": 128,
     "vmDispatchEnc": false,
     "vmPolymorph": false,
@@ -124,6 +130,7 @@ export default {
     "opaquePredicatesProbability": 0.6,
     "opaquePredicatesMax": 4,
     "templateToConcat": true,
+    "esmFold": false,
     "functionWrapper": true,
     "callProxy": true,
     "deadCodeInjection": true,
@@ -187,8 +194,11 @@ export default {
     // 都改的是「字节码本身的可读性」而不是外围包装：
     //   · vmMacroOps 把连续的操作数装载指令融成一条，字流变短、分发次数变少，
     //     但指令边界不再与源代码的表达式边界对应；
-    //   · vmDynOpcodes 让同一个分发字在不同位置指向不同动作（编号按链值轮换）�?    //     dump 出解密后的字节码也得不到一张全局可用的编�?语义表�?    // 实测�? 个代表性用例，跨循�?闭包递归/对象数组/try-catch/async/switch）：
-    // 2631 KB �?2642 KB�?0.4%），宏指�?0 �?9 条，动态字空间 256，语�?7/7 一致�?    "vmMacroOps": true,
+    //   · vmDynOpcodes 让同一个分发字在不同位置指向不同动作（编号按链值轮换），
+    //     dump 出解密后的字节码也得不到一张全局可用的编号-语义表。
+    // 实测（7 个代表性用例，跨循环/闭包递归/对象数组/try-catch/async/switch）：
+    // 2631 KB → 2642 KB（+0.4%），宏指令 0 → 9 条，动态字空间 256，语义 7/7 一致。
+    "vmMacroOps": true,
     "vmDynOpcodes": true,
     "vmPolymorph": false,
     "vmBlockDecrypt": false,
@@ -207,6 +217,7 @@ export default {
     "opaquePredicatesProbability": 1,
     "opaquePredicatesMax": 6,
     "templateToConcat": true,
+    "esmFold": false,
     "functionWrapper": true,
     "callProxy": true,
     "deadCodeInjection": true,
@@ -242,7 +253,7 @@ export default {
     "escapeNonAscii": true,
     "identifierPrefix": "_0x",
     "mangle": true,
-    "nameStyle": "Mangled",
+    "nameStyle": "Mangled-shuffled",
     "selfCheck": true,
     "stringArray": true,
     "stringArrayEncoding": "rc4",
@@ -267,9 +278,13 @@ export default {
     "vmDecoyOps": 1024,
     "vmDispatchEnc": true,
     "vmPolymorph": true,
-    // 2026-10-01 �?true 改为 false。max 档的 wasmInterpreter �?true，而分块自解密
-    // �?WASM 解释器内核档没有对应物（模块内的解释器按绝对下标硬编码，块边界不存在），
-    // 那一�?vm.js �?`!!opts.vmBlockDecrypt && !ctx.__vmWasmShared && enc` 会把它整�?    // 关掉——实测开着与关着产物逐字节相同。也就是说这一项一直是"配了但没�?�?    // 现在直接关掉，让预设不再声称提供了实际不存在的保护（stats.suppressed 会列�?    // 所有配了但在本档失效的项，�?vm() 的返回值）�?    "vmBlockDecrypt": false,
+    // 2026-10-01 由 true 改为 false。max 档的 wasmInterpreter 为 true，而分块自解密
+    // 在 WASM 解释器内核档没有对应物（模块内的解释器按绝对下标硬编码，块边界不存在），
+    // 那一处 vm.js 的 `!!opts.vmBlockDecrypt && !ctx.__vmWasmShared && enc` 会把它整项
+    // 关掉——实测开着与关着产物逐字节相同。也就是说这一项一直是"配了但没用"，
+    // 现在直接关掉，让预设不再声称提供了实际不存在的保护（stats.suppressed 会列出
+    // 所有配了但在本档失效的项，见 vm() 的返回值）。
+    "vmBlockDecrypt": false,
     "vmModel": "auto",
     "wasm": true,
     "wasmThreshold": 0,
@@ -286,6 +301,7 @@ export default {
     "opaquePredicatesProbability": 1,
     "opaquePredicatesMax": 8,
     "templateToConcat": true,
+    "esmFold": true,
     "functionWrapper": true,
     "callProxy": true,
     "deadCodeInjection": true,

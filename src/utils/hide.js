@@ -23,8 +23,8 @@ const { parse } = parser;
  * @param {string} [tbl] 运行时字符表绑定名
  * @returns {object} 表达式节点
  */
-function obfStrNode(s, tbl) {
-  return parse(obfStrExpr(s, tbl), { sourceType: 'script' }).program.body[0].expression;
+function obfStrNode(s, tbl, fcc) {
+  return parse(obfStrExpr(s, tbl, fcc), { sourceType: 'script' }).program.body[0].expression;
 }
 
 // "debugger" 的 charCode 序列。仅构建期使用，不进入产物明文。
@@ -41,17 +41,26 @@ const GLOBAL_EXPR =
  * 恒等于 charCode，再拼接重组。产物里没有明文目标串，没有固定的
  * charCode 序列，也不出现 String.fromCharCode 调用点，掩码每次构建随机。
  * tbl 省略时回退 fromCharCode 形态，走无内核的降级链路。
+ *
+ * 字符表只有 256 槽（码 0..255），code >= 256 的字符（汉字等）走表会取到
+ * undefined、重组出的串整段损坏（干净产物被自己的完整性校验投毒）。这类
+ * 字符改走内核 fcc（fcc(c) = c < 256 ? 表[c] : String.fromCharCode(c)），
+ * 掩码与拼接顺序不变；fcc 缺失时该字符退回原生 fromCharCode。按 UTF-16
+ * 码元逐位发：代理对的两半各自成项，拼接后仍是原字符。
  * @param {string} s 目标字符串
  * @param {string} [tbl] 运行时字符表绑定名
+ * @param {string} [fcc] 内核 fcc 函数名（rt.fcc）
  * @returns {string} 表达式源码
  */
-function obfStrExpr(s, tbl) {
+function obfStrExpr(s, tbl, fcc) {
   const parts = [];
-  for (const c of s) {
+  for (let i = 0; i < s.length; i++) {
+    const code = s.charCodeAt(i);
     const m1 = 0x101 + randInt(0, 0xfefe);
-    const m2 = m1 ^ c.charCodeAt(0);
-    parts.push('(0x' + m1.toString(16) + '^0x' + m2.toString(16) + ')');
+    const m2 = m1 ^ code;
+    parts.push({ p: '(0x' + m1.toString(16) + '^0x' + m2.toString(16) + ')', wide: code >= 256 });
   }
+  const wideRef = (x) => fcc ? fcc + '(' + x.p + ')' : 'String.fromCharCode(' + x.p + ')';
   if (tbl) {
     // 字符表引用只求值一次就取回，tbl 形态是一次懒初始化 getter 调用。原
     // 写法每字符调一次表，在哨兵这类每次函数调用都要重组的位置会放大成
@@ -59,13 +68,13 @@ function obfStrExpr(s, tbl) {
     // 顺序都不变。
     if (parts.length > 2) {
       return '((function(_0T){return ' +
-        parts.map((p) => '_0T[' + p + ']').join('+') + ';})(' + tbl + '))';
+        parts.map((x) => x.wide ? wideRef(x) : '_0T[' + x.p + ']').join('+') + ';})(' + tbl + '))';
     }
-    return '(' + parts.map((p) => tbl + '[' + p + ']').join('+') + ')';
+    return '(' + parts.map((x) => x.wide ? wideRef(x) : tbl + '[' + x.p + ']').join('+') + ')';
   }
   const chunks = [];
   for (let i = 0; i < parts.length; i += 4) {
-    chunks.push('String.fromCharCode(' + parts.slice(i, i + 4).join(',') + ')');
+    chunks.push('String.fromCharCode(' + parts.slice(i, i + 4).map((x) => x.p).join(',') + ')');
   }
   return '(' + chunks.join('+') + ')';
 }

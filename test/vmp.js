@@ -143,8 +143,6 @@ section('VMP 增强（覆盖率 / 深度 / stats 口径）');
   }
 }
 
-cleanTmp();
-
 if (process.argv[1] && process.argv[1].endsWith('vmp.js')) {
   const bad = report();
   cleanTmp();

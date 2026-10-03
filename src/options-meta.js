@@ -125,6 +125,7 @@ export const FLAG_CANDIDATES = [
 const BOOL_LABELS = {
   mangle: ['标识符重命名', 'Identifier renaming'],
   renameProperties: ['属性名重命名', 'Property renaming'],
+  esmFold: ['ESM 模块折叠', 'ESM module folding'],
   functionWrapper: ['函数包装（IIFE）', 'Function wrapper (IIFE)'],
   callProxy: ['动态调用层', 'Call proxy dispatch'],
   templateToConcat: ['模板串降级', 'Template literal lowering'],
@@ -178,7 +179,7 @@ const BOOL_LABELS = {
 };
 
 const BOOL_GROUPS = {
-  mangle: 'structure', renameProperties: 'structure', functionWrapper: 'structure', callProxy: 'structure',
+  mangle: 'structure', renameProperties: 'structure', esmFold: 'structure', functionWrapper: 'structure', callProxy: 'structure',
   templateToConcat: 'structure', objectKeyEncoding: 'structure',
   stringArray: 'strings', stringArrayRotate: 'strings', stringArrayCache: 'strings',
   stringArrayMixedEncoding: 'strings', stringIndexMask: 'strings', honeyStrings: 'strings',
@@ -215,6 +216,7 @@ export const CARD_ICONS = {
 const BOOL_HINTS = {
   mangle: ['把局部/全局标识符改名为随机名，压缩体积并抹掉语义。', 'Renames identifiers to random names, shrinking output and erasing meaning.'],
   renameProperties: ['重命名程序内定义并访问的属性名（safe 模式）；与外部共享的属性可能被破坏。', 'Renames properties defined and accessed inside the program (safe mode); properties shared with external code may break.'],
+  esmFold: ['把 ESM 载荷的模块结构折叠掉：静态 import/export 改为动态 import 加单个出口，模块体搬进 IIFE（无顶层 await 时走同步内层，可进 VM 字节码），顶层只剩 TLA 赋值与出口名。仅对 ESM 载荷生效；带 source 的活再导出（export * from）保留原语句。', 'Collapses the module structure of ESM payloads: static import/export becomes dynamic import plus a single export facade, and the module body moves into an IIFE (sync inner layer without top-level await, so it can be VM-compiled). Only the TLA assignment and export names remain at top level. ESM payloads only; live re-exports (export * from) keep their statements.'],
   functionWrapper: ['把顶层语句包进 IIFE，隐藏全局变量与初始化顺序。', 'Wraps top-level statements in an IIFE, hiding globals and init order.'],
   callProxy: ['顶层函数之间的调用改经运行期重排的派发表转发，静态调用图消失。', 'Routes top-level calls through a runtime-shuffled dispatch table, erasing the static call graph.'],
   templateToConcat: ['把模板字符串降级成字符串拼接，不留下可读模板。', 'Lowers template literals into string concatenation.'],

@@ -31,6 +31,7 @@ import antiLLM from './passes/antiLLM.js';
 import antiCDP from './passes/antiCDP.js';
 import debugProtection from './passes/debugProtection.js';
 import functionWrapper from './passes/functionWrapper.js';
+import esmFold from './passes/esmFold.js';
 import callProxy from './passes/callProxy.js';
 import mangle from './passes/mangle.js';
 import envFingerprint from './passes/envFingerprint.js';
@@ -490,6 +491,12 @@ function obfuscate(code, userOptions) {
     }
     return r;
   };
+
+  // ESM 模块折叠（esmFold）：静态 import/export 与顶层绑定是 ESM 载荷上最强的
+  // 结构指纹。整模块改写成「TLA 赋值 + 出口名」，模块体进同步 IIFE（有顶层
+  // await 时直接进 async IIFE），import 绑定改写为命名空间属性访问。必须在 VM
+  // pass 之前跑：同步内层由此参与字节码编译，顶层控制流一并从静态视图消失。
+  if (options.esmFold === true && sourceIsModule) applyPass(esmFold, 'esmFold');
 
   // 虚拟机保护，最先跑。函数体编译成自研栈式字节码，配函数体内解释器。
   // 已编译的函数登记进 compiledSet，controlFlow 遇到会跳过。
