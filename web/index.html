@@ -5,18 +5,18 @@
 <!-- viewport-fit=cover：让页面铺进刘海屏的安全区，配合 CSS 里的
      env(safe-area-inset-*) 给 Home 指示条让位；无刘海设备上恒为 0，无副作用。 -->
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>JsLabyrinth — JS 混淆器</title>
-<meta name="description" content="JsLabyrinth 混淆器网页版：服务端执行混淆，混淆核心不随页面下发。">
+<title>JsLabyrinth — JavaScript 代码混淆与运行时防护</title>
+<meta name="description" content="JsLabyrinth 控制台：JavaScript 代码混淆与运行时防护。混淆在服务端执行，混淆核心不随页面下发。">
 <meta name="color-scheme" content="dark light">
 <meta name="theme-color" content="#262624" media="(prefers-color-scheme: dark)">
 <meta name="theme-color" content="#f0efe7" media="(prefers-color-scheme: light)">
 <meta property="og:type" content="website">
-<meta property="og:title" content="JsLabyrinth — JS 混淆器">
+<meta property="og:title" content="JsLabyrinth — JavaScript 代码混淆与运行时防护">
 <!-- 这段描述必须与实际部署形态一致。Vercel 部署走 build:web:cloud：源码 POST 到
      /api/obfuscate 由服务端执行，产物里没有混淆核心。此前这里写的是"混淆在浏览器内
      完成，代码不出本机，不需要把源码上传到任何服务器"——那是 build:web（不带 --cloud）
      的自建形态，对本部署是错的，且恰好把"不把源码上传到服务器"这条反了。 -->
-<meta property="og:description" content="JavaScript 混淆器：服务端执行混淆，混淆核心不随页面下发，爬站点的拿不到实现。">
+<meta property="og:description" content="JavaScript 代码混淆与运行时防护服务：混淆在服务端执行，核心源码不随页面下发。">
 <meta name="twitter:card" content="summary">
 <!-- 站点图标：Claude 式星芒（terracotta 描边），与 .topbar .brand .logo 同一形状 -->
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cg fill='none' stroke='%23d97757' stroke-width='3' stroke-linecap='round'%3E%3Cpath d='M16 3.5v6.2M16 22.3v6.2M3.5 16h6.2M22.3 16h6.2M7.2 7.2l4.4 4.4M20.4 20.4l4.4 4.4M24.8 7.2l-4.4 4.4M11.6 20.4l-4.4 4.4'/%3E%3C/g%3E%3C/svg%3E">
@@ -40,7 +40,7 @@
 <body>
 
 <noscript>
-  <p class="noscript">JsLabyrinth 的界面需要 JavaScript 才能运行。命令行用法见项目 README。</p>
+  <p class="noscript">JsLabyrinth 的界面需要启用 JavaScript 才能运行。API 与部署说明见项目 README。</p>
 </noscript>
 
 <!-- 单列外壳：原左导航整块已移除（2026-09-23），品牌 + 语言/主题合并到顶部条 .topbar；
@@ -59,7 +59,7 @@
           </svg>
         </span>
         <div class="brand-text">
-          <h1 data-i18n="guiTitle">JsLabyrinth 混淆器</h1>
+          <h1 data-i18n="guiTitle">JsLabyrinth 代码混淆与运行时防护</h1>
           <span class="ver" id="ver"></span>
         </div>
       </div>

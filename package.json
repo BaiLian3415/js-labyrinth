@@ -1,7 +1,7 @@
 {
   "name": "jslabyrinth",
-  "version": "0.2Alpha",
-  "description": "JsLabyrinth — 运行在 Vercel 上的 JS 混淆器（免网页 GUI）",
+  "version": "1.0.0",
+  "description": "JsLabyrinth — 基于 Vercel 的 JavaScript 代码混淆与运行时防护服务：Web 控制台与 JSON API 同域部署，混淆在服务端执行。",
   "type": "module",
   "main": "./src/index.js",
   "exports": {
@@ -54,7 +54,7 @@
     "obfuscator",
     "obfuscation",
     "javascript",
-    "protect",
+    "code-protection",
     "vercel",
     "serverless",
     "webassembly"

@@ -194,7 +194,7 @@ const STRINGS = {
     // 显式头 X-JSLB-Lang > Accept-Language > 环境变量/默认。
 
     // 网页版：界面
-    guiTitle: 'JsLabyrinth 混淆器',
+    guiTitle: 'JsLabyrinth 代码混淆与运行时防护',
     guiInput: '输入',
     // 两个编辑区空白时的占位文案（属性而非文本节点，必须走 data-i18n-ph）
     guiInputPh: '// 在此粘贴 JavaScript，或把 .js / .html 文件拖进这个面板',
@@ -525,7 +525,7 @@ const STRINGS = {
     // X-JSLB-Lang > Accept-Language > env/default.
 
     // web: GUI
-    guiTitle: 'JsLabyrinth Obfuscator',
+    guiTitle: 'JsLabyrinth Code Obfuscation & Runtime Protection',
     guiInput: 'Input',
     guiInputPh: '// Paste JavaScript here, or drop a .js / .html file onto this pane',
     guiOutputPh: '// obfuscated output',

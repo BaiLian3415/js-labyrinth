@@ -85,7 +85,7 @@ section('增强保护：引导层自检 / 碎片化 / Anti-LLM');
   ok(srcBang <= ownBang, '产物里的 /*! 不多于源码自带（混淆器自己不再写注释）',
     '产物 ' + srcBang + ' 处 / 源码 ' + ownBang + ' 处');
   ok(!r.code.includes('Author: Heling'), '产物里不含作者署名');
-  ok(!/\bJsLabyrinth v0\.2Alpha\b/.test(r.code), '产物里不含混淆器版本声明');
+  ok(!/\bJsLabyrinth v1\.0\.0\b/.test(r.code), '产物里不含混淆器版本声明');
   ok(st.guard && typeof st.guard.salt === 'number', 'stats 有 guard 项且 salt 是数字',
     JSON.stringify(st.guard));
   ok(st.guard && st.guard.wrapped === true, 'guard.wrapped=true（max 默认套外壳）');

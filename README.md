@@ -1,7 +1,7 @@
 # JsLabyrinth
 
-JavaScript 混淆器，**完全运行在 Vercel 上**。界面与 JSON API 同域，混淆在服务端执行，
-项目不依赖任何本地服务、不需要本地 hosts 映射。
+JsLabyrinth 是 JavaScript 代码混淆与运行时防护工具，**完整运行于 Vercel**。Web 控制台
+与 JSON API 同域部署，混淆在服务端执行，不依赖任何本地服务，亦无需 hosts 映射。
 
 | 场景 | 入口 | 说明 |
 | --- | --- | --- |
