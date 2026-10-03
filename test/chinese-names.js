@@ -122,8 +122,14 @@ section('中文命名：转义与自校验');
 
 section('中文命名：完整预设矩阵（回归防线）');
 {
-  // 这段刻意**不用** NO_STUB。四档预设里 max 的 consoleStub 默认开着，但真正让
-  // 「产物一加载就被自己的完整性校验投毒」显形的是另一条路径，见下面注释。
+  // 这段刻意**不用** NO_STUB：四档预设里 max 的 consoleStub 默认开着，正是要验它在
+  // 中文命名下也不把产物弄坏（见下面 2026-10-01 的背景）。consoleStub 的既定语义是
+  // 把 console.* 置空，所以 max 档**拿 console 比对输出只会得到空串**——那是它的
+  // 文档行为，不是产物坏了（README「VMP 增强」一节有记）。因此语义断言改走
+  // process.stdout.write（String() 包一层：write 不接受 number）。
+  //
+  // 两个形态都要跑：console.log 形态验「加载不抛 + consoleStub 下不投毒」，
+  // stdout 形态验「语义逐位正确」。只用后者会漏掉 console 路径上的问题。
   //
   // 背景（2026-10-01 定位）：integrityCheck 有两处口径不一致——
   //   entryCandidates 排除了 !isVMCompiled(fn)，
@@ -131,18 +137,16 @@ section('中文命名：完整预设矩阵（回归防线）');
   // 被 VM / wasm 搬走函数的桩仍留在 rootBody 里，运行期 fn.toString() 拿到的是桩
   // 文本，与构建期对同一节点生成的文本形态不同 → 比对必然失配 → 失配的处置就是
   // 投毒。症状是产物加载即抛 `console[...] is not a function`。
-  //
-  // 为什么之前没被发现：这套用例都带 NO_STUB，而 NO_STUB 只关 consoleStub，
-  // 不影响投毒路径——真正让它绿的原因是本文件原有的四档用例跑的是「console.log
-  // 被改写成字符串池调用」这一形态，而下面的用例构造的是同一形态的最小样本，
-  // 高预设 + 中文命名下必炸。换句话说：原有覆盖是**碰巧**没踩到。
   const MATRIX = 'function addTotals(alpha,beta){var runningTotal=alpha+beta;return runningTotal;}'
     + ' console.log(addTotals(3,4));';
+  const MATRIX_OUT = 'function addTotals(alpha,beta){var runningTotal=alpha+beta;return runningTotal;}'
+    + ' process.stdout.write(String(addTotals(3,4)));';
   const WANT = '7';
 
   for (const preset of ['low', 'medium', 'high', 'max']) {
     for (const style of ['Chinese', 'Mangled']) {
       const label = preset + ' + ' + style;
+      // 形态一：console.log —— 断言"能构建、能加载"（投毒会在这里抛）
       let r;
       try {
         r = obfuscate(MATRIX, { preset, seed: 9, nameStyle: style });
@@ -150,13 +154,24 @@ section('中文命名：完整预设矩阵（回归防线）');
         ok(false, label + ' 构建成功', e.message);
         continue;
       }
-      let out;
       try {
-        out = String(runNode(r.code, 'cjk-matrix-' + preset + '-' + style + '.js')).trim();
+        runNode(r.code, 'cjk-matrix-' + preset + '-' + style + '.js');
+        ok(true, label + ' 产物可执行（完整性校验不得投毒）');
       } catch (e) {
         const line = String((e && e.stderr) || e.message).split('\n')
           .find((l) => /Error/.test(l)) || '运行失败';
         ok(false, label + ' 产物可执行（完整性校验不得投毒）', line.slice(0, 120));
+        continue;
+      }
+      // 形态二：process.stdout.write —— 断言语义逐位正确（绕开 consoleStub 的置空语义）
+      let out;
+      try {
+        const r2 = obfuscate(MATRIX_OUT, { preset, seed: 9, nameStyle: style });
+        out = String(runNode(r2.code, 'cjk-matrix-out-' + preset + '-' + style + '.js')).trim();
+      } catch (e) {
+        const line = String((e && e.stderr) || e.message).split('\n')
+          .find((l) => /Error/.test(l)) || '运行失败';
+        ok(false, label + ' 产物语义正确', line.slice(0, 120));
         continue;
       }
       ok(out === WANT, label + ' 产物语义正确', 'got=' + out + ' want=' + WANT);

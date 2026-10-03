@@ -287,6 +287,24 @@ curl -s -X POST https://<host>/api/obfuscate \
 `</script>` 字面量会被 HTML 解析器提前截断，混淆后的产物更可能带上这种东西；先混淆完
 再扫，扫描器看到的已经是最终形态。
 
+### ESM 模块折叠（`esmFold`）
+
+对 **ESM 载荷**把模块结构本身抹掉。静态 `import` / `export` 与顶层绑定是 ESM 产物上
+最强的结构指纹——不折叠的话，`grep '^import'` 就能列出全部依赖与入口，翻一遍源码结构
+也就出来了。折叠后模块体搬进 IIFE，顶层只剩 TLA 赋值与出口名。
+
+| 项 | 说明 |
+| --- | --- |
+| 选项 | `esmFold`（开关）。`max` 预设默认开，其余档显式关 |
+| 生效面 | 仅 ESM 载荷（`sourceType: module`）。CommonJS / 脚本载荷不受影响 |
+| 改写 | 静态 `import` 改写成运行期 `import()` 加命名空间属性访问；`export` 收成单个出口名；模块体进同步 IIFE |
+| 顶层 await | 有 TLA 时模块体走 `async` IIFE，顶层只留 TLA 赋值与出口名 |
+| 保留原样 | 带 `source` 的活再导出（`export * from './x.js'`）保留原语句——改写它要代理整个命名空间，收益不抵风险 |
+| 排序 | 排在 **VM pass 之前**：同步内层由此参与字节码编译，顶层控制流一并从静态视图消失 |
+
+不进 `free` 档的闸门：`free` 的强度上限是 `low`，而折叠只在 `max` 默认开启，
+`plan.js` 的加载期断言会拦住任何"闸门拦下自带预设取值"的写法。
+
 ## 五类防护能力落在哪里
 
 新增或调试某一类能力时，先知道它由哪些 pass 承担：
@@ -294,7 +312,7 @@ curl -s -X POST https://<host>/api/obfuscate \
 | 类别 | 承担者 | 要点 |
 | --- | --- | --- |
 | 多态混淆 | 全局 PRNG（`utils/rand.js`）+ `controlFlow` 滚动重键 + `stringArray` 运行期演化 | 固定 seed 逐字节复现，换 seed 后标识符集合与结构都变；扁平化状态机的状态值每次分派滚动异或重键（`--no-control-flow-rolling-key` 可关），字符串池槽位按会话熵演化，同一份产物每次运行的密文快照不同 |
-| 代码变换 | `vm` / `controlFlow` / `objectKeys` / `templateToConcat` / `numberObf` / `logicalExpr` / `conditionObf` / `deadCode` / `opaquePredicates` / `functionWrapper` / `callProxy` / `mangle` | `numberObf` 把整数字面量改写成取值恒等的算术/位运算表达式（`--number-obfuscation-threshold` 控制命中率） |
+| 代码变换 | `vm` / `esmFold` / `controlFlow` / `objectKeys` / `templateToConcat` / `numberObf` / `logicalExpr` / `conditionObf` / `deadCode` / `opaquePredicates` / `functionWrapper` / `callProxy` / `mangle` | `numberObf` 把整数字面量改写成取值恒等的算术/位运算表达式（`--number-obfuscation-threshold` 控制命中率）；`esmFold` 把 ESM 的静态 import/export 与顶层绑定折叠掉（见下文「ESM 模块折叠」） |
 | 反调试 | `debugProtection` + `envFingerprint` | 三类检测：环境侧信号（尺寸/时差/栈形态）、内建函数"原生文本"、内建函数"对象身份"（Function、defineProperty、getOwnPropertyDescriptor、call、eval 在头部快照后运行期比对），外加描述符 canary；命中走隐蔽断点 → 有界拖慢 → 确认投毒三级响应 |
 | Anti-CDP | `antiCDP` | Chrome DevTools Protocol / 自动化框架（Puppeteer、Playwright、ChromeDriver、Selenium）检测：console 序列化探针（Runtime.enable 下 log 触发 1 次访问器、debug 触发 2 次，累计 ≥2 即硬证据）、`navigator.webdriver`、驱动注入属性精确比对与 `$cdc_*` 子串扫描；V2/V3 由定时器周期复查，命中与反调试共链投毒。原生 console 引用在反调试失效化之前捕获，consoleStub 不影响探针。用自动化做端到端测试的构建请关闭本项 |
 | 域名锁定 | `domainLock` | 产物只允许在指定域名（及可选端口）上运行。白名单逐构建随机盐散列成数值表内嵌（产物里没有任何域名明文），匹配结果与字符串池解密密钥耦合：授权主机给健康载体补 +Q 归零偏移、字符串正常；非授权主机整池静默乱码，没有可 NOP 的检测分支。详见下文「域名锁定」 |
@@ -614,6 +632,15 @@ Plus 闸门把它显式关着，改上限却忘了动那一条，加载期直接
 重激活（误清站点数据后同一机器码再激活即恢复本地记录，Free 只有每日配额、无总额度重置风险），
 非 Free 卡保持严格一次性。
 
+台账里那张卡满 7 天后会**按同一卡号续期**（签发日更新，卡号仍由机器码派生，"一机一卡"
+不破）。原先无条件回放台账里的卡，到期后 `activate` 永远判 `reason=expired`，而卡号又是
+确定性派生的、重签也只能拿到同一个卡号——这条自服务通道会**永久死掉**（2026-10-03 修）。
+
+> 自动派发的 Free 卡会先在服务端落一份记录。用户之后买 Plus，那份 Free 记录曾会把 Plus
+> 挡在门外（服务端"已有有效记录就沿用"），`cloudOnly` 部署下就表现为**激活了 Plus 仍按
+> Free 判**「预设 medium 超出套餐 Free 的强度上限 low」。现已改为只升不降，详见
+> [混淆在哪里跑](#混淆在哪里跑) 一节。
+
 > **v4 历史背景（已废除）**：旧版卡密带一段机器码的派生摘要（绑定段，16 字符 base32）在
 > Ed25519 签名载荷内，"这张卡属于哪台机器"在签发时定死，用 `--bind <机器码>` 签发。v5 起
 > 卡密不携带绑定段，`--bind` 直接报错作废，"一卡一机"由服务端 KV 赎回登记实现——首次激活
@@ -759,9 +786,20 @@ curl -s -X POST https://<host>/api/free-key -H 'content-type: application/json' 
 云端执行时界面在**每个文件成功后**也记一次本机用量，就是为了与服务端那份对齐，
 否则两边会越走越远。
 
-两者不合并是有意的：服务端**拒绝采纳**客户端推上来的用量（见 `license-web.importRecord`
+两者不合并是有意的：服务端**不接受**客户端推上来的用量（见 `license-web.importRecord`
 的说明——客户端每刷新一次页面就会推一次记录，无脑覆盖等于把服务端累计的用量清零，
 `/api/obfuscate` 那边扣的配额会被冲掉，等于白送额度）。
+
+换卡是唯一的例外，且只解决"升级"方向的问题：服务端已有有效记录时，只有呈上的卡
+**严格更高档**才替换它，换来的记录还会把服务端已计入的次数带过去（取较大值，不归零）。
+少了这条，买了更高档反而用不上——`requireLicense` 部署下网页会自动派发一张 Free 卡
+并先在服务端落一份记录，用户后来买的 Plus 就再也顶不上去，`cloudOnly` 部署下每次
+运行都过服务端闸门，于是激活了 Plus 跑 `medium` 仍被判「预设 medium 超出套餐 Free
+的强度上限 low」。降级方向照旧拦住（一份低档记录不能把高档顶掉）。
+
+补登记时服务端还会拿请求侧的 `X-JSLB-Machine` 与记录自称的机器码比对：自锚定校验
+只能证明"这份记录与自己自洽"，证不了"呈上记录的就是这台机器"，而记录连同 `machine`
+字段可以整体复制到别的机器上（2026-10-03 修；此前 A 机的 `pack100` 记录可被 B 机顶用）。
 
 所以**界面上的用量一律按本机记录显示**，不能用服务端那份：服务端那份通常是 0，
 显示它会出现"跑完不刷新、刷新后被 0 覆盖"这两个症状。

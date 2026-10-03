@@ -636,6 +636,14 @@ async function setFreeKeyLedger(machine, code) {
  * 恒等，跨实例可能各签一次字符串——但卡号相同，赎回登记（若绑了 KV）照旧
  * 只认一次。
  *
+ * ## 到期后续期
+ *
+ * 台账里那张卡满 7 天后必须重签一张新的，否则这台机器被永久锁死：台账回放的仍是
+ * 那张过期卡，客户端 activate 判 reason=expired，而卡号是机器码确定性派生的、重签
+ * 也只能拿到同一个卡号——原先的写法在这里恰好也是死路。到期后重签签发日更新，卡号
+ * 不变，于是"一机一卡"仍成立（同一张卡号上的新一段有效期），赎回登记也不用重写
+ * （Free 卡同机可重复激活，见 activate 的 redeemer 判定）。
+ *
  * @param {string} machine 机器码，24 字符 base32（客户端硬件特征派生值）
  * @returns {Promise<{ok:boolean, reason?:string, code?:string, machine?:string, issued?:boolean, source?:string}>} 结果
  */
@@ -645,12 +653,15 @@ export async function issueFreeKey(machine) {
   const led = await getFreeKeyLedger(m);
   if (led) {
     const p = codec.parseCode(codeKey, led.code);
-    if (p.ok && p.plan === 'free' && p.days === FREE_KEY_DAYS) {
+    // 过期（含解析不出）就不回放：回放一张用完的卡等于把这条通道关掉
+    if (p.ok && p.plan === 'free' && p.days === FREE_KEY_DAYS
+      && licCore.expiryFromIssueDay(p) > platform.now()) {
       return { ok: true, code: led.code, machine: m, issued: false, source: 'ledger' };
     }
   }
   const h = hmacSha256Hex(FREE_ID_TAG, m);
   const id = Number(BigInt('0x' + h.slice(0, 10)) & codec.MAX_ID);
+  // 卡号恒定、签发日取今天：到期后续期得到同一卡号的一段新有效期
   const code = codec.issueCode(codeKey, 'free', FREE_KEY_DAYS, id);
   if (!code) return { ok: false, reason: 'issue' };
   await setFreeKeyLedger(m, code);
@@ -863,6 +874,29 @@ export async function exportRecord() {
 }
 
 /**
+ * 换卡时把服务端已计入的次数带进新记录。
+ *
+ * 采纳新卡必须重签记录（用量进令牌载荷，见 license-core.makeRecord 的说明），
+ * 重签就意味着有机会把计数归零。归零等于白送额度：额度包用掉 99 次后换一张
+ * 卡就又是 100 次。所以这里取"服务端那份"与"客户端那份"的较大值。
+ *
+ * 按日口径下换卡不该把昨天的次数拖到今天：存储里的 day 早于今天就说明那份
+ * 记录已经翻页归零，此时用客户端带来的新值。额度包是累计口径，day 只是个
+ * 台账日期，跨日不清零，所以一律带过去。
+ *
+ * @param {{day:string, used:number}|null} stored 服务端那份记录的用量
+ * @param {{day:string, used:number}} fresh 客户端呈上的记录里的用量
+ * @param {string} planName 新记录的套餐
+ * @returns {{day:string, used:number}} 落盘的用量
+ */
+function carriedUsage(stored, fresh, planName) {
+  if (!stored || !Number.isSafeInteger(stored.used) || stored.used <= 0) return fresh;
+  const cumulative = plan.limits(planName).runsTotal > 0;
+  if (!cumulative && stored.day < licCore.todayKey()) return fresh;
+  return { day: fresh.day, used: Math.max(stored.used, fresh.used) };
+}
+
+/**
  * 采纳一份客户端送来的许可证记录。
  *
  * 场景：界面激活时先本地验签，验过就直接返回了，从没把卡密发给服务端；而
@@ -874,10 +908,39 @@ export async function exportRecord() {
  * machine 作锚点，再验卡密签名、签名绑定段与记录令牌三者是否与它自洽。
  * 客户端因此换不来别人的授权，也改不动套餐与用量（那几项都在令牌载荷里）。
  *
+ * ## 换卡：只升不降，且不因换卡抹掉用量
+ *
+ * 服务端已有有效记录时，只有呈上的卡**严格更高档**才替换它，其余一律沿用服务端
+ * 那份。这条规则有两个方向，缺一不可：
+ *   · 升级要放行 —— 网页自动派发的 Free 卡（requireLicense 部署下首访即发生）
+ *     会先在服务端落一份 Free 记录；用户随后买 Plus，界面本地验签通过、pushLicense
+ *     也成功，可服务端因为"已有有效记录就沿用"而永远停在 Free。cloudOnly 部署下
+ *     每次运行都过服务端闸门，于是用户明明激活了 Plus，跑 medium 却被判
+ *     「预设 medium 超出套餐 Free 的强度上限 low」——额度买了却用不上。
+ *   · 降级要拦住 —— 反过来无条件覆盖的话，一份 Free 记录能把服务端的 Plus 顶掉。
+ *     客户端能出示的记录都是自己验过签的，但"手上的卡是昨天那张"完全正常，
+ *     不该因此丢掉更高档的权益。
+ * 套餐 rank 相等（换了一张同档卡）按沿用处理：不覆盖，也就不会重置计数。
+ *
+ * ## 记录的可搬运性由请求侧的机器码兜底
+ *
+ * 自锚定校验只能证明"这份记录自称的 machine 与其自身自洽"，证不了"呈上记录的
+ * 就是这台机器"——记录连同 machine 字段可以整体复制到另一台机器上。所以当调用方
+ * 传入了本机机器码（Worker 从 X-JSLB-Machine 取，见 server/handler.js）时，它才是
+ * 真正的判据：记录自称的 machine 必须与它一致，否则这份记录是从别处搬来的。
+ *
+ * 这条不能省：redeem 登记里记的也是"记录自称的 machine"，搬运者会把记录一起搬过去，
+ * 于是登记比对同样通过——2026-10-03 实测，A 机的 pack100 记录复制到 B 机即可顶用。
+ * 赎回登记的"本机"必须锚在请求侧那个码上。
+ *
+ * 老客户端不带这个头时没有可比对象，此时只做自锚定（与改动前的强度一致）。
+ *
  * @param {object} record 许可证记录
- * @returns {Promise<{ok:boolean, reason?:string, plan?:string}>} 结果
+ * @param {object} [opts]
+ * @param {string} [opts.machine] 本次请求方自报的机器码（X-JSLB-Machine）
+ * @returns {Promise<{ok:boolean, reason?:string, plan?:string, adopted?:boolean}>} 结果
  */
-export async function importRecord(record) {
+export async function importRecord(record, opts) {
   loadKeysFromEnv();
   if (!record || typeof record !== 'object' || Array.isArray(record)) {
     return { ok: false, reason: 'corrupt' };
@@ -887,42 +950,55 @@ export async function importRecord(record) {
   const res = licCore.verifyLicenseData(record, null, codeKey);
   if (!res.ok) return { ok: false, reason: res.reason };
   const mid = res.machine;
-  // 只在服务端本来没有有效记录时才落盘：客户端每刷新一次页面就会推一次记录，
-  // 无脑覆盖等于把服务端累计的用量计数清零（/api/obfuscate 在那边扣的配额
-  // 会被冲掉，等于白送额度）。服务端那份还有效就留着，客户端只是来补登记的。
-  const mine = await exportRecord();
-  if (mine) {
-    const keep = licCore.verifyLicenseData(mine, null, codeKey);
-    if (keep.ok) {
-      state = {
-        plan: keep.plan, code: keep.code, machine: keep.machine,
-        issuedAt: mine.issuedAt, expiresAt: keep.expiresAt, usage: keep.usage, trial: false,
-      };
-      return { ok: true, plan: keep.plan, adopted: false };
-    }
+  // 请求侧机器码才是"这份记录属于本机"的判据（见文件头"记录的可搬运性"一节）
+  const reqMid = opts && isMachineCode(opts.machine)
+    ? String(opts.machine).trim().toUpperCase()
+    : '';
+  if (reqMid && !codec.timingSafeEqualText(mid, reqMid)) {
+    return { ok: false, reason: 'machine' };
   }
-  // 防重复使用（服务端补登记路径）：浏览器本地激活后把记录推上来时，若该卡密
-  // 已有赎回登记（无论是否本机——严格一次性，与 activate 同口径），拒绝采纳。
+  // 服务端已有的有效记录（含已过期的那份：过期会让 verifyLicenseData 判 expired，
+  // 恰好使下面走采纳路径，Free 卡到期后重领才能恢复）。
+  const mine = await exportRecord();
+  const keep = mine ? licCore.verifyLicenseData(mine, null, codeKey) : { ok: false };
+  // 已有更高档（或同档）的有效记录 → 沿用它。客户端每刷新一次页面就会推一次记录，
+  // 无脑覆盖等于把服务端累计的用量计数清零（/api/obfuscate 在那边扣的配额会被冲掉）。
+  if (keep.ok && plan.rank(res.plan) <= plan.rank(keep.plan)) {
+    state = {
+      plan: keep.plan, code: keep.code, machine: keep.machine,
+      issuedAt: mine.issuedAt, expiresAt: keep.expiresAt, usage: keep.usage, trial: false,
+    };
+    return { ok: true, plan: keep.plan, adopted: false };
+  }
+  // 防重复使用（服务端补登记路径）：登记里已有这台机器，就是本机自己赎回过的那张，
+  // 放行（误清站点数据、或反复 pushLicense 都会走到这里）；登记在别的机器上，
+  // 说明这份记录是搬过来的，拒绝采纳。
   const parsedRec = codec.parseCode(codeKey, record.code);
   if (parsedRec.ok) {
     const redeemer = await getRedeemer(parsedRec.id);
     if (redeemer) {
-      return { ok: false, reason: 'used' };
-    }
-    if (await setRedeemer(parsedRec.id, parsedRec.code, mid) === false) {
+      const same = isMachineCode(redeemer.m) && codec.timingSafeEqualText(redeemer.m, mid);
+      if (!same) return { ok: false, reason: 'used' };
+    } else if (await setRedeemer(parsedRec.id, parsedRec.code, mid) === false) {
       return { ok: false, reason: 'write' };
     }
     // 补登记同样固定机器码：客户端那份记录里的码就是这张卡此后恒定的身份
     await bindMachineToCard(parsedRec.id, mid);
   }
-  await storeSet(K_LICENSE, JSON.stringify(record));
+  // 换卡要重签（用量进令牌载荷），并把服务端已计入的次数带过去，见 carriedUsage。
+  const usage = carriedUsage(keep.ok ? keep.usage : null, res.usage, res.plan);
+  const adopted = usage === res.usage ? record : licCore.makeRecord({
+    code: res.code, plan: res.plan, machine: mid,
+    issuedAt: record.issuedAt, expiresAt: res.expiresAt, usage,
+  }, codeKey);
+  await storeSet(K_LICENSE, JSON.stringify(adopted));
   state = {
     plan: res.plan,
     code: res.code,
     machine: mid,
     issuedAt: record.issuedAt,
     expiresAt: res.expiresAt,
-    usage: res.usage,
+    usage,
     trial: false,
   };
   return { ok: true, plan: res.plan, adopted: true };

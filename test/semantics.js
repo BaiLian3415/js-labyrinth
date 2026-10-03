@@ -16,6 +16,10 @@
  * 把产物跑起来比对输出。
  *
  * 命中依赖随机数，所以每个用例要跨多个 seed 跑——单次跑过不代表没问题。
+ *
+ * 有一处必须显式覆盖预设默认值：**consoleStub 关掉**。max 预设默认开着它，会把
+ * console.* 置空，而本文件的用例全是 console.log 程序——不关的话 max 档 44/44
+ * 全灭，且症状（实得空串）与"产物算错了"无法从报告上区分。详见下面循环里的注释。
  */
 import fs from 'node:fs';
 import os from 'node:os';
@@ -153,7 +157,13 @@ for (const [name, src] of cases) {
     for (let seed = 1; seed <= opts.seeds; seed++) {
       let got;
       try {
-        const r = obfuscate(code, resolveOptions({ preset, seed }));
+        // consoleStub:false —— 每个用例都是自带 console.log 的小程序，而 max 预设
+        // 的 consoleStub 默认开着，会把 console.* 全部置空，于是产物输出恒为 ""、
+        // 44 个用例在 max 档全军覆没。那是 consoleStub 的既定语义（不是缺陷），
+        // 与"产物算错了"在报告里长得一模一样（实得都是空串），所以必须在这里显式
+        // 关掉：这份扫描要验的是**语义**，输出通道得是能出声的那个。
+        // 关掉不影响任何被测 pass——consoleStub 不参与表达式取值或控制流变换。
+        const r = obfuscate(code, resolveOptions({ preset, seed, consoleStub: false }));
         got = runCode(r.code, 'obf');
       } catch (e) {
         got = '<混淆抛错> ' + e.message.split('\n')[0].slice(0, 50);

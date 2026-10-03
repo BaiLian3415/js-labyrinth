@@ -212,16 +212,17 @@ async function handleObfuscate(request, env) {
   // importedOk 供下面的 trialOnly 判定：只有本次呈现的记录被成功采纳，才允许
   // 复用存储记录。呈现了无效记录 → 同样只能是试用，否则 restore 仍可能命中
   // 别人的残留记录（import 失败不写盘，但盘里可能早有别人的）。
-  let importedOk = false;
-  if (body.record && typeof body.record === 'object') {
-    importedOk = (await licenseWeb.importRecord(body.record)).ok;
-  }
-
   // 卡密也可以放在请求体里，方便不熟请求头的调用方
   const key = request.headers.get('X-JSLB-Key') || body.key;
-  // 客户端提交的硬件机器码（见 /api/license 的同名说明）：激活时与卡密绑定。
+  // 客户端提交的硬件机器码（见 /api/license 的同名说明）：激活时与卡密绑定，
+  // 补登记时用来证明"呈上的记录属于本机"（见 license-web.importRecord）。
   const machine = request.headers.get('X-JSLB-Machine')
     || (typeof body.machine === 'string' ? body.machine : '');
+
+  let importedOk = false;
+  if (body.record && typeof body.record === 'object') {
+    importedOk = (await licenseWeb.importRecord(body.record, { machine })).ok;
+  }
   if (key) {
     // 卡密是严格一次性的：先恢复本设备已有授权——同一张卡在本设备激活过后，
     // KV 里留有有效记录，直接复用；重复 activate 会被赎回登记判成 'used'。
@@ -385,23 +386,29 @@ async function handleLicense(request) {
   //
   // 记录带签名且绑定机器码，这里用请求设备码派生出的机器码重新验一遍，所以
   // 换不来别人的授权，也改不动套餐与用量（那几项都在令牌载荷里）。
+  // 客户端提交的硬件机器码：激活时与卡密永久绑定（见 license-web.activate 的
+  // opts.machine 说明）；补登记时还用来证明"呈上的记录属于本机"（见
+  // license-web.importRecord）。老客户端不带这个头，activate 回落到卡的绑定机器码。
+  const machine = request.headers.get('X-JSLB-Machine')
+    || (typeof body.machine === 'string' ? body.machine : '');
+
   if (body.record && typeof body.record === 'object') {
-    const imp = await licenseWeb.importRecord(body.record);
+    const imp = await licenseWeb.importRecord(body.record, { machine });
     if (!imp.ok) {
       return json({ ok: false, status: 401, message: t('licReason_' + imp.reason) }, 401);
     }
   }
 
   const key = request.headers.get('X-JSLB-Key') || body.key;
-  // 客户端提交的硬件机器码：激活时与卡密永久绑定（见 license-web.activate 的
-  // opts.machine 说明）。老客户端不带这个头，activate 回落到卡的绑定机器码。
-  const machine = request.headers.get('X-JSLB-Machine')
-    || (typeof body.machine === 'string' ? body.machine : '');
   if (key) {
-    // 与 /api/obfuscate 同口径：卡密严格一次性，本设备已有有效记录时直接复用，
-    // 只在未激活（记录缺失或已过期）时才用这张卡走激活。
+    // 与 /api/obfuscate 完全同口径：复用已有记录前必须校验它与出示的卡密是同一张
+    // （restoredMatchesKey）。原先这里只看"有没有有效记录"，于是设备上留着 Free
+    // 记录时出示 Plus 卡会被判成"已激活"而直接跳过 activate，界面收到 200 与一份
+    // Free 权益——用户以为升级成功了，实际套餐没变。/api/obfuscate 早就踩过同一个
+    // 坑并补了这道校验（裸键串扰防护），这条路径漏了。
     const had = await licenseWeb.restore({ selfAnchored: true });
-    if (!had.ok) {
+    const reuse = had.ok && await licenseWeb.restoredMatchesKey(key);
+    if (!reuse) {
       const act = await licenseWeb.activate(key, { machine });
       if (!act.ok) {
         return json({

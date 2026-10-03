@@ -555,6 +555,33 @@ section('网页自动派发 Free 卡（一机一张、一次性激活、同机�
   const c2 = await licenseWeb.activate(plus, { machine: midA });
   ok(!c2.ok && c2.reason === 'used', '非 Free 卡保持严格一次性（同机重激活也拒）', c2.reason);
 
+  // ④ 7 天到期后续期（2026-10-03 修）：台账里那张卡满 7 天后必须重签一张新的。
+  //    原先无条件回放台账里的卡，于是到期后 activate 永远判 reason=expired，而卡号
+  //    又是机器码确定性派生的、重签也只能拿到同一个卡号——这条自服务通道会永久死掉。
+  //    构造：先正常派一张拿到真实卡号，再把台账换成"同一卡号、签发日很早"的过期卡。
+  const midC = 'ABCDEFGHJKMNPQRSTVWXYZ03';
+  const firstC = await licenseWeb.issueFreeKey(midC);
+  const firstParsed = codec.parseCode(TEST_CODE_KEY, firstC.code);
+  ok(firstC.ok && firstParsed.ok, '新机器首次派发成功', firstC.reason);
+  const staleFree = codec.issueCode(
+    TEST_CODE_KEY, 'free', licenseWeb.FREE_KEY_DAYS, firstParsed.id, today - 30,
+  );
+  ok(licCore.expiryFromIssueDay(codec.parseCode(TEST_CODE_KEY, staleFree)) < platform.now(),
+    '构造出的台账卡确实已过期');
+  store.set('freekey:' + midC, JSON.stringify({ k: staleFree, m: midC, t: 1 }));
+
+  const renew = await licenseWeb.issueFreeKey(midC);
+  const renewParsed = codec.parseCode(TEST_CODE_KEY, renew.code);
+  ok(renew.ok && renewParsed.ok && renewParsed.id === firstParsed.id,
+    '到期后续期：卡号仍由机器码派生（同一卡号，"一机一卡"不破）',
+    renewParsed.id + ' vs ' + firstParsed.id);
+  ok(renewParsed.issueDay === today, '到期后续期：签发日更新为今天（旧卡已满 7 天）',
+    'issueDay=' + renewParsed.issueDay);
+  ok(licCore.expiryFromIssueDay(renewParsed) > platform.now(), '续期后的卡未过期');
+  const replay = await licenseWeb.issueFreeKey(midC);
+  ok(replay.ok && replay.code === renew.code && replay.source === 'ledger',
+    '续期后同机再取回放的仍是这张有效卡（不会立刻又触发续期）', replay.source);
+
   platform.setKv(null);
   platform.setStorage(null);
   licenseWeb.resetRequestState();

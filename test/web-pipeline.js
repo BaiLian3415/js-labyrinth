@@ -12,6 +12,7 @@ import makeZip from '../src/utils/zip.js';
 import platform from '../src/platform.js';
 import licenseWeb from '../src/license-web.js';
 import codec from '../src/license-codec.js';
+import licCore from '../src/license-core.js';
 import plan from '../src/plan.js';
 import obfuscateMod from '../src/obfuscate.js';
 
@@ -280,6 +281,123 @@ section('服务端路由（/api/*）');
       body: JSON.stringify({ record: broken, code: SAMPLE, options: { preset: 'low' } }),
     });
     ok(badRec.status === 402, '篡改过的记录不被采纳（仍 402）', 'status=' + badRec.status);
+  }
+
+  // ---------------------------------------------------------- 换卡：升级 / 降级 / 搬运
+  //
+  // 2026-10-03 线上报障：激活了 Plus，跑 medium 仍被判
+  // 「预设 medium 超出套餐 Free 的强度上限 low」。根因是 importRecord 的
+  // 「服务端已有有效记录就沿用」——requireLicense 部署下网页会自动派发一张 Free 卡
+  // 并先在服务端落一份记录，用户后来买的 Plus 就再也顶不上去；而 cloudOnly 部署下
+  // 每次运行都过服务端闸门，于是买了额度用不上。
+  //
+  // 这一节钉住三个方向，缺一不可：升级放行、降级拦住、搬运拒绝。
+  {
+    const kvStore = new Map();
+    const kv = {
+      get: async (k) => (kvStore.has(k) ? kvStore.get(k) : null),
+      put: async (k, v) => { kvStore.set(k, v); return true; },
+      del: async (k) => { kvStore.delete(k); },
+    };
+    const CFG = JSON.stringify({
+      requireLicense: true, trialPreset: 'low', trialMaxFileBytes: 65536, cloudOnly: true,
+    });
+    // 浏览器侧与 Worker 必须隔开：worker.fetch 每次都会 prepareEnv 重置 platform
+    // （KV 键加 jslb: 前缀、存储换新），所以每调一次接口后要把浏览器侧的装回去。
+    const lsStore = new Map();
+    const asBrowser = () => {
+      platform.setEnv({});
+      platform.setKv(null);
+      platform.setStorage({
+        get: (k) => (lsStore.has(k) ? lsStore.get(k) : null),
+        set: (k, v) => { lsStore.set(k, v); return true; },
+        remove: (k) => { lsStore.delete(k); },
+      });
+      licenseWeb.resetRequestState();
+      licenseWeb.setKeyMaterial(TEST_CODE_KEY, null);
+    };
+    const MID = 'ABCDEFGHJKMNPQRSTVWXYZ01';
+    const callUp = async (pathname, body, dev, mid) => worker.fetch(new Request('https://example.com' + pathname, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json', 'X-JSLB-Device': dev, 'X-JSLB-Machine': mid || MID,
+      },
+      body: JSON.stringify(body),
+    }), { JSLB_WEB_CONFIG: CFG, JSLB_CODE_KEY: TEST_CODE_KEY, JSLB_KV: kv }, {});
+    const browserActivate = async (code) => {
+      asBrowser();
+      const r = await licenseWeb.activate(code, { machine: MID });
+      return { ok: r.ok, plan: r.plan, reason: r.reason };
+    };
+    const browserRecord = async () => { asBrowser(); return licenseWeb.exportRecord(); };
+
+    // ① 网页自动派发 Free 卡 → 服务端落一份 Free 记录（requireLicense 下的首访路径）
+    const devUp = '1'.repeat(32);
+    const issuedJson = await (await callUp('/api/free-key', {}, devUp)).json();
+    ok(issuedJson.ok === true && typeof issuedJson.key === 'string', '/api/free-key 派发 Free 卡');
+    ok((await browserActivate(issuedJson.key)).plan === 'free', '浏览器激活 Free 卡');
+    const freeRec = await browserRecord();
+    const freePush = await (await callUp('/api/license', { record: freeRec }, devUp)).json();
+    ok(freePush.ok === true && freePush.plan === 'free', 'Free 记录补登记成功', JSON.stringify(freePush.message || ''));
+
+    // ② 买 Plus：本地验签 + pushLicense。修复前服务端会沿用 Free，plan 停在 free。
+    const plusCode = codec.issueCode(TEST_CODE_KEY, 'plus', 30, '97530');
+    const plusAct = await browserActivate(plusCode);
+    ok(plusAct.ok === true && plusAct.plan === 'plus', '浏览器激活 Plus 卡', plusAct.reason || '');
+    const plusRec = await browserRecord();
+    const plusPush = await (await callUp('/api/license', { record: plusRec }, devUp)).json();
+    ok(plusPush.ok === true && plusPush.plan === 'plus',
+      '升级：Free → Plus 后服务端认定 plus（修复前停在 free）', plusPush.plan || plusPush.message);
+    const runUp = await callUp('/api/obfuscate', {
+      record: plusRec, code: SAMPLE, options: { preset: 'medium', seed: 4 },
+    }, devUp);
+    ok(runUp.status === 200 && (await runUp.json()).ok === true,
+      'cloudOnly 下 medium 放行（报障症状消失）', 'status=' + runUp.status);
+
+    // ③ 降级不得生效：一份 Free 记录不能把服务端的 Plus 顶掉
+    const freeCode2 = codec.issueCode(TEST_CODE_KEY, 'free', 365, '97529');
+    const freeRec2 = licCore.makeRecord({
+      code: freeCode2, plan: 'free', machine: MID, issuedAt: Date.now(),
+      expiresAt: licCore.expiryFromIssueDay(codec.parseCode(TEST_CODE_KEY, freeCode2)),
+      usage: { day: licCore.todayKey(), used: 0 },
+    }, TEST_CODE_KEY);
+    const downgrade = await (await callUp('/api/license', { record: freeRec2 }, devUp)).json();
+    ok(downgrade.ok === true && downgrade.plan === 'plus',
+      '降级：Free 记录不得覆盖服务端的 Plus', downgrade.plan || downgrade.message);
+
+    // ④ 搬运：A 机的记录整份复制到 B 机必须被拒。记录自称的 machine 会被一起搬走，
+    //    所以只有拿请求侧的 X-JSLB-Machine 比对才拦得住（见 importRecord 的说明）。
+    const devA = '2'.repeat(32);
+    const devB = '3'.repeat(32);
+    const midB = 'ABCDEFGHJKMNPQRSTVWXYZ02';
+    const packCode = codec.issueCode(TEST_CODE_KEY, 'pack100', 0, '97528');
+    const actA = await (await callUp('/api/license', { key: packCode }, devA, MID)).json();
+    ok(actA.ok === true && actA.plan === 'pack100', 'A 机激活 pack100', actA.plan || actA.message);
+    // A 机手上那份签名记录（自锚定补登记走的就是这份）
+    const packRec = licCore.makeRecord({
+      code: packCode, plan: 'pack100', machine: MID, issuedAt: Date.now(),
+      expiresAt: licCore.expiryFromIssueDay(codec.parseCode(TEST_CODE_KEY, packCode)),
+      usage: { day: licCore.todayKey(), used: 0 },
+    }, TEST_CODE_KEY);
+    const stolen = await (await callUp('/api/license', { record: packRec }, devB, midB)).json();
+    ok(stolen.ok === false && /machine|机器/.test(String(stolen.message || '')),
+      '搬运：B 机拿 A 机的记录补登记被拒', JSON.stringify(stolen.message || stolen.ok));
+    const bEnt = await (await callUp('/api/license', {}, devB, midB)).json();
+    ok(bEnt.ok === false, 'B 机仍无权益', JSON.stringify(bEnt.plan || bEnt.message));
+
+    // ⑤ /api/license 带卡密而设备已有记录：必须是同一张卡才复用，否则走 activate。
+    //    修复前只看"有没有有效记录"，Free 记录会让 Plus 卡被当成"已激活"而跳过。
+    const devC = '4'.repeat(32);
+    const freeCode3 = codec.issueCode(TEST_CODE_KEY, 'free', 365, '97527');
+    await callUp('/api/license', { key: freeCode3 }, devC, MID);
+    const plusCode2 = codec.issueCode(TEST_CODE_KEY, 'plus', 30, '97526');
+    const upKey = await (await callUp('/api/license', { key: plusCode2 }, devC, MID)).json();
+    ok(upKey.ok === true && upKey.plan === 'plus',
+      '设备已有 Free 记录时出示 Plus 卡：真的换了套餐（修复前静默沿用 Free）', upKey.plan || upKey.message);
+
+    platform.setKv(null);
+    platform.setStorage(null);
+    licenseWeb.resetRequestState();
   }
 
   // 严格一次性 + KV 赎回登记：激活写入 {卡密, 机器码, 时间戳}；同机重复请求靠

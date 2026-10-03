@@ -135,10 +135,19 @@ section('增强保护：引导层自检 / 碎片化 / Anti-LLM');
   }
 
   // shebang 顺序：hashbang 必须在第一行，引导紧随其后
+  //
+  // 判据取「引导 IIFE 在第 2 行开」而不是「token 落在前 3 行里」：token 是引导内部
+  // 的一枚常量，它所在的行数取决于引导函数体前几行有多少条声明，跟着引导代码的
+  // 排版变（实测已从第 3 行挪到第 4 行，seed 1/3/5/9 一致），拿它当"紧随"的判据
+  // 就是拿内部实现细节当契约，改一次排版就假失败。真正要钉的是**引导紧跟在
+  // hashbang 之后、抢在用户代码之前**——IIFE 的起始行才是这个位置。
   {
     const sh = obfuscate('#!/usr/bin/env node\nprocess.stdout.write("ok");', { preset: 'low', seed: 3 });
-    ok(sh.code.split('\n')[0].startsWith('#!'), 'hashbang 仍在第一行');
-    ok(/jr[0-9a-f]{16}/.test(sh.code.split('\n').slice(0, 3).join('\n')), '引导紧随 hashbang');
+    const lines = sh.code.split('\n');
+    ok(lines[0].startsWith('#!'), 'hashbang 仍在第一行');
+    ok(/^\(function\(\)\{/.test(lines[1] || ''), '引导紧随 hashbang（IIFE 在第 2 行开）',
+      '第 2 行 = ' + JSON.stringify((lines[1] || '').slice(0, 40)));
+    ok(/jr[0-9a-f]{16}/.test(lines.slice(0, 8).join('\n')), '引导 token 落在文件头部');
     ok(runNode(sh.code, 'enh-shebang.js').trim() === 'ok', '带 hashbang 的产物可执行');
   }
 }

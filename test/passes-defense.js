@@ -22,6 +22,7 @@ section('自防御：篡改检出');
   // 覆盖依赖布局（访问器声明要还在根体里），所以先找一个真的覆盖上了的 seed，
   // 一个都覆盖不上就算失败：那说明覆盖被后续改动弄丢了。
   const src = 'function fib(n){if(n<2)return n;return fib(n-1)+fib(n-2);}\n' +
+    'function tag(){}\n' +
     'var s="hello world";\nconsole.log(fib(8), s.length, s);';
   const want = runNode(src, 'sd-plain.js').trim();
   let picked = null;
@@ -108,14 +109,21 @@ section('自防御：篡改检出');
 
     // 主校验面：改一个根级函数声明的函数体也必须被检出。关掉 mangle 才认得出
     // 名字（生成器输出是 `function fib (`，按 "function fib(" 找会漏）
+    //
+    // 目标取 `tag`（空函数体）而不是 `fib`：**哈希面刻意排除被 VM 搬走的函数**
+    // （integrityCheck.js 的 vmStubbed 判据），而 medium 的 vmThreshold=2，fib 有
+    // 4 条语句、必定进 VM，于是它本来就不在哈希面里——改它检不出来是设计的必然
+    // 结果，拿它当断言目标等于钉一条永远为假的断言（2026-10-03 修正）。
+    // 空体函数过不了 VM 的语句数闸门，留在根体里，才真的落在哈希面内。
+    // 这条仍然钉住原意："根级函数体被改 → 立即被检出"，只是换了个真在面内的目标。
     const named = obfuscate(src, { preset: 'medium', seed: picked.seed, mangle: false, shell: false }).code;
-    const head = named.match(/function\s+fib\s*\(/);
+    const head = named.match(/function\s+tag\s*\(/);
     ok(!!head, '关掉重命名后能定位到根级函数声明');
     if (head) {
       const i = named.indexOf(head[0]);
       const j = named.indexOf('{', i);
-      const patched2 = j >= 0 ? named.slice(0, j + 1) + '0;' + named.slice(j + 1) : null;
-      const got2 = patched2 ? tryRun(patched2, 'sd-fn.js') : want;
+      const patched2 = j >= 0 ? named.slice(0, j + 1) + '0;' : null;
+      const got2 = patched2 ? tryRun(patched2 + named.slice(j + 1), 'sd-fn.js') : want;
       ok(got2 !== want, '改根级函数体即被检出（头部哈希面生效）',
         '篡改后仍然输出 ' + String(got2).slice(0, 40));
     }
@@ -136,6 +144,7 @@ section('密钥耦合：校验输出直接当解密密钥');
   // console 系列换成桩函数（那是它的既有语义，不是缺陷），拿 console 比对只会得到
   // 空输出，把干净产物误判成坏了
   const src = 'const s="hello world";function fib(n){if(n<2)return n;return fib(n-1)+fib(n-2);}\n'
+    + 'function tag(){}\n'
     + 'process.stdout.write(fib(8)+" "+s.length+" "+s+" "+("beta-gamma".split("-").join("").length)+"\\n");';
   const want = runNode(src, 'kc-plain.js').trim();
 
@@ -198,7 +207,11 @@ section('密钥耦合：校验输出直接当解密密钥');
     try { cleanPinned = pinned ? runNode(pinned, 'kc-pinned-clean.js').trim() : 'ERR'; } catch (e) { cleanPinned = 'ERR'; }
     ok(cleanPinned === want, '钉死毒标志后干净产物仍正确', cleanPinned.slice(0, 40));
 
-    const head = pinned ? pinned.match(/function\s+fib\s*\(/) : null;
+    // 目标同样取空体的 tag()：本档是 high，vmThreshold=1，连一条语句的函数都进 VM，
+    // 而哈希面刻意排除被 VM 搬走的函数（integrityCheck.js 的 vmStubbed）。改 high 下
+    // 的 fib（4 条语句，必然在 VM 里）永远检不出来，那是设计而非缺陷，拿它当断言目标
+    // 等于钉一条恒假的断言（2026-10-03 修正）。空体过不了 VM 的语句数闸门，真在面内。
+    const head = pinned ? pinned.match(/function\s+tag\s*\(/) : null;
     ok(!!head, '关掉重命名后能定位到根级函数声明（耦合用例）');
     if (pinned && head) {
       const i = pinned.indexOf(head[0]);
