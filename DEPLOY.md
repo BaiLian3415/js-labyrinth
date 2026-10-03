@@ -49,6 +49,7 @@ Vercel 部署走云端执行，构建命令是 `npm run build:web:cloud`（见 `
     "api/obfuscate.js": { "maxDuration": 300 },  // 与 src/host-limits.js 的 functionMaxSeconds 一致
     "api/license.js":   { "maxDuration": 60 },
     "api/machine.js":   { "maxDuration": 30 },
+    "api/free-key.js":  { "maxDuration": 30 },
     "api/plans.js":     { "maxDuration": 30 },
     "api/health.js":    { "maxDuration": 30 }
   }
@@ -165,6 +166,7 @@ npm run verify -- https://<你的域名>
    `web.cloudOnly === true`；
 3. 无卡密 `POST /api/obfuscate` 被拒（默认期望 `402`）；
 4. `/api/machine` 路由在（非法卡密 400、GET 405）；
+   `/api/free-key` 路由在（缺机器码 400、GET 405；`requireLicense=true` 的部署上它给匿名机器发 7 天 Free 卡，属预期行为）；
 5. **混淆核心不在静态产物里**：`/src/index.js` 等一律 404，而公开模块仍 200，
    且首页带 `jslabyrinth-cloud` 标记。
 
@@ -221,11 +223,11 @@ npx serve dist                 # 任意静态服务器即可
 
 ```
 vercel.json          构建命令、区域、环境变量、函数时长、缓存头
-api/*.js             五个路由各一个文件（一行转发，Vercel 按文件建函数）
+api/*.js             六个路由各一个文件（一行转发，Vercel 按文件建函数）
 vercel/entry.js      共用入口：预检 / 预算记账 / 流式回执 / health 上报
 vercel/store.js      云存储适配（Upstash REST / REDIS_URL / 没配退化为单实例内存）
 vercel/redis-tcp.js  零依赖 RESP 客户端（REDIS_URL 那条路走它）
-server/handler.js    平台无关的 /api/* 实现（授权判定、混淆执行、机器码签发）
+server/handler.js    平台无关的 /api/* 实现（授权判定、混淆执行、机器码签发、Free 卡派发）
 src/host-limits.js   宿主包络（免费档硬约束反推出的配额上限）
 tools/build/         构建与发布验证（build-web.js、gate-policy.js、verify-deploy.js）
 ```

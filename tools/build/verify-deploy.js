@@ -19,7 +19,8 @@
  *   4. 无卡密 POST /api/obfuscate 被拒（默认期望 402）
  *   5. /api/machine 路由已上线（非法卡密 400、GET 405）——旧构建没有这条路由，
  *      界面会静默退回本机兜底机器码，表现就是"激活之后机器码变了"
- *   6. 云端执行生效：混淆核心不在静态产物里（/src/index.js 必须 404），
+ *   6. /api/free-key 路由已上线（缺机器码 400、GET 405、随机机器码可签发 7 天 Free 卡）
+ *   7. 云端执行生效：混淆核心不在静态产物里（/src/index.js 必须 404），
  *      而界面要用的公开模块仍 200——挡多了未激活界面渲染不出激活表单
  *
  * 都不消耗配额：用的是随机设备码，且期望结果是被拒绝。
@@ -245,7 +246,44 @@ console.log('4) POST /api/machine');
   report(g.status === 405, 'GET 返回 405', '实得 ' + (g.status || '连接失败'));
 }
 
-// ---- 5. 云端执行真的生效：混淆核心不在静态产物里 ----
+// ---- 6. Free 卡派发路由真的上线了 ----
+//
+// 2026-10-03 起网页按硬件机器码一机一张自动领 7 天 Free 卡（requireLicense 部署
+// 上匿名机器的唯一授权来源）。验"路由在 + 校验逻辑在"：缺机器码 400、GET 405，
+// 随机机器码能签发出 7 天 Free（这条会在部署的云存储里留下一条该随机机器码的
+// 派发台账——无人在用的合成机器码，可忽略）。
+console.log('');
+console.log('6) POST /api/free-key');
+{
+  const r = await probe('/api/free-key', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({}),
+  });
+  let j = null;
+  try { j = JSON.parse(r.text); } catch (e) { /* 非 JSON */ }
+  report(r.status === 400, 'HTTP 400（缺机器码被拒，说明路由是新版本）',
+    '实得 ' + (r.status || '连接失败') + (j && j.message ? '  ' + String(j.message).slice(0, 40) : ''));
+  const g = await probe('/api/free-key');
+  report(g.status === 405, 'GET 返回 405', '实得 ' + (g.status || '连接失败'));
+  // 合成机器码：24 字符 base32 随机值（字母表与卡密同一张，见 license-codec）
+  const ALPHABET = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';
+  let machine = '';
+  for (let i = 0; i < 24; i++) machine += ALPHABET[Math.floor(Math.random() * 32)];
+  const ok = await probe('/api/free-key', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ machine }),
+  });
+  let okJ = null;
+  try { okJ = JSON.parse(ok.text); } catch (e) { /* 非 JSON */ }
+  report(ok.status === 200 && okJ && okJ.ok === true && okJ.plan === 'free' && okJ.days === 7
+    && /^JSLB-[0-9A-V]{8}-[0-9A-V]{16}-[0-9A-V]{4}$/.test(okJ.key || ''),
+    '随机机器码可签发 7 天 Free 卡',
+    '实得 ' + ok.status + (okJ && okJ.key ? '  ' + String(okJ.key).slice(0, 12) + '…' : ''));
+}
+
+// ---- 7. 云端执行真的生效：混淆核心不在静态产物里 ----
 //
 // 这一段以前是"核心下载鉴权 JSLB_GATE_CORE"（Cloudflare 部署，核心加密后按设备
 // 鉴权下发）。迁到 Vercel 后整套鉴权下发机制整体删掉了，因为不再需要：
@@ -258,7 +296,7 @@ console.log('4) POST /api/machine');
 // 顺带一提：`/src/__jslb_core.js` 与 `/src/__core.pack` 是模块体加密层的产物，
 // 云端构建同样不产出，404 才是正确结果。
 console.log('');
-console.log('5) 混淆核心不在静态产物里（云端执行）');
+console.log('7) 混淆核心不在静态产物里（云端执行）');
 {
   const GATED = [
     '/src/index.js',

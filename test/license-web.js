@@ -460,6 +460,106 @@ section('机器码：服务端签发并与卡密永久绑定');
   licenseWeb.resetRequestState();
 }
 
+// ---------------------------------------------------------------- 网页自动派发 Free 卡
+//
+// 部署方开 requireLicense 后，未激活的机器只能靠这条通道领 7 天 Free 卡。
+// 反刷卡密的三道闸门都在这里钉死：
+//   ① 台账按机器码分键：同机重取回放原卡，不新发；
+//   ② 卡号由机器码确定性派生：台账丢了，重派仍是同一卡号；
+//   ③ 赎回登记跨机器拦截：A 机激活过的卡，B 机再出示一律 reason=used。
+// 另钉住：Free 卡允许同机重激活（误清数据后恢复本地记录）；非 Free 卡保持
+// 严格一次性（同机也拒），堵住"重激活重置额度"的口子。
+
+section('网页自动派发 Free 卡（一机一张、一次性激活、同机可恢复）');
+{
+  const store = new Map();
+  platform.setKv({
+    get: async (k) => (store.has(k) ? store.get(k) : null),
+    put: async (k, v) => { store.set(k, v); },
+    del: async (k) => { store.delete(k); },
+  });
+  platform.setStorage(platform.newMemoryStorage());
+  licenseWeb.setKeyMaterial(TEST_CODE_KEY, null);
+  licenseWeb.resetRequestState();
+
+  const midA = 'ABCDEFGHJKMNPQRSTVWXYZ01';
+  const midB = 'ABCDEFGHJKMNPQRSTVWXYZ02';
+  const today = Math.floor((Date.now() - codec.DAY_ZERO) / 86400000);
+
+  // ① 首次派发：free 套餐、7 天、台账按机器码落 KV
+  const f1 = await licenseWeb.issueFreeKey(midA);
+  ok(f1.ok && f1.machine === midA && f1.issued === true, '首次派发 Free 卡成功', JSON.stringify(f1));
+  const p1 = codec.parseCode(TEST_CODE_KEY, f1.code);
+  ok(p1.ok && p1.plan === 'free' && p1.days === 7, '派出的卡是 7 天 Free', p1.plan + '/' + p1.days);
+  ok(store.has('freekey:' + midA), '派发台账按机器码分键写进 KV（全局）');
+
+  // ② 同机重取：回放原卡，不新发（台账在）
+  licenseWeb.resetRequestState();
+  platform.setStorage(platform.newMemoryStorage());
+  const f2 = await licenseWeb.issueFreeKey(midA);
+  ok(f2.ok && f2.issued === false && f2.source === 'ledger' && f2.code === f1.code,
+    '同机第二次取回放原卡（一机一张）', f2.source);
+
+  // ② 台账丢失时重派：卡号仍是同一个（确定性派生，字符串因随机 IV 不同）
+  store.delete('freekey:' + midA);
+  licenseWeb.resetRequestState();
+  platform.setStorage(platform.newMemoryStorage());
+  const f3 = await licenseWeb.issueFreeKey(midA);
+  const p3 = codec.parseCode(TEST_CODE_KEY, f3.code);
+  ok(f3.ok && p3.ok && p3.id === p1.id,
+    '台账丢失后同机重派得同一卡号（一机一卡不依赖台账持久）', p3.id + ' vs ' + p1.id);
+
+  // ③ 不同机器码派生不同卡号：刷出来的卡无法跨机共用
+  const fB = await licenseWeb.issueFreeKey(midB);
+  const pB = codec.parseCode(TEST_CODE_KEY, fB.code);
+  ok(fB.ok && pB.ok && pB.id !== p1.id, '不同机器码派生不同卡号', pB.id + ' vs ' + p1.id);
+
+  // 非法机器码拒绝派发
+  ok(!(await licenseWeb.issueFreeKey('short')).ok, '机器码过短不派卡');
+  ok(!(await licenseWeb.issueFreeKey('')).ok, '空机器码不派卡');
+
+  // 激活绑定：A 机用自己的硬件机器码激活，记录与赎回登记都落在 midA 上
+  licenseWeb.resetRequestState();
+  licenseWeb.setRequestDeviceId('a'.repeat(32));
+  const a1 = await licenseWeb.activate(f1.code, { machine: midA });
+  ok(a1.ok && a1.plan === 'free', 'Free 卡携机器码激活成功', JSON.stringify(a1));
+  const recA = await licenseWeb.exportRecord();
+  ok(recA && recA.machine === midA, '记录里的机器码是客户端提交的硬件码', recA && recA.machine);
+  const redeem = JSON.parse(store.get('redeem:' + p1.id) || '{}');
+  ok(redeem.m === midA, '赎回登记记录的机器码与之一致（跨机比对用）', redeem.m);
+
+  // 同机恢复：清掉本地记录（模拟误清站点数据），同一机器码再激活 → 恢复
+  licenseWeb.resetRequestState();
+  platform.setStorage(platform.newMemoryStorage());
+  licenseWeb.setRequestDeviceId('a'.repeat(32));
+  const a2 = await licenseWeb.activate(f1.code, { machine: midA });
+  ok(a2.ok && a2.plan === 'free', 'Free 卡同机重激活可恢复（误清数据后不再被锁死）', JSON.stringify(a2));
+  ok((await licenseWeb.exportRecord()).machine === midA, '恢复后记录仍绑原机器码');
+
+  // 跨机器：B 机出示同一张卡 → 严格拒绝
+  licenseWeb.resetRequestState();
+  platform.setStorage(platform.newMemoryStorage());
+  licenseWeb.setRequestDeviceId('b'.repeat(32));
+  const b1 = await licenseWeb.activate(f1.code, { machine: midB });
+  ok(!b1.ok && b1.reason === 'used', '异机复用同一张 Free 卡被拒（reason=used）', b1.reason);
+
+  // 非 Free 卡保持严格一次性：同机重激活也拒（防重激活重置额度包）
+  const plus = codec.issueCode(TEST_CODE_KEY, 'plus', 30, '99001', today);
+  licenseWeb.resetRequestState();
+  licenseWeb.setRequestDeviceId('a'.repeat(32));
+  const c1 = await licenseWeb.activate(plus, { machine: midA });
+  ok(c1.ok && c1.plan === 'plus', 'plus 卡携机器码激活成功');
+  licenseWeb.resetRequestState();
+  platform.setStorage(platform.newMemoryStorage());
+  licenseWeb.setRequestDeviceId('a'.repeat(32));
+  const c2 = await licenseWeb.activate(plus, { machine: midA });
+  ok(!c2.ok && c2.reason === 'used', '非 Free 卡保持严格一次性（同机重激活也拒）', c2.reason);
+
+  platform.setKv(null);
+  platform.setStorage(null);
+  licenseWeb.resetRequestState();
+}
+
 if (process.argv[1] && process.argv[1].endsWith('license-web.js')) {
   const bad = report();
   cleanTmp();

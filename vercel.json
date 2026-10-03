@@ -10,6 +10,7 @@
     "api/obfuscate.js": { "maxDuration": 300 },
     "api/license.js": { "maxDuration": 60 },
     "api/machine.js": { "maxDuration": 30 },
+    "api/free-key.js": { "maxDuration": 30 },
     "api/plans.js": { "maxDuration": 30 },
     "api/health.js": { "maxDuration": 30 }
   },

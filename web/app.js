@@ -895,6 +895,9 @@ function explicitOptions() {
 async function runCloudJob(code, options) {
   const base = (state.apiBase || '').replace(/\/+$/, '');
   const device = await licenseWeb.deviceCode();
+  // 硬件机器码随请求提交：服务端激活/补登记时把它与卡密绑定（见
+  // license-web.activate 的 opts.machine 说明），与界面显示的机器码同源。
+  const machine = await licenseWeb.machineId();
   // 连同本机那份签名记录一起发：服务端跨实例无状态（没接云存储时记录只活在处理
   // 激活的那台实例内存里），换一台实例就认不出这台设备，用户会看到点「运行」却
   // 报"未找到许可证文件"。记录带签名，服务端用现有补登记路径自校验采纳，两边都
@@ -907,10 +910,11 @@ async function runCloudJob(code, options) {
       headers: {
         'content-type': 'application/json',
         'X-JSLB-Device': device,
+        'X-JSLB-Machine': machine,
         ...langHeader(),
       },
       body: JSON.stringify({
-        code, options, type: state.mode, ...(record ? { record } : {}),
+        code, options, type: state.mode, machine, ...(record ? { record } : {}),
       }),
     });
   } catch (e) {
@@ -1218,9 +1222,63 @@ async function syncServerPolicy() {
     if (s.ok && !s.trial) {
       state.serverLicense = s;
       setStatus(t('webActivated', { plan: s.display || plan.displayName(s.plan) }), 'ok');
+    } else {
+      // 服务端也没有记录：自动为本机机器码领一张 7 天 Free 卡并激活（一机一张）
+      await autoIssueFreeKey();
     }
   }
   await refreshLicensePanel();
+}
+
+/**
+ * 网页自动派发 Free 卡：向 /api/free-key 出示本机机器码，领一张 7 天 Free
+ * 卡密并自动激活。
+ *
+ * 触发条件（见 syncServerPolicy 的调用点）：部署方开了 requireLicense，且本地
+ * 与服务端都没有这台设备的可用授权。此时未激活的机器什么都做不了，自动派发给
+ * 它 7 天 Free 档（每机器一张：服务端台账按机器码分键、卡号由机器码确定性派生，
+ * 见 server/handler.js 的 handleFreeKey）。有试用可用（requireLicense=false）
+ * 时不会走到这里——ensure() 直接给试用，而试用比 Free 宽，不该降档去领卡。
+ *
+ * 失败不阻断界面：离线/派发失败时维持"尚未激活"的中性引导，用户仍可手动输卡。
+ * @returns {Promise<boolean>} 是否自动激活成功
+ */
+async function autoIssueFreeKey() {
+  if (!state.apiOnline) return false;
+  const base = (state.apiBase || '').replace(/\/+$/, '');
+  const machine = await licenseWeb.machineId();
+  let res;
+  try {
+    res = await fetch(base + '/api/free-key', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'X-JSLB-Machine': machine, ...langHeader() },
+      body: JSON.stringify({ machine }),
+    });
+  } catch (e) {
+    // 断网 / CORS 被拦：保持"尚未激活"引导，不播报失败（服务整体不可用时
+    // 顶栏已有 offline 徽标，再报一句只会添乱）
+    return false;
+  }
+  const data = await res.json().catch(() => null);
+  if (!res.ok || !data || !data.ok || typeof data.key !== 'string') {
+    setStatus(t('webFreeAutoFailed', { msg: (data && data.message) || ('HTTP ' + res.status) }), 'warn');
+    return false;
+  }
+  const r = await licenseWeb.activate(data.key, { machine });
+  if (!r.ok) {
+    // 最常见原因：该机器码的卡已被别的记录赎回过（reason=used）；服务端文案
+    // 键与手动激活共用 licReason_*，直接复用
+    setStatus(t('webFreeAutoFailed', { msg: t('licReason_' + r.reason) || r.reason }), 'warn');
+    return false;
+  }
+  // 与手动激活同一收尾：同步服务端补登记（服务端按卡密赎回 + 绑定机器码 +
+  // 按设备码存记录），之后 /api/obfuscate 才能从设备码恢复授权
+  const s = await pushLicense();
+  state.serverLicense = s.ok ? s : null;
+  if (s.ok) loadCore().catch(() => {});
+  setStatus(t('webFreeAutoDone'), 'ok');
+  await refreshLicensePanel();
+  return true;
 }
 
 /**
@@ -1231,11 +1289,12 @@ async function syncServerPolicy() {
 async function callLicenseApi(body) {
   const base = (state.apiBase || '').replace(/\/+$/, '');
   const device = await licenseWeb.deviceCode();
+  const machine = await licenseWeb.machineId();
   try {
     const res = await fetch(base + '/api/license', {
       method: 'POST',
-      headers: { 'content-type': 'application/json', 'X-JSLB-Device': device, ...langHeader() },
-      body: JSON.stringify(body || {}),
+      headers: { 'content-type': 'application/json', 'X-JSLB-Device': device, 'X-JSLB-Machine': machine, ...langHeader() },
+      body: JSON.stringify({ ...(body || {}), machine }),
     });
     const data = await res.json().catch(() => null);
     if (res.ok && data && data.ok) return data;
@@ -1454,7 +1513,10 @@ async function activate() {
   if (!key) return;
 
   // 1) 本地验签：内置密钥认得这张卡（自托管、未覆盖 secret 的部署走这条）
-  const r = await licenseWeb.activate(key);
+  // 附带本机硬件机器码：卡密经赎回登记永久绑到它（与界面显示的机器码同源），
+  // 换机器再出示这张卡会被赎回登记拒（reason=used）。
+  const machine = await licenseWeb.machineId();
+  const r = await licenseWeb.activate(key, { machine });
   if (r.ok) {
     els.licKey.value = '';
     state.apiKey = key;

@@ -189,6 +189,10 @@ const STRINGS = {
     webActivatedNoSync: '本机已激活（套餐 {plan}），但服务端未登记此设备；若混淆时提示核心模块加载失败，请检查服务地址后重新激活',
     webActivateFailed: '激活失败: {reason}',
     webDeactivated: '已解除激活',
+    webFreeAutoDone: '已为本机自动激活 Free 套餐（7 天有效，每台机器仅一张）',
+    webFreeAutoFailed: '自动领取 Free 卡密失败: {msg}。可手动在下方卡密框输入卡密。',
+    freeKeyBadMachine: '缺少机器码或格式非法（应为 24 字符 base32 的硬件机器码）',
+    freeKeyFailed: 'Free 卡密派发失败: {reason}',
 
     // 服务端文案。语言按请求判定，见 server/handler.js 的 resolveLang()：
     // 显式头 X-JSLB-Lang > Accept-Language > 环境变量/默认。
@@ -519,6 +523,10 @@ const STRINGS = {
     webActivatedNoSync: 'Activated locally (plan {plan}), but the server has no record for this device; if obfuscation reports that core modules failed to load, check the API endpoint and activate again',
     webActivateFailed: 'Activation failed: {reason}',
     webDeactivated: 'Deactivated',
+    webFreeAutoDone: 'Activated the Free plan for this machine (7 days, one key per machine)',
+    webFreeAutoFailed: 'Failed to fetch the free key: {msg}. Enter a key manually instead.',
+    freeKeyBadMachine: 'missing or malformed machine id (expected a 24-char base32 hardware machine id)',
+    freeKeyFailed: 'free key issuance failed: {reason}',
 
     // Server-side strings. The language is decided per request — see
     // resolveLang() in server/handler.js:

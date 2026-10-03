@@ -1,12 +1,16 @@
 /**
  * 服务端 JSON API 处理器（Vercel Functions 的实现层，见 vercel/entry.js）。
  *
- * 只提供 /api/* 五个端点：/api/obfuscate、/api/license、/api/plans、/api/health、
- * /api/machine。静态界面不经过这里——dist/ 由托管平台的 CDN 直接发；原先
- * "把非 /api 请求转给 ASSETS 绑定"那一路属于 Cloudflare 部署，已随之移除。
+ * 只提供 /api/* 六个端点：/api/obfuscate、/api/license、/api/plans、/api/health、
+ * /api/machine、/api/free-key。静态界面不经过这里——dist/ 由托管平台的 CDN
+ * 直接发；原先"把非 /api 请求转给 ASSETS 绑定"那一路属于 Cloudflare 部署，
+ * 已随之移除。
  *
- * /api/machine 负责发机器码：激活时客户端向它要一个，服务端按卡密编号登记
- * 后永久保存，同一张卡此后拿到的永远是同一个值（详见 license-web 的"机器码"一节）。
+ * /api/machine 负责发机器码（旧客户端/老卡路径）：激活时客户端向它要一个，
+ * 服务端按卡密编号登记后永久保存，同一张卡此后拿到的永远是同一个值。
+ * /api/free-key 负责网页自动派发：按客户端硬件机器码（X-JSLB-Machine）一机
+ * 一张签发 7 天 Free 卡，卡号由机器码确定性派生，防刷卡密（详见 license-web
+ * 的 issueFreeKey 与"机器码"一节）。
  *
  * 与浏览器共用同一份核心（src/**），因此相同输入、相同卡密在两端得到相同结果与
  * 相同拦截。计算位置由部署决定：Vercel 部署一律云端执行（web.cloudOnly），源码
@@ -74,7 +78,7 @@ function corsHeaders(env) {
   return {
     'access-control-allow-origin': origin,
     'access-control-allow-methods': 'GET, POST, OPTIONS',
-    'access-control-allow-headers': 'content-type, x-jslb-key, x-jslb-device, x-jslb-lang',
+    'access-control-allow-headers': 'content-type, x-jslb-key, x-jslb-device, x-jslb-lang, x-jslb-machine',
     'access-control-max-age': '86400',
     vary: 'origin',
   };
@@ -215,6 +219,9 @@ async function handleObfuscate(request, env) {
 
   // 卡密也可以放在请求体里，方便不熟请求头的调用方
   const key = request.headers.get('X-JSLB-Key') || body.key;
+  // 客户端提交的硬件机器码（见 /api/license 的同名说明）：激活时与卡密绑定。
+  const machine = request.headers.get('X-JSLB-Machine')
+    || (typeof body.machine === 'string' ? body.machine : '');
   if (key) {
     // 卡密是严格一次性的：先恢复本设备已有授权——同一张卡在本设备激活过后，
     // KV 里留有有效记录，直接复用；重复 activate 会被赎回登记判成 'used'。
@@ -226,7 +233,7 @@ async function handleObfuscate(request, env) {
     // 闸门全被绕过）。不匹配时回落到 activate，由它报 401 原因。
     const reuse = had.ok && await licenseWeb.restoredMatchesKey(key);
     if (!reuse) {
-      const act = await licenseWeb.activate(key);
+      const act = await licenseWeb.activate(key, { machine });
       if (!act.ok) {
         return json({
           ok: false,
@@ -306,6 +313,43 @@ async function handleMachine(request) {
   }, 200);
 }
 
+/**
+ * /api/free-key：按机器码签发 7 天 Free 套餐卡（一机一张，网页自动派发用）。
+ *
+ * 机器码必须由客户端提交（X-JSLB-Machine 头或 body.machine）：它是硬件特征
+ * 派生值，服务端没有浏览器指纹、替它算不出同一个值。卡号由机器码确定性派生，
+ * 台账按机器码分键——同机重取回放原卡，异机各得各卡，跨机赎回被赎回登记拦
+ * （详见 license-web.issueFreeKey 的说明）。
+ *
+ * 防刷卡密：刷出来的卡密分发给别的机器时，对方提交的机器码与卡号派生自的
+ * 机器码对不上——赎回登记一查即拒（reason=used）。
+ */
+async function handleFreeKey(request) {
+  if (request.method !== 'POST') {
+    return json({ ok: false, message: 'use POST with {machine}' }, 405);
+  }
+  const body = await readBody(request);
+  const machine = request.headers.get('X-JSLB-Machine')
+    || (body && typeof body.machine === 'string' ? body.machine : '');
+  const r = await licenseWeb.issueFreeKey(machine);
+  if (!r.ok) {
+    const message = r.reason === 'machine'
+      ? t('freeKeyBadMachine')
+      : t('freeKeyFailed', { reason: r.reason });
+    return json({ ok: false, status: 400, message }, 400);
+  }
+  return json({
+    ok: true,
+    key: r.code,
+    plan: 'free',
+    days: licenseWeb.FREE_KEY_DAYS,
+    machine: r.machine,
+    // issued 为真表示这次是新签（台账里没有这张机器码的记录）
+    issued: !!r.issued,
+    source: r.source || '',
+  }, 200);
+}
+
 /** /api/license：查询或激活。 */
 async function handleLicense(request) {
   if (request.method === 'GET') {
@@ -349,12 +393,16 @@ async function handleLicense(request) {
   }
 
   const key = request.headers.get('X-JSLB-Key') || body.key;
+  // 客户端提交的硬件机器码：激活时与卡密永久绑定（见 license-web.activate 的
+  // opts.machine 说明）。老客户端不带这个头，activate 回落到卡的绑定机器码。
+  const machine = request.headers.get('X-JSLB-Machine')
+    || (typeof body.machine === 'string' ? body.machine : '');
   if (key) {
     // 与 /api/obfuscate 同口径：卡密严格一次性，本设备已有有效记录时直接复用，
     // 只在未激活（记录缺失或已过期）时才用这张卡走激活。
     const had = await licenseWeb.restore({ selfAnchored: true });
     if (!had.ok) {
-      const act = await licenseWeb.activate(key);
+      const act = await licenseWeb.activate(key, { machine });
       if (!act.ok) {
         return json({
           ok: false,
@@ -397,6 +445,12 @@ async function handleApi(request, env) {
       plans: plan.rows(),
       web: platform.getWebConfig(),
     }, 200, corsHeaders(env));
+  }
+
+  if (path === '/api/free-key') {
+    const res = await handleFreeKey(request);
+    for (const [k, v] of Object.entries(corsHeaders(env))) res.headers.set(k, v);
+    return res;
   }
 
   if (path === '/api/machine') {

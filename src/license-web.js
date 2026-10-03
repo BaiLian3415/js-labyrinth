@@ -4,22 +4,30 @@
  * 与 Node 版的差别只在宿主能力，判定规则完全一致：卡密由同一份 license-codec
  * 解析，许可证记录由同一份 license-core 校验，套餐闸门与配额口径也一致。
  *
- * ## 机器码：由服务端签发，与卡密永久绑定
+ * ## 机器码：硬件特征派生，激活时与卡密永久绑定
  *
- * 老做法是拿设备特征（平台、CPU 核数、GPU 渲染器、时区、语言）派生机器码，
- * 结果有两个绕不开的毛病：① Worker 里没有 navigator / screen / WebGL，派生出的
- * 是另一个常量，于是"激活前界面显示 A、激活后服务端回 B"——看上去就是激活之后
- * 机器码变了；② 特征里任何一项漂移（GPU 渲染器取不到、改时区、改语言）都会让
- * 已激活的卡在 restore 时判成 machine 不一致，用户什么都没干就被踢回未激活。
+ * 机器码由设备硬件特征（平台、CPU 核数、GPU 渲染器、时区、语言，见
+ * deviceFingerprint）派生：同一台机器跨会话稳定，不受清站点数据、换浏览器、
+ * 隐私模式影响。客户端在激活时把机器码随请求提交，服务端把它写进赎回登记与
+ * 卡的机器码绑定——这张卡从此永久绑死在这个机器码上（"一卡一机"）。
  *
- * 现在改为服务端签发：激活时向 Worker 要一个机器码，Worker 按卡密编号
- * 登记（KV 里随机签发并持久保存），此后同一张卡在任何设备、任何时间取到的都是
- * 同一个值——"永久绑定"就是说这个。服务端没绑 KV 时退化成"由卡号确定性派生"
- * （同一张卡恒等），保证恒定性不依赖存储是否可用。
+ * 为什么激活时提交而不是各端自己派生：v5 卡密不携带绑定段，"这张卡在哪台机器
+ * 激活的"唯一凭据是 KV 里的赎回登记。服务端（Worker）没有 navigator / WebGL，
+ * 派不出客户端同款的特征值，所以绑定值以客户端提交的为准，服务端负责格式校验
+ * 与后续比对：换一台机器再出示同一张卡，提交的机器码对不上赎回登记，即被拒
+ * （reason=used）。服务端签发的旧机器码机制（/api/machine）保留：老卡与不带
+ * 机器码头的旧客户端仍走原路径，行为不变。
  *
- * 离线或纯静态部署（没有同源服务）时依次退回本机缓存与设备特征派生值，并把
- * 结论记进本机缓存，保证刷新前后一致。设备特征因此只剩兜底用途，不再参与
- * 已激活卡的身份判定。
+ * 网页自动派发 Free 卡（issueFreeKey）：部署方开启 requireLicense 且本机没有
+ * 可用授权时，网页向 /api/free-key 出示本机机器码，服务端按机器码确定性派生
+ * 卡号签一张 7 天 Free 卡（卡密字符串因随机 IV 每次不同，但卡号恒定），并写
+ * 入"每机器一张"的派发台账。台账丢失（没绑 KV）时重派仍得同一卡号，"一机一卡"
+ * 不依赖台账持久；跨机器赎回照旧由赎回登记拦截。Free 卡允许同机重激活：误清
+ * 站点数据后同一机器码再输一次即可恢复本地记录（Free 是每日配额，没有总额度
+ * 重置风险）；其余卡种保持严格一次性。
+ *
+ * 离线或纯静态部署（没有同源服务）时退回本机缓存，再退设备特征派生值，并把
+ * 结论记进本机缓存，保证刷新前后一致。
  *
  * 反调试与自身文件摘要校验不在这里实现：网页端的代码与密钥对使用者完全可见，
  * 那两项在网页里没有实际防护意义，硬搬只会变成误导。部署方若要真正强制授权，
@@ -58,6 +66,14 @@ const K_REDEEM_PREFIX = 'jslabyrinth.redeem.';
 const K_MACHINE = 'jslabyrinth.machine.v2';
 /** 机器码绑定键前缀（按卡密编号分键，全局；无 KV 时落到本机存储）。 */
 const K_MACHINE_BIND_PREFIX = 'jslabyrinth.machinebind.';
+/** 网页自动派发的 Free 卡有效期（天）。 */
+const FREE_KEY_DAYS = 7;
+/** Free 卡派发台账键前缀（本机存储侧；按机器码分键，全局）。 */
+const K_FREE_PREFIX = 'jslabyrinth.freekey.';
+/** Free 卡派发台账键前缀（KV 侧；同上，全局不按设备隔离）。 */
+const KV_FREE_PREFIX = 'freekey:';
+/** Free 卡卡号派生标签：机器码 → 40 bit 卡号，同一机器码恒得同一卡号。 */
+const FREE_ID_TAG = 'JSLB/FREEKEY/v1|';
 
 /** 机器码长度：24 字符 base32，与设备特征派生出的旧值同形制。 */
 const MACHINE_LEN = 24;
@@ -555,6 +571,92 @@ async function allocateMachineCode(cardId) {
   return { ok: true, machine: derived, issued: true, source: 'derived' };
 }
 
+// ---------------------------------------------------------------- 网页自动派发 Free 卡
+//
+// 部署方开启 requireLicense 后，未激活的机器什么都干不了。这条通道让网页按
+// "一台机器一张"自动领 7 天 Free 卡：反刷卡密（一人刷出一堆卡分发）靠三道
+// 闸门——① 派发台账按机器码分键，同机重取回放原卡不新发；② 卡号由机器码
+// 确定性派生，台账丢了也刷不出第二个卡号；③ 跨机器赎回被赎回登记拒绝。
+
+/** 读取某机器码的 Free 卡派发台账；没有或损坏时返回 null。 */
+async function getFreeKeyLedger(machine) {
+  const kv = platform.getKv();
+  let v = null;
+  if (kv && typeof kv.get === 'function') {
+    try {
+      v = await kv.get(KV_FREE_PREFIX + machine);
+    } catch (e) {
+      v = null;
+    }
+  } else {
+    v = platform.getStorage().get(K_FREE_PREFIX + machine) || null;
+  }
+  if (!v || typeof v !== 'string' || v.charAt(0) !== '{') return null;
+  try {
+    const d = JSON.parse(v);
+    // 台账形状与赎回登记一致：k 卡密原文、m 机器码、t 时间戳
+    if (d && typeof d === 'object' && typeof d.k === 'string' && d.k) {
+      return {
+        code: d.k,
+        m: typeof d.m === 'string' ? d.m : '',
+        t: Number.isFinite(d.t) ? d.t : 0,
+      };
+    }
+  } catch (e) {
+    // 损坏值按没有处理：卡号是确定性派生，重签不影响"一机一卡"
+  }
+  return null;
+}
+
+/** 登记某机器码派发的 Free 卡。台账只为回放同一卡密串，写失败不影响本次返回。 */
+async function setFreeKeyLedger(machine, code) {
+  const payload = JSON.stringify({ k: String(code == null ? '' : code), m: String(machine), t: platform.now() });
+  const kv = platform.getKv();
+  if (kv && typeof kv.put === 'function') {
+    try {
+      await kv.put(KV_FREE_PREFIX + machine, payload);
+      return true;
+    } catch (e) {
+      return false;
+    }
+  }
+  return platform.getStorage().set(K_FREE_PREFIX + machine, payload);
+}
+
+/**
+ * 按机器码签发一张 Free 套餐卡（网页自动派发用）。
+ *
+ * 卡号（40 bit 编号）由机器码 HMAC 确定性派生：同一机器码永远得到同一卡号，
+ * 卡密字符串因信息段的随机 IV 每次不同，但赎回登记按卡号分键——所以即便派发
+ * 台账丢了，"再派一张"也还是同一张卡，"一机一卡"不依赖台账持久；不同机器码
+ * 派生不同卡号，卡密无法跨机共用。跨机赎回仍由赎回登记拦截（reason=used）。
+ *
+ * 有效期与套餐写死 free / 7 天（FREE_KEY_DAYS）：这是匿名机器的自服务通道，
+ * 部署方不该在这上面谈套餐。未绑 KV 时台账落在单实例内存里、同实例内重取
+ * 恒等，跨实例可能各签一次字符串——但卡号相同，赎回登记（若绑了 KV）照旧
+ * 只认一次。
+ *
+ * @param {string} machine 机器码，24 字符 base32（客户端硬件特征派生值）
+ * @returns {Promise<{ok:boolean, reason?:string, code?:string, machine?:string, issued?:boolean, source?:string}>} 结果
+ */
+export async function issueFreeKey(machine) {
+  const m = String(machine == null ? '' : machine).trim().toUpperCase();
+  if (!isMachineCode(m)) return { ok: false, reason: 'machine' };
+  const led = await getFreeKeyLedger(m);
+  if (led) {
+    const p = codec.parseCode(codeKey, led.code);
+    if (p.ok && p.plan === 'free' && p.days === FREE_KEY_DAYS) {
+      return { ok: true, code: led.code, machine: m, issued: false, source: 'ledger' };
+    }
+  }
+  const h = hmacSha256Hex(FREE_ID_TAG, m);
+  const id = Number(BigInt('0x' + h.slice(0, 10)) & codec.MAX_ID);
+  const code = codec.issueCode(codeKey, 'free', FREE_KEY_DAYS, id);
+  if (!code) return { ok: false, reason: 'issue' };
+  await setFreeKeyLedger(m, code);
+  return { ok: true, code, machine: m, issued: true, source: 'issued' };
+}
+
 /** 记下本机当前机器码：离线刷新也要保持同一个值，不能退回设备特征去。 */
 async function rememberMachine(mid) {
   if (!isMachineCode(mid)) return;
@@ -679,14 +781,21 @@ export async function restore(opts) {
 /**
  * 用卡密激活当前设备，成功即写入存储并进入已授权状态。
  * @param {string} rawKey 卡密原文
+ * @param {object} [opts]
+ * @param {string} [opts.machine] 客户端提交的机器码（硬件特征派生值，网页流程必带）。
+ *   合法时直接作为绑定值：赎回登记与卡的机器码绑定都写它，这张卡从此永久属于
+ *   这台机器。不传时取这张卡的绑定机器码（服务端签发机制，旧客户端/老卡路径）。
  * @returns {Promise<{ok:boolean, reason?:string, plan?:string, expiresAt?:number}>} 结果
  */
-export async function activate(rawKey) {
+export async function activate(rawKey, opts) {
   const parsed = codec.parseCode(codeKey, String(rawKey == null ? '' : rawKey).trim());
   if (!parsed.ok) return { ok: false, reason: parsed.reason };
-  // 机器码按这张卡取：首次由服务端随机签发并永久登记，之后同一张卡恒等——
-  // 不能现场拿设备特征现算，那玩意儿换个环境就变（详见文件头的"机器码"一节）。
-  const mid = await machineId({ code: parsed.code });
+  // 机器码：客户端提交了就原样用（见文件头"机器码"一节——服务端派不出客户端
+  // 同款的特征值，绑定值以提交为准）；否则按这张卡取（服务端签发/绑定机制）。
+  const o = opts || {};
+  const mid = isMachineCode(o.machine)
+    ? String(o.machine).trim().toUpperCase()
+    : await machineId({ code: parsed.code });
   // 机器绑定必须在激活这一刻就判定，不能留给 restore：激活成功立即获得完整
   // 权益（本次会话直接可用；Worker 按卡密激活的 API 请求更是每次都要走这里），
   // 等下次 restore 才以 reason:'bind' 拒绝，等于换机的绑定卡已经白用了一整轮。
@@ -699,19 +808,22 @@ export async function activate(rawKey) {
   if (expiresAt !== codec.PERPETUAL && platform.now() > expiresAt) {
     return { ok: false, reason: 'expired' };
   }
-  // 防重复使用：每张卡密只能激活一次（严格一次性）。赎回登记一旦存在——
-  // 无论登记的是不是本机——再次输入卡密一律拒绝（reason=used）。同机重复验证
-  // 不该走到这里：本机已有许可证记录时 restore() 先行恢复，不会重新激活。
+  // 防重复使用：每张卡密只能激活一次（严格一次性）。赎回登记一旦存在，另一台
+  // 机器再出示这张卡一律拒绝（reason=used）。旧版允许同机重复激活并把用量重置
+  // 为 0——Pack 卡同机用完额度后再输一次就白得新额度，等于无限续杯，这条口子
+  // 对非 Free 卡保持封死。用户误清数据后需重激活非 Free 卡的，由发卡方删除 KV
+  // 里的 jslb:redeem:<卡号> 键解绑（登记里带卡密原文与机器码，核对无误再删）。
   //
-  // 旧版允许同机重复激活，并把用量重置为 0——Pack 卡同机用完 100 次后再输一次
-  // 卡密就白得新的 100 次，等于无限额度；严格一次性把这条口子封死。用户误清
-  // 站点数据需要重激活的，由发卡方删除 KV 里的 jslb:redeem:<卡号> 键解绑（登记
-  // 里带卡密原文与机器码，核对无误再删）。
+  // 例外，Free 卡同机恢复：网页自动派发的 Free 卡绑在机器硬件机器码上，误清
+  // 站点数据（本地记录没了）后同一机器码再激活一次即重建记录。Free 只有每日
+  // 配额（无一次性总额度），不存在"重置额度"风险；跨机器出示仍被上面的判定拒绝。
   const redeemer = await getRedeemer(parsed.id);
   if (redeemer) {
-    return { ok: false, reason: 'used' };
-  }
-  if (await setRedeemer(parsed.id, parsed.code, mid) === false) {
+    const same = isMachineCode(redeemer.m) && codec.timingSafeEqualText(redeemer.m, mid);
+    if (!(parsed.plan === 'free' && same)) {
+      return { ok: false, reason: 'used' };
+    }
+  } else if (await setRedeemer(parsed.id, parsed.code, mid) === false) {
     // 登记写不进去就不放行：否则这张卡等于从未赎回，换台机器还能再激活一次
     return { ok: false, reason: 'write' };
   }
@@ -1030,6 +1142,8 @@ export default {
   getApiBase,
   machineId,
   machineForCode,
+  issueFreeKey,
+  FREE_KEY_DAYS,
   deviceCode,
   bindTarget,
   trialEntitlements,
