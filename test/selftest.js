@@ -25,6 +25,8 @@
  *   source-loc       解析器位置追踪：语句级 start/end/loc，默认关闭
  *   string-wrappers  字符串池调用点包装链：层数、链式占比、任意层进入
  *   handler-poly     引导器原语算法多态：变体族、两侧一致、指纹分散
+ *   vmcore           内层可信内核：42 条指令、定长取指、操作码变换
+ *   vm-nested        嵌套档编译器：端到端结果正确、不支持的语法必须退让
  *   vm               VM 保护、动态操作码、分发表密文化、寄存器模型
  *   anti-analysis    Anti-CDP 与域名锁定
  *   minify           AST 简化、DCE、命名策略、属性名重命名、杂项
@@ -61,6 +63,8 @@ const FILES = [
   'source-loc.js',
   'string-wrappers.js',
   'handler-poly.js',
+  'vmcore.js',
+  'vm-nested.js',
   'chinese-names.js',
   'vm.js',
   'anti-analysis.js',
