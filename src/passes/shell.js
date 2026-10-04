@@ -10,7 +10,9 @@
  */
 
 import rand from '../utils/rand.js';
-const { randInt, randHex } = rand;
+// randFn 是 rand 模块导出的 0~1 浮点源（默认导出本身也叫 rand，解构出来得改名，
+// 否则 const { rand } = rand 会在自己的初始化器里撞上 TDZ）。
+const { randInt, randHex, rand: randFn } = rand;
 import i18n from '../i18n.js';
 import { jsfuckProgram, decodeStrExpr } from './jsfuck.js';
 
@@ -18,54 +20,169 @@ const B64_ALPHA = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz012345678
 
 // 共享原语，参数为无符号 32 位或有限整数，构建期与运行期行为逐位一致。
 //
-// PRIMITIVES 是产物里那份文本，逐字进引导器；下面的直接实现是它在构建期的
-// 等价物。原先这里用 (0, eval)(...) 把这段文本当场求值，好处是"同一份文本"
-// 天然不会漂移，但浏览器的 CSP 与不少函数运行时禁止一切字符串代码生成——eval 与
-// new Function 一律被拒，跑起来直接报 EvalError: Code generation from strings
-// disallowed。改成手写等价实现后，"不漂移"由
-// test/minify.js 里那条逐位比对来保证（Node 允许 eval，正好用来当参照）。
-const PRIMITIVES = [
-  'function mul32(_0a,_0b){_0a=_0a>>>0;_0b=_0b>>>0;var _0l=_0a&65535,_0h=_0a>>>16;',
-  'return ((_0l*_0b)+(((_0h*_0b)&65535)<<16))>>>0;}',
-  'function lcg(_0x){return (mul32(_0x>>>0,1103515245)+12345)>>>0;}',
-  'function xs32(_0u){_0u^=_0u<<13;_0u^=_0u>>>17;_0u^=_0u<<5;return _0u>>>0;}',
-  'function shfl(_0a,_0s){var _0x=_0s>>>0;',
-  'for(var _0i=_0a.length-1;_0i>0;_0i--){_0x=lcg(_0x);var _0j=_0x%(_0i+1);',
-  'var _0t=_0a[_0i];_0a[_0i]=_0a[_0j];_0a[_0j]=_0t;}return _0a;}',
-  'function ipos(_0t,_0P1,_0P2,_0N){return (((_0t*_0P1)%_0N)*_0P2)%_0N;}',
-  'function mix(_0h,_0v,_0t,_0ph){_0h=mul32(_0h^_0v,16777619);',
-  'if(_0ph){_0h=mul32(_0h^(_0t&255),16777619);}return _0h>>>0;}',
-].join('');
+// 每个原语给**若干族实现**，逐构建挑一族。为什么值得挑：
+//   · lcg 的 1103515245、xs32 的 13/17/5、mul32 的 16 位拆分形状，都是极强且
+//     一搜就中的工具指纹——扫一遍常量就能定位到本工具，无需理解任何逻辑。
+//   · 这些原语只用于在构建期与运行期之间自洽地产生密钥流（谁也不用它的具体数值），
+//     所以换一族**不改变任何外部可观察行为**，只需要同一变体在两侧一致。
+//   · 于是指纹从"这几个常量"降级成"某一族常量"，定位成本从扫常量升到读逻辑。
+//
+// 每族的 src（进产物的文本）与 fn（构建期实现）必须逐位等价，这由
+// test/handler-poly.js 遍历**全部**变体组合逐位比对来钉死；test/minify.js 那条
+// 只比默认档，作为"两份实现不会漂移"的基线保留。
+//
+// PRIMITIVES 是产物里那份文本，逐字进引导器；下面是它在构建期的等价物。原先这里
+// 用 (0, eval)(...) 当场求值，好处是"同一份文本"天然不会漂移，但浏览器的 CSP 与
+// 不少函数运行时禁止一切字符串代码生成——eval 与 new Function 一律被拒，跑起来
+// 直接报 EvalError: Code generation from strings disallowed。
+//
+// 参数名用 _0x/_0u/_0a 这类占位，随后统一交给 randomizeNames 随机化（见
+// makeShellLayer 里的调用点处理），所以变体之间的形参命名不构成差异。
 
-/** 32 位精确乘法，构建期使用，与引导器内 mul32 出自同一份文本。 */
-function mul32(_0a, _0b) {
-  _0a = _0a >>> 0;
-  _0b = _0b >>> 0;
-  const _0l = _0a & 65535;
-  const _0h = _0a >>> 16;
-  return ((_0l * _0b) + (((_0h * _0b) & 65535) << 16)) >>> 0;
+const MUL32_FORMS = [
+  {
+    // 16 位拆分。不用 Math.imul 是为了兼容没有 imul 的老宿主（它在 ES2015 才进规范）。
+    src: 'function mul32(_0a,_0b){_0a=_0a>>>0;_0b=_0b>>>0;var _0l=_0a&65535,_0h=_0a>>>16;' +
+      'return ((_0l*_0b)+(((_0h*_0b)&65535)<<16))>>>0;}',
+    fn: (a, b) => {
+      a >>>= 0; b >>>= 0;
+      const l = a & 65535; const h = a >>> 16;
+      return ((l * b) + (((h * b) & 65535) << 16)) >>> 0;
+    },
+  },
+  {
+    // imul 版：同一结果（低 32 位），代码形状完全不同。
+    src: 'function mul32(_0a,_0b){return Math.imul(_0a>>>0,_0b>>>0)>>>0;}',
+    fn: (a, b) => Math.imul(a >>> 0, b >>> 0) >>> 0,
+  },
+];
+
+const LCG_FORMS = [
+  { src: 'function lcg(_0x){return (mul32(_0x>>>0,1103515245)+12345)>>>0;}',
+    fn: (x) => (mul32(x >>> 0, 1103515245) + 12345) >>> 0 },
+  { src: 'function lcg(_0x){return (mul32(_0x>>>0,214013)+2531011)>>>0;}',
+    fn: (x) => (mul32(x >>> 0, 214013) + 2531011) >>> 0 },
+  { src: 'function lcg(_0x){return (mul32(_0x>>>0,1664525)+1013904223)>>>0;}',
+    fn: (x) => (mul32(x >>> 0, 1664525) + 1013904223) >>> 0 },
+];
+
+const XS32_FORMS = [
+  { src: 'function xs32(_0u){_0u^=_0u<<13;_0u^=_0u>>>17;_0u^=_0u<<5;return _0u>>>0;}',
+    fn: (u) => { u ^= u << 13; u ^= u >>> 17; u ^= u << 5; return u >>> 0; } },
+  // 注意：三元组不能随手填。(11,19,8) 看着顺眼，实际周期只有 84——4096 步只取到
+  // 84 个值。产物照样能跑（构建期与运行期一起退化），但密钥流质量没了，等于白换掉
+  // 一个指纹。(11,13,19) 是实测过的非退化三元组，test/handler-poly.js 有断言守着。
+  { src: 'function xs32(_0u){_0u^=_0u<<11;_0u^=_0u>>>13;_0u^=_0u<<19;return _0u>>>0;}',
+    fn: (u) => { u ^= u << 11; u ^= u >>> 13; u ^= u << 19; return u >>> 0; } },
+  { src: 'function xs32(_0u){_0u=(_0u+0x6D2B79F5)>>>0;var _0t=_0u;_0t=Math.imul(_0t^(_0t>>>15),_0t|1);' +
+      '_0t^=_0t+Math.imul(_0t^(_0t>>>7),_0t|61);return (_0t^(_0t>>>14))>>>0;}',
+    fn: (u) => {
+      u = (u + 0x6D2B79F5) >>> 0;
+      let s = u;
+      s = Math.imul(s ^ (s >>> 15), s | 1);
+      s ^= s + Math.imul(s ^ (s >>> 7), s | 61);
+      return (s ^ (s >>> 14)) >>> 0;
+    } },
+];
+
+const SHFL_FORMS = [
+  // 自顶向下（经典 Fisher-Yates）
+  { src: 'function shfl(_0a,_0s){var _0x=_0s>>>0;' +
+      'for(var _0i=_0a.length-1;_0i>0;_0i--){_0x=lcg(_0x);var _0j=_0x%(_0i+1);' +
+      'var _0t=_0a[_0i];_0a[_0i]=_0a[_0j];_0a[_0j]=_0t;}return _0a;}',
+    fn: (a, s) => {
+      let x = s >>> 0;
+      for (let i = a.length - 1; i > 0; i--) {
+        x = lcg(x);
+        const j = x % (i + 1);
+        const t = a[i]; a[i] = a[j]; a[j] = t;
+      }
+      return a;
+    } },
+  // 自底向上：同样是一个均匀置换，循环方向与取模方式都不同
+  { src: 'function shfl(_0a,_0s){var _0x=_0s>>>0;var _0n=_0a.length;' +
+      'for(var _0i=0;_0i<_0n-1;_0i++){_0x=lcg(_0x);var _0j=_0i+_0x%(_0n-_0i);' +
+      'var _0t=_0a[_0i];_0a[_0i]=_0a[_0j];_0a[_0j]=_0t;}return _0a;}',
+    fn: (a, s) => {
+      let x = s >>> 0;
+      const n = a.length;
+      for (let i = 0; i < n - 1; i++) {
+        x = lcg(x);
+        const j = i + x % (n - i);
+        const t = a[i]; a[i] = a[j]; a[j] = t;
+      }
+      return a;
+    } },
+];
+
+const IPOS_SRC = 'function ipos(_0t,_0P1,_0P2,_0N){return (((_0t*_0P1)%_0N)*_0P2)%_0N;}';
+const MIX_SRC = 'function mix(_0h,_0v,_0t,_0ph){_0h=mul32(_0h^_0v,16777619);' +
+  'if(_0ph){_0h=mul32(_0h^(_0t&255),16777619);}return _0h>>>0;}';
+
+/** 每族的变体数。抽出来给自测遍历全部组合用。 */
+export const PRIMITIVE_VARIANT_COUNTS = {
+  mul32: MUL32_FORMS.length,
+  lcg: LCG_FORMS.length,
+  xs32: XS32_FORMS.length,
+  shfl: SHFL_FORMS.length,
+};
+
+/** 默认变体（族 0）。既是不选时的取值，也是自测的基线。 */
+export const DEFAULT_VARIANTS = { mul32: 0, lcg: 0, xs32: 0, shfl: 0 };
+
+// 当前生效的变体。构建期所有原语调用都转发到这里的族实现，所以「产物里那一份」
+// 与「构建期算表用的那一份」必然是同一族——这是本文件最容易出错的地方：
+// 两侧一旦不同族，构建期算出的密钥流与运行期解出来的不一致，载荷直接变乱码。
+let CUR = { ...DEFAULT_VARIANTS };
+
+/**
+ * 按变体装配产物里那份原语文本。
+ * @param {{mul32:number,lcg:number,xs32:number,shfl:number}} v 变体下标
+ * @returns {string} 可直接进引导器的函数声明串
+ */
+export function buildPrimitivesText(v) {
+  return [
+    MUL32_FORMS[v.mul32].src,
+    LCG_FORMS[v.lcg].src,
+    XS32_FORMS[v.xs32].src,
+    SHFL_FORMS[v.shfl].src,
+    IPOS_SRC,
+    MIX_SRC,
+  ].join('');
 }
 
-function lcg(_0x) { return (mul32(_0x >>> 0, 1103515245) + 12345) >>> 0; }
-
-function xs32(_0u) {
-  _0u ^= _0u << 13;
-  _0u ^= _0u >>> 17;
-  _0u ^= _0u << 5;
-  return _0u >>> 0;
+/** 把模块当前变体设成给定下标。只由本文件的构建流程与自测调用。 */
+export function setPrimitiveVariants(v) {
+  CUR = { ...DEFAULT_VARIANTS, ...(v || {}) };
 }
 
-function shfl(_0a, _0s) {
-  let _0x = _0s >>> 0;
-  for (let _0i = _0a.length - 1; _0i > 0; _0i--) {
-    _0x = lcg(_0x);
-    const _0j = _0x % (_0i + 1);
-    const _0t = _0a[_0i];
-    _0a[_0i] = _0a[_0j];
-    _0a[_0j] = _0t;
-  }
-  return _0a;
+/** 当前生效的变体副本（自测与诊断用）。 */
+export function currentPrimitiveVariants() { return { ...CUR }; }
+
+/**
+ * 逐构建挑一族变体。走的是 seeded rand，所以同 seed 必得同一族、产物可复现。
+ * @param {() => number} rng 0..1 的随机源
+ */
+export function choosePrimitiveVariants(rng) {
+  const pick = (n) => Math.min(n - 1, Math.floor(rng() * n));
+  const v = {
+    mul32: pick(MUL32_FORMS.length),
+    lcg: pick(LCG_FORMS.length),
+    xs32: pick(XS32_FORMS.length),
+    shfl: pick(SHFL_FORMS.length),
+  };
+  setPrimitiveVariants(v);
+  return v;
 }
+
+/** 32 位精确乘法，转发到当前变体。 */
+function mul32(_0a, _0b) { return MUL32_FORMS[CUR.mul32].fn(_0a, _0b); }
+/** 密钥流推进器（线性同余），转发到当前变体。 */
+function lcg(_0x) { return LCG_FORMS[CUR.lcg].fn(_0x); }
+/** 另一条密钥流推进器，转发到当前变体。 */
+function xs32(_0u) { return XS32_FORMS[CUR.xs32].fn(_0u); }
+/** 原地置换，转发到当前变体。 */
+function shfl(_0a, _0s) { return SHFL_FORMS[CUR.shfl].fn(_0a, _0s); }
 
 function ipos(_0t, _0P1, _0P2, _0N) { return (((_0t * _0P1) % _0N) * _0P2) % _0N; }
 
@@ -75,17 +192,17 @@ function mix(_0h, _0v, _0t, _0ph) {
   return _0h >>> 0;
 }
 
-/** 原语表。调用点按名字取，与 PRIMITIVES 导出的那组同名同序。 */
+/** 原语表。调用点按名字取，与 buildPrimitivesText 产出的那组同名同序。 */
 const RT = { mul32, lcg, xs32, shfl, ipos, mix };
 
 /**
- * 引导器原语文本，导出给自测用。
+ * 引导器原语文本（当前变体的默认档），导出给自测用。
  *
  * 自测在 Node 下把它 eval 出来，与上面那组直接实现逐位比对，作为"两份实现
  * 不会漂移"的保证。eval 只出现在 test/minify.js 里——那里不随 Worker
  * 上传，而核心模块图里连一处字符串代码生成都不能留。
  */
-export const PRIMITIVES_TEXT = PRIMITIVES;
+export const PRIMITIVES_TEXT = buildPrimitivesText(DEFAULT_VARIANTS);
 
 /** 直接实现的那组原语，导出给自测比对。 */
 export const primitivesDirect = RT;
@@ -237,6 +354,11 @@ export function jsfuckPrelude(name, maxChars) {
  * @returns {string} 引导器源码，自执行，末尾复原并放行载荷
  */
 function makeShellLayer(payload, variant, mode) {
+  // 原语变体逐层重挑：每层壳用自己的一族，于是多层壳叠出来的产物里各层常量不同。
+  // 必须在算任何表之前挑——本函数下面所有 RT.* 调用与最后 put(primitivesText)
+  // 用的是同一个 CUR。
+  const variants = choosePrimitiveVariants(randFn);
+  const primitivesText = buildPrimitivesText(variants);
   const plain = utf8Bytes(payload);
   const L = plain.length;
   const N = L + 4; // 额外 4 字节校验尾
@@ -342,7 +464,7 @@ function makeShellLayer(payload, variant, mode) {
   const B = [];
   const put = (...xs) => B.push(...xs);
   put('(function(){');
-  put(PRIMITIVES);
+  put(primitivesText);
   put('var _0s2=' + s2 + ';');
   put('var _0a="";var _0i,_0j,_0t;');
   put('for(_0i=0;_0i<26;_0i++){_0a+=String.fromCharCode(65+_0i);}');
@@ -476,11 +598,12 @@ shellWrap.b64encode = b64encode;
 shellWrap.mul32 = mul32;
 shellWrap.utf8Bytes = utf8Bytes;
 shellWrap.utf8Decode = utf8Decode;
-shellWrap.PRIMITIVES = PRIMITIVES;
+shellWrap.PRIMITIVES = PRIMITIVES_TEXT;
+shellWrap.buildPrimitivesText = buildPrimitivesText;
 shellWrap.jsfuckCoreName = jsfuckCoreName;
 shellWrap.jsfuckPrelude = jsfuckPrelude;
 shellWrap.JSFUCK_CORE = JSFUCK_CORE;
 shellWrap.JSFUCK_MAX_CHARS = JSFUCK_MAX_CHARS;
 
 export default shellWrap;
-export { makeShellLayer, b64encode, mul32, utf8Bytes, utf8Decode, PRIMITIVES };
+export { makeShellLayer, b64encode, mul32, utf8Bytes, utf8Decode };

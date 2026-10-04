@@ -8,8 +8,16 @@
  */
 import { cleanTmp, ok, report, runNode, section } from './_harness.js';
 import obfuscateMod from '../src/obfuscate.js';
+import parserMod from '../src/ast/parser.js';
+import traverseMod from '../src/ast/traverse.js';
+import generatorMod from '../src/ast/generator.js';
+import numberObf from '../src/passes/numberObf.js';
+import rand from '../src/utils/rand.js';
 
 const { obfuscate } = obfuscateMod;
+const { parse } = parserMod;
+const traverse = traverseMod.default || traverseMod;
+const generate = generatorMod.default || generatorMod;
 section('逻辑表达式取值语义');
 {
   // 2026-09-19 修掉的静默正确性缺陷：logicalExpr 原先把 `a || b` 交换成 `b || a`，
@@ -95,12 +103,46 @@ section('数值常量混淆');
       .find((s) => s.pass === 'numberObf');
     ok(stMax && stMax.result.mba === true, 'max 预设启用 MBA', JSON.stringify(stMax && stMax.result));
 
-    const on = obfuscate(mbaSrc, { preset: 'medium', seed: 3, numberObfuscationMBA: true, numberObfuscationThreshold: 1 }).code;
-    const off = obfuscate(mbaSrc, { preset: 'medium', seed: 3, numberObfuscationMBA: false, numberObfuscationThreshold: 1 }).code;
+    const on = obfuscate(mbaSrc, { preset: 'medium', seed: 3, shell: false, numberObfuscationMBA: true, numberObfuscationThreshold: 1 }).code;
+    const off = obfuscate(mbaSrc, { preset: 'medium', seed: 3, shell: false, numberObfuscationMBA: false, numberObfuscationThreshold: 1 }).code;
     ok(on !== off, 'MBA 开关真的改变产物（不是空开关）');
-    // 形态特征：同一棵表达式里同时出现 & / | / << 与算术算子
-    ok(/(?:&[^;]*\)\s*<<|&[^;]*\)\s*[+*]|[-+]\s*\([^()]*&)/.test(on),
-      'MBA 产物里出现位算与算术交织的形态');
+
+    // 形态特征：位算与算术算子交织在同一棵表达式里。
+    //
+    // 这里**直接单跑 numberObf pass**，不走 obfuscate 的整条流水线。原因：这条形状
+    // 不是 MBA 专属——外壳完整性校验里那段 Math.imul(h ^ s.charCodeAt(i), 16777619)
+    // 就同时带 & 和 <<，RT 内核、字符串池、控制流也都会产出这类交织。整跑时命中与否
+    // 取决于其它 pass 恰好 drew 了什么（实测开壳 8 个 seed 只命中 6 个），于是这条
+    // 断言有两条坏路径：MBA 坏掉时可能照样绿（匹配到壳的代码），MBA 正常时也可能
+    // 红（被别的 pass 的随机性带偏）。单跑 pass 后产物里只有 MBA 恒等式，形状只能
+    // 来自它自己：实测关 MBA 时 8 个 seed 全部 0 处命中，开 MBA 时每档 4~8 处。
+    const SHAPE_RE = /(?:&[^;]*\)\s*<<|&[^;]*\)\s*[+*]|[-+]\s*\([^()]*&)/;
+    const runPass = (mba, seed) => {
+      rand.setSeed(seed);
+      const ast = parse(mbaSrc, { sourceType: 'script' });
+      const stats = numberObf(ast,
+        { numberObfuscationThreshold: 1, numberObfuscationMBA: mba },
+        { traverse, rng: rand.rand, usedNames: new Set(), rt: null });
+      const out = generate(ast, { compact: true });
+      return { stats, code: typeof out === 'string' ? out : out.code };
+    };
+    const offHits = [];
+    const onHits = [];
+    for (let seed = 1; seed <= 8; seed++) {
+      offHits.push(runPass(false, seed).code);
+      onHits.push(runPass(true, seed).code);
+    }
+    const cleanMiss = offHits.map((c, i) => (SHAPE_RE.test(c) ? i + 1 : 0)).filter(Boolean);
+    ok(cleanMiss.length === 0, '关 MBA 时产物里一处该形态都没有（形状确实来自 MBA）',
+      '命中的 seed：' + (cleanMiss.join(',') || '（无）'));
+    const onMiss = onHits.map((c, i) => (SHAPE_RE.test(c) ? 0 : i + 1)).filter(Boolean);
+    ok(onMiss.length === 0, '开 MBA 时每个 seed 都出现该形态', '未命中的 seed：' + (onMiss.join(',') || '（无）'));
+    // 单跑 pass 时 8 个 seed 的 replaced 数应当一致（阈值 1、无其他 pass 干扰），
+    // 说明上面两组的差异只来自 MBA 开关本身。
+    const repOn = runPass(true, 1).stats.replaced;
+    const repOff = runPass(false, 1).stats.replaced;
+    ok(repOn === repOff && repOn > 0,
+      '单跑时开关只改写法不改替换数量（replaced=' + repOn + '/' + repOff + '）');
   }
 }
 

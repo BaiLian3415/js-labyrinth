@@ -726,6 +726,10 @@ section('其他');
   // 而本文件不随产物上传。
   {
     const shellMod = await import('../src/passes/shell.js');
+    // 原语变体是模块级可变状态（构建时逐层切换）。显式钉回默认档再比对：
+    // 别的测试文件（handler-poly）跑过之后会把当前变体留在任意一档，
+    // 而这里比对的是 PRIMITIVES_TEXT（默认档的文本），靠执行顺序碰巧对上是隐患。
+    shellMod.setPrimitiveVariants(shellMod.DEFAULT_VARIANTS);
     const fromText = (0, eval)('(function(){' + shellMod.PRIMITIVES_TEXT
       + 'return {mul32:mul32,lcg:lcg,xs32:xs32,shfl:shfl,ipos:ipos,mix:mix};})()');
     const direct = shellMod.primitivesDirect;

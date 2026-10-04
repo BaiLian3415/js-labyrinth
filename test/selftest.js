@@ -24,6 +24,7 @@
  *   force-strings    强制入池字符串：绕过抽样阈值、优先级、非法正则
  *   source-loc       解析器位置追踪：语句级 start/end/loc，默认关闭
  *   string-wrappers  字符串池调用点包装链：层数、链式占比、任意层进入
+ *   handler-poly     引导器原语算法多态：变体族、两侧一致、指纹分散
  *   vm               VM 保护、动态操作码、分发表密文化、寄存器模型
  *   anti-analysis    Anti-CDP 与域名锁定
  *   minify           AST 简化、DCE、命名策略、属性名重命名、杂项
@@ -59,6 +60,7 @@ const FILES = [
   'force-strings.js',
   'source-loc.js',
   'string-wrappers.js',
+  'handler-poly.js',
   'chinese-names.js',
   'vm.js',
   'anti-analysis.js',

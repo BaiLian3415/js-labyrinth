@@ -105,15 +105,33 @@ const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'jslb-sem-'));
 // 上层宿主）会让 spawnSync 直接 EBUSY，整份比对会在第一个用例崩掉。
 const SYNC_STDIO = ['ignore', 'pipe', 'pipe'];
 
+// 单次执行的超时上限，按预设分档。
+//
+// 原先一律 20s。实测 max 档产物**合法地**要 10~25s：shell 的解码循环是主要
+// 成本（同一份源码 max 无壳只要 0.16s，加壳后 9~22s，665KB 产物），而且波动很大
+// ——取决于构建期随机出来的引导器结构与机器负载。于是 20s 卡在正常区间中间，
+// 表现为随机的 ETIMEDOUT：整轮 528 次比对里 3~5 个用例随机翻车，看起来像语义
+// 不一致，实际是超时。
+//
+// 这里不是"把断言放宽"：真正的死循环仍然会被任何有限超时抓到，这里只是把上限
+// 抬到 max 档的正常耗时之上，并且对便宜的预设保持原来的 20s，不拖慢整体。
+const RUN_TIMEOUT = { low: 20000, medium: 20000, high: 30000, max: 90000 };
+
 /** 跑一段代码，返回 stdout（去掉尾空白）；抛错则返回带标记的字符串。 */
-function runCode(code, tag) {
+function runCode(code, tag, timeoutMs) {
   const f = path.join(TMP, tag + '.js');
   fs.writeFileSync(f, code);
   try {
-    return execFileSync(process.execPath, [f], { encoding: 'utf8', timeout: 20000, stdio: SYNC_STDIO }).trim();
+    return execFileSync(process.execPath, [f],
+      { encoding: 'utf8', timeout: timeoutMs || 20000, stdio: SYNC_STDIO }).trim();
   } catch (e) {
     const out = (e.stdout || '').toString().trim();
     const err = (e.stderr || '').toString().split('\n')[0].slice(0, 60);
+    // 超时要单独标出来：混在「抛错」里会被读成语义不一致，而 ETIMEDOUT 与
+    // 语义错误是两回事，排查方向完全不同。
+    if (e.killed || e.signal === 'SIGTERM') {
+      return '<超时> 超过 ' + (timeoutMs || 20000) + 'ms 未结束';
+    }
     return '<抛错> ' + (err || e.message.slice(0, 60)) + (out ? ' | stdout=' + out : '');
   }
 }
@@ -164,7 +182,7 @@ for (const [name, src] of cases) {
         // 关掉：这份扫描要验的是**语义**，输出通道得是能出声的那个。
         // 关掉不影响任何被测 pass——consoleStub 不参与表达式取值或控制流变换。
         const r = obfuscate(code, resolveOptions({ preset, seed, consoleStub: false }));
-        got = runCode(r.code, 'obf');
+        got = runCode(r.code, 'obf', RUN_TIMEOUT[preset] || 20000);
       } catch (e) {
         got = '<混淆抛错> ' + e.message.split('\n')[0].slice(0, 50);
       }
