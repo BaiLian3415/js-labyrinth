@@ -704,7 +704,14 @@ function refreshOptionVisibility() {
     // 用 === 比原始类型：showWhen 的 equals 是按选项声明的取值类型写的
     // （布尔项写 true，枚举项写 'Dictionary'），松散比较会把 'false' 之类的
     // 枚举字符串判成真。
-    row.classList.toggle('is-hidden', currentValue(rule.key) !== rule.equals);
+    //
+    // notEquals 必须显式支持：options-meta 里有一批规则用的是 notEquals（如
+    // "命名策略 ≠ Dictionary 就不显示词表"、domainLockRedirectUrl 挂在 domainLock
+    // 非空时）。这里原来只读 rule.equals，notEquals 规则里的 equals 是 undefined，
+    // 于是 currentValue(...) !== undefined 恒真 → 那一行**永远**被收起。
+    const cur = currentValue(rule.key);
+    const visible = rule.notEquals !== undefined ? cur !== rule.notEquals : cur === rule.equals;
+    row.classList.toggle('is-hidden', !visible);
   }
 }
 

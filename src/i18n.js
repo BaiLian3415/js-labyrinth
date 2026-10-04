@@ -152,6 +152,7 @@ const STRINGS = {
       + '（核心源码 {bytes} 字符，约 {rate} 字符/字节）——请缩小 JSFUCK_CORE 或调高 JSFUCK_MAX_CHARS',
     vmUnknownOpcode: 'vm: 未知操作码 {kind}',
     badStringArrayEvolve: 'stringArrayEvolve 非法: {v}（可用 "each" / "sparse" 或 0~7 整数）',
+    badStringArrayWrappersCount: 'stringArrayWrappersCount 非法: {v}（需为 0~10 的整数，null 表示不设）',
     // parser 与 generator
     parseUnterminatedTemplate: '模板串未闭合',
     parseUnterminatedString: '字符串未闭合',
@@ -486,6 +487,7 @@ const STRINGS = {
       + ' (core source {bytes} chars, ≈{rate} chars/byte) — shrink JSFUCK_CORE or raise JSFUCK_MAX_CHARS',
     vmUnknownOpcode: 'vm: unknown opcode {kind}',
     badStringArrayEvolve: 'invalid stringArrayEvolve: {v} (use "each" / "sparse" or an integer 0..7)',
+    badStringArrayWrappersCount: 'invalid stringArrayWrappersCount: {v} (must be an integer 0..10, or null for unset)',
     // parser 与 generator
     parseUnterminatedTemplate: 'unterminated template literal',
     parseUnterminatedString: 'unterminated string literal',

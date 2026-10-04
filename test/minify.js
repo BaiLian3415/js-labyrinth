@@ -402,6 +402,38 @@ section('命名策略（nameStyle）与动态 import');
     ok(appSrc.slice(appSrc.indexOf('function refreshOptionVisibility('))
       .indexOf('currentValue(rule.key)') > 0,
     'refreshOptionVisibility 按 currentValue 判定（touched 优先）');
+
+    // notEquals 回归：显隐规则里两种写法都在用（equals 如 nameDictionary，
+    // notEquals 如 domainLockRedirectUrl / stringArrayWrappersChainedCalls）。
+    // 首版只读 rule.equals，notEquals 规则里的 equals 是 undefined，
+    // 于是 currentValue(...) !== undefined 恒真 → 那一行永远被收起，
+    // 而且不会有任何报错，只是"那个选项在界面上不见了"。
+    const rowNe = mkRow({ key: 'stringArrayWrappersCount', notEquals: 0 });
+    rowNe.classList.owner = rowNe;
+    const rowEq = mkRow({ key: 'stringArrayWrappersChainedCalls', equals: true });
+    rowEq.classList.owner = rowEq;
+    const rowsNe = [rowNe, rowEq];
+    const vstate2 = { preset: 'low', touched: new Map() };
+    const PRESETS3 = { low: { stringArrayWrappersCount: 0, stringArrayWrappersChainedCalls: true } };
+    const DEFAULTS3 = { stringArrayWrappersCount: 0, stringArrayWrappersChainedCalls: true };
+    const doc2 = { querySelectorAll: (s) => (s.indexOf('data-show-when') >= 0 ? rowsNe : []) };
+    const visApi2 = new Function('PRESETS', 'DEFAULTS', 'state', 'document', [
+      grab('presetValue'), grab('currentValue'), grab('refreshOptionVisibility'),
+    ].join('\n') + '\nreturn { refreshOptionVisibility };')(
+      PRESETS3, DEFAULTS3, vstate2, doc2);
+    const shownNe = (r) => !r.classes.has('is-hidden');
+    visApi2.refreshOptionVisibility();
+    ok(!shownNe(rowNe), 'notEquals 规则：层数为 0 时收起（原先恒收起，这一格看不出差别）',
+      'shown=' + shownNe(rowNe));
+    ok(shownNe(rowEq), 'equals 规则：链式为 true 时显示');
+    // 关键那一格：层数非 0 时 notEquals 行必须**显示**。旧实现这里恒为 false。
+    vstate2.touched.set('stringArrayWrappersCount', 3);
+    visApi2.refreshOptionVisibility();
+    ok(shownNe(rowNe), 'notEquals 规则：层数非 0 时显示（旧实现恒收起，这一格会失败）',
+      'shown=' + shownNe(rowNe));
+    vstate2.touched.set('stringArrayWrappersChainedCalls', false);
+    visApi2.refreshOptionVisibility();
+    ok(!shownNe(rowEq), 'equals 规则：链式关掉后收起', 'shown=' + shownNe(rowEq));
   }
   {
     // Mangled 的定义性质：发名与 seed 无关。用单绑定样本排除干扰——多绑定样本里

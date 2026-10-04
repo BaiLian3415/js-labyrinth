@@ -50,6 +50,17 @@ export default {
   "stringSplitProbability": 1,
   "stringIndexMask": true,
   "stringArrayCallsTransform": false,
+  // 包装层数：解码器外面再包 N 层单表达式函数，每层把索引异或一个构建期常量并带
+  // 0~4 个从不使用的 junk 形参。0 = 不包装（默认）；1~10 = 恰好这么多层。
+  // 旧选项 stringArrayCallsTransform 仍可用：它为 true 且本项保持 0 时，层数逐组
+  // 随机取 2~5；本项大于 0 时以本项为准。
+  // 与上游 javascript-obfuscator 的 stringArrayWrappersCount 同名同义。
+  "stringArrayWrappersCount": 0,
+  // true = 调用点只出现最外层那一个函数；false = 调用点在各层之间分散，
+  // 同一份产物出现多种签名，静态分析无法假定固定形态。
+  "stringArrayWrappersChainedCalls": true,
+  // 链式调用开启时走最外层的调用点占比（0~100），其余分散到内层。100 = 只有一种形态。
+  "stringArrayWrappersChainedCallsThreshold": 100,
   "controlFlowFlattening": true,
   "controlFlowThreshold": 1,
   "controlFlowProbability": 1,

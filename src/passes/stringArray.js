@@ -138,6 +138,44 @@ export default function stringArray(ast, options, ctx) {
   // 字符串碎片化：把每组的池内容拆成多个短载体分散声明，运行期拼回；
   // 静态面上不再有任何一处集中存放整池密文
   const scatter = options.stringScatter === true;
+  // 调用点包装链的层数与进入方式（stringArrayWrappers* 系列）。
+  //
+  // 层数来源，优先级从高到低：
+  //   stringArrayWrappersCount > 0        → 就用它（恰好这么多层）
+  //   旧名 stringArrayCallsTransform: true 且上面保持 0 → 旧行为，层数逐组随机 2~5
+  //   都没给                              → 0，不包装
+  // 之所以保留旧名而不是直接删：它已经在预设和文档里出现，删掉会让既有配置静默失效
+  // （从"包 2~5 层"变成"不包装"）。这里让新项默认 0 当"未设"的哨兵，于是旧名与新项
+  // 能共存而不冲突：显式给了层数就以层数为准。
+  //
+  // 旧行为是**每组各自**摇 2~5 层，所以这里只记下"要摇"这个意图，真正的摇留在
+  // 组循环里、原来的位置——提前到循环外摇会让所有组层数相同，反而多出一个指纹。
+  let wrapperCountSpec = 0;
+  // 统计：注入了几层包装、调用点实际用过几个入口名。放在 stats 里而不是让测试去
+  // 正则数产物——数出来的"看起来像包装的函数"会把解码器内部的同名结构算进去。
+  let wrapperLayersInjected = 0;
+  const wrapperLayersPerGroup = [];
+  const entryNamesUsed = new Set();
+  const wcOpt = options.stringArrayWrappersCount;
+  if (options.stringArrayCallsTransform === true && !wcOpt) {
+    wrapperCountSpec = 'legacy';
+  } else {
+    if (wcOpt !== undefined && wcOpt !== null
+        && (typeof wcOpt !== 'number' || !Number.isInteger(wcOpt) || wcOpt < 0 || wcOpt > 10)) {
+      throw new Error(msg("badStringArrayWrappersCount", { v: JSON.stringify(wcOpt) }));
+    }
+    wrapperCountSpec = typeof wcOpt === 'number' ? wcOpt : 0;
+  }
+  // 链式：true = 调用点只出现最外层那一个函数（包装互相调用，静态看是单层签名）；
+  // false = 调用点在所有层之间分散，同一份产物出现多种签名。
+  const chainedCalls = options.stringArrayWrappersChainedCalls !== false;
+  // 链式开启时走最外层的调用点占比，其余分散到内层。100 = 只有一种调用形态。
+  let chainThreshold = options.stringArrayWrappersChainedCallsThreshold !== undefined
+    ? options.stringArrayWrappersChainedCallsThreshold : 100;
+  if (typeof chainThreshold !== 'number' || !Number.isFinite(chainThreshold)) {
+    chainThreshold = 100;
+  }
+  chainThreshold = Math.max(0, Math.min(100, chainThreshold));
   let scatterCarriers = 0;
   let scatterItems = 0;
 
@@ -424,22 +462,29 @@ export default function stringArray(ast, options, ctx) {
         .push({ stmt: parsed.program.body[0], name: accessorName, node: accFn });
     }
 
-    // 调用点包装链：每个 accessor 外面再包 2 到 5 层单表达式函数，每层把索引
+    // 调用点包装链：每个 accessor 外面再包 N 层单表达式函数，每层把索引
     // 再 XOR 一个构建期常量（与 mask 正交：要还原真实索引必须整条剥完链条、
-    // 并累出各层常量的异或和），最外层才是调用点入口。层间链式调用，每层另带
-    // 0 到 4 个从不使用的 junk 参数，逐层签名各不相同。包装层标记为
-    // __saMachinery——访问频度与 accessor 相同，debugProtection 同样跳过哨兵；
-    // 名字走 shortName 豁免 mangle。全部随机量（层数、常量、名字、junk 个数）
-    // 只在选项开启时消耗 PRNG：关闭它的预设随机流不动，产物逐字节可复现。
-    let entryName = accessorName;
-    let entryXor = 0;
-    let entryJunk = 0;
-    if (options.stringArrayCallsTransform === true) {
-      const layers = randInt(2, 5);
+    // 并累出各层常量的异或和），每层另带 0 到 4 个从不使用的 junk 参数，
+    // 逐层签名各不相同。包装层标记为 __saMachinery——访问频度与 accessor
+    // 相同，debugProtection 同样跳过哨兵；名字走 shortName 豁免 mangle。
+    // 全部随机量（层数、常量、名字、junk 个数）只在开启包装时消耗 PRNG：
+    // 没开的预设随机流不动，产物逐字节可复现。
+    //
+    // chain[j] 是"从第 j 层进入"的入口：j=0 是解码器本体，j>0 是第 j 层包装。
+    // xorPrefix = 第 1 到第 j 层常量的异或和，也就是从这一层进入时实参要预先
+    // 消掉的部分。实参 = (pos ^ mask) ^ xorPrefix——实参的构造与进入哪一层配套，
+    // 这正是调用点能在任意层进入而不改语义的原因（旧写法的 entryXor 是链上全部
+    // 常量的异或和，只在"恒定进最外层"这一种情况下成立）。
+    const wrapperCount = wrapperCountSpec === 'legacy' ? randInt(2, 5) : wrapperCountSpec;
+    wrapperLayersPerGroup.push(wrapperCount);
+    const chain = [{ name: accessorName, xorPrefix: 0, junk: 0 }];
+    if (wrapperCount > 0) {
+      wrapperLayersInjected += wrapperCount;
       let prevName = accessorName;
-      for (let li = 0; li < layers; li++) {
+      let xorAcc = 0;
+      for (let li = 0; li < wrapperCount; li++) {
         const layerConst = randInt(0x100, 0xffffff);
-        entryXor ^= layerConst;
+        xorAcc ^= layerConst;
         const idxParam = shortName();
         const junkCount = randInt(0, 4);
         const junkParams = [];
@@ -451,15 +496,14 @@ export default function stringArray(ast, options, ctx) {
         markMachinery(wparsed.program.body[0]);
         iifeStatements.push(wparsed.program.body[0]);
         prevName = wName;
-        entryJunk = junkCount;
+        chain.push({ name: wName, xorPrefix: xorAcc, junk: junkCount });
       }
-      entryName = prevName;
     }
 
     for (const v of groupItems) {
       const pos = posMap.get(v);
       if (pos !== undefined && !valueToAccessor.has(v)) {
-        valueToAccessor.set(v, { accessorName, pos, mask, entryName, entryXor, entryJunk });
+        valueToAccessor.set(v, { accessorName, pos, mask, chain });
       }
     }
   }
@@ -470,15 +514,26 @@ export default function stringArray(ast, options, ctx) {
   program.__poisonKey = poisonKey;
   program.__poisonKeys = poisonKeys;
 
-  // 调用点：走包装链入口（未开包装链时 entryName 即 accessor 本名）。实参是
-  // (pos ^ mask) ^ entryXor——entryXor 为链上各层常量的异或和，accessor 侧
+  // 选进入层 j。链式且占比 100 → 恒定最外层（不消耗 PRNG，保证默认路径逐字节可复现）；
+  // 其余情形才摇。摇的是"从哪一层进"，语义由 chain[j].xorPrefix 配套保证。
+  const pickLayer = (chain) => {
+    const top = chain.length - 1;
+    if (top === 0) return 0;
+    if (chainedCalls && chainThreshold >= 100) return top;
+    if (chainedCalls && rng() * 100 < chainThreshold) return top;
+    return randInt(0, top);
+  };
+  // 调用点：进入所选层，实参是 (pos ^ mask) ^ chain[j].xorPrefix，accessor 侧
   // 逐层还原后收到的仍是 pos ^ mask，语义与无包装链完全一致。junk 实参个数
-  // 与入口层形参一一对应，值逐调用点随机。
+  // 与该层形参一一对应，值逐调用点随机。
   const makeCall = (acc) => {
-    const args = [t.numericLiteral((acc.pos ^ acc.mask) ^ (acc.entryXor || 0))];
-    const jn = acc.entryJunk || 0;
-    for (let k = 0; k < jn; k++) args.push(t.numericLiteral(randInt(0, 0xffff)));
-    return t.callExpression(t.identifier(acc.entryName || acc.accessorName), args);
+    const chain = acc.chain;
+    const j = pickLayer(chain);
+    const layer = chain[j];
+    entryNamesUsed.add(layer.name);
+    const args = [t.numericLiteral((acc.pos ^ acc.mask) ^ layer.xorPrefix)];
+    for (let k = 0; k < layer.junk; k++) args.push(t.numericLiteral(randInt(0, 0xffff)));
+    return t.callExpression(t.identifier(layer.name), args);
   };
 
   let replaced = 0;
@@ -513,7 +568,8 @@ export default function stringArray(ast, options, ctx) {
     });
   }
   return { count: replaced, items: items.length, groups: groupCount, split: splitCount,
-    scatterCarriers, scatterItems };
+    scatterCarriers, scatterItems, wrapperLayers: wrapperLayersInjected,
+    wrapperLayersPerGroup, wrapperEntries: entryNamesUsed.size };
 };
 
 // 把解码器 IIFE 内的所有函数节点标为引导机制层，debugProtection 依据此标记
