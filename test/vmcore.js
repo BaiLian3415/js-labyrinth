@@ -534,6 +534,87 @@ section('逐构建内核生成器');
     ok(bad.length === 0, '每份内核的形参通路都正确（7+8=15）', bad.slice(0, 3).join('; '));
   }
 
+  // ---- 隐式全局守卫（静态）----
+  //
+  // 这一条是被真实事故逼出来的：buildCore 有两处赋值漏了 var（值表与程序计数器），
+  // 产出 `wfza=...;` / `wfzf=...;` 这样的**隐式全局赋值**。它一路混过所有内核
+  // 测试，因为非严格模式下给未声明变量赋值完全合法 —— 内核跑得通、结果全对、
+  // 字节数一模一样。爆点在真实产物里：selfCheck 判它「未绑定引用」而整个构建
+  // 抛错；ESM 产物（严格模式）下则是运行期 ReferenceError。
+  //
+  // ==================== 这里换过一次判据，值得写下来 ====================
+  //
+  // 第一版是**运行期**检查：把内核包进 `"use strict"` 再 eval，隐式全局必抛
+  // ReferenceError。逻辑对，但**在测试里完全失效** ——
+  //
+  //   这个文件第 18 行有一句 `const RT = (0, eval)('(function(){' + CORE_SRC ...)`，
+  //   非严格模式，它先跑，把坏内核里的 wfza / wfzf 作为隐式全局挂到了 globalThis。
+  //   等严格模式那版再跑时，这两个全局已经存在，赋值找到了已存在的绑定，
+  //   于是**不再抛**。守卫被自己前面的代码解除了。
+  //
+  // 也就是说：依赖"某个名字当前不存在"的检查天生脆弱，测试文件里任何一处
+  // 非严格 eval 都能让它失效，而失效方式是**静默通过**。
+  //
+  // 现在改成**静态**检查：解析产物，收集所有声明（var / 函数名 / 形参），
+  // 再收集所有裸标识符赋值与自增的目标，断言每个目标都在声明集合里。
+  // 不执行代码、不看全局状态、与顺序无关。
+  //
+  // 声明集合是全局的（不分作用域），这对本生成器是**恰好正确**的：nm() 给出的
+  // 名字在整个内核里唯一，每个名字只出现在它自己的位置，所以"在某处声明过"
+  // 与"在用它的作用域里声明过"等价。真要按作用域判，那是另一个量级的东西。
+  {
+    const bad = [];
+    const collectPat = (n, out) => {
+      if (!n) return;
+      if (n.type === 'Identifier') { out.add(n.name); return; }
+      if (n.type === 'ObjectPattern' || n.type === 'ArrayPattern') {
+        for (const el of (n.properties || n.elements || [])) {
+          collectPat(el.type === 'Property' ? el.value : el, out);
+        }
+        return;
+      }
+      if (n.type === 'AssignmentPattern' || n.type === 'RestElement') collectPat(n.left || n.argument, out);
+    };
+    for (let s = 1; s <= N; s++) {
+      const src = buildCore(seeded(s));
+      let ast;
+      try {
+        ast = parserMod.parse(src, { sourceType: 'script' }).program;
+      } catch (e) {
+        bad.push('seed' + s + '(解析失败:' + String(e.message).slice(0, 24) + ')');
+        continue;
+      }
+      const declared = new Set();
+      const targets = new Set();
+      const walk = (n) => {
+        if (!n || typeof n !== 'object') return;
+        if (Array.isArray(n)) { n.forEach(walk); return; }
+        if (n.type === 'VariableDeclaration') {
+          for (const d of n.declarations) collectPat(d.id, declared);
+        } else if (n.type === 'FunctionDeclaration' || n.type === 'FunctionExpression') {
+          if (n.id) declared.add(n.id.name);
+          for (const p of (n.params || [])) collectPat(p, declared);
+        }
+        // 只看**裸标识符**目标：obj.x = v 是改属性，与绑定无关
+        if (n.type === 'AssignmentExpression' && n.left && n.left.type === 'Identifier') {
+          targets.add(n.left.name);
+        }
+        if (n.type === 'UpdateExpression' && n.argument && n.argument.type === 'Identifier') {
+          targets.add(n.argument.name);
+        }
+        for (const k of Object.keys(n)) {
+          if (k === 'loc' || k === 'range') continue;
+          walk(n[k]);
+        }
+      };
+      walk(ast);
+      for (const t of targets) if (!declared.has(t)) bad.push('seed' + s + ':' + t);
+    }
+    ok(bad.length === 0,
+      '生成的内核没有隐式全局赋值（每个裸标识符赋值目标都已声明）',
+      [...new Set(bad)].slice(0, 4).join(' '));
+  }
+
   // 内核文本必须逐构建不同 —— 这一整节工作的目的就是它。
   // 断言用"两两不同的份数"，比"与 CORE_SRC 不同"更强：后者在生成器退化
   // 成只换一个变量时也会通过。

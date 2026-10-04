@@ -369,14 +369,19 @@ export function buildCore(int) {
   L.push('function VMC_run(' + nCode + ',' + nH + '){');
   L.push('var ' + nUn + '=function(' + nO + '){return ' + dec(nO, nH + '.opShift') + ';};');
   for (const d of decls) L.push(d);
-  L.push(nV + '=' + nH + '.V||[];');
+  L.push('var ' + nV + '=' + nH + '.V||[];');
   L.push('function ' + nMkfr + '(' + nPc0 + ',' + nL0 + '){return {pc:' + nPc0
     + ',stk:[],L:' + nL0 + ',base:0};}');
   // 第一帧**必须放进 fr[0]**。否则 RET 时 fr[sp-1] 取到 undefined，
   // 被当成'最外层返回'而直接结束 —— 任何一次函数调用都会把整个执行提前结束掉。
   L.push('var ' + nF + '=' + nMkfr + '(' + i32(nH + '.entry') + ',' + nH + '.L||[]);');
   L.push(nFr + '[0]=' + nF + ';');
-  L.push('var ' + nStk + '=' + nF + '.stk;' + nPc + '=' + nF + '.pc;');
+  // **两个名字都要各自带 var。** 写成 `var A=...;B=...;` 时 var 只管 A，
+  // B 是隐式全局赋值。非严格模式下能跑（内核测试全绿），但产物的 selfCheck 会
+  // 判成未绑定引用、严格模式（ESM 产物）下直接 ReferenceError。
+  // 这已经是同一个坑第二次：先前 decls 数组整体漏了 var，这里漏了两处。
+  L.push('var ' + nStk + '=' + nF + '.stk;');
+  L.push('var ' + nPc + '=' + nF + '.pc;');
   // 恒等语句放在这里：所有派生赋值之后。此时 pc/sp/n/good/mask 都已是 int32，
   // 对它们做 ToInt32 是真正的恒等变换。
   for (const d of junk(2)) L.push(d);

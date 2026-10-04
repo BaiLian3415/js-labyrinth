@@ -238,6 +238,72 @@ section('算子表完整性');
   ok(behaviorFor(0xee) === null, '未映射操作码返回 null（不给兜底行为码）');
 }
 
+section('虚假条目不许与真实条目撞操作码');
+{
+  // 这条是被一次**静默算错**逼出来的：buildInjection 造假条目时取
+  // `randInt(0x20,0xf0)+shift` 而不检查冲突。建表是
+  // `h[(e[0]-sh)&255] = handler` 且 entries 打乱后遍历，所以同一个操作码出现
+  // 两次时**后遍历到的覆盖先遍历到的** —— 虚假条目一旦撞上真实条目的操作码，
+  // 就把那条真实指令的 handler 换成 DUP/POP。字节码正确、内核正常，只是算错。
+  //
+  // 失败随打乱顺序随机，所以**偶发**：实测 60 个 seed 里 6 个算错，
+  // f(3,5) 返回 0/3/11/12/42 而不是 23。这正是最难归因的一类 ——
+  // 同一个输入有时对有时错，产物不报错、字节数一模一样。
+  //
+  // 所以判据不能只跑两三个 seed（原来跑 3 个，60 次里才撞 6 次的漏网率很高）。
+  // 下面这组分两路：
+  //   ① **静态**：产物里规约数组的操作码必须两两不同（直接断"不许撞"）
+  //   ② **动态**：大量 seed 跑同一用例，结果必须全部一致
+
+  // ---- ① 静态：规约数组里的操作码无重复 ----
+  {
+    const bad = [];
+    for (let seed = 1; seed <= 40; seed++) {
+      for (const [name, fnSrc] of [['双形参', 'function f(a,b){return a+b+a*b;}'],
+        ['累加循环', 'function f(n){var s=0;for(var i=1;i<=n;i++){s=s+i;}return s;}']]) {
+        rand.setSeed(seed);
+        const fn = parse(fnSrc, { sourceType: 'script' }).program.body[0];
+        const params = fn.params.filter((p) => p.type === 'Identifier').map((p) => p.name);
+        const spec = compileNested(fn.body.body, (seed * 37 + 11) & 0xff, 500, params);
+        const inj = buildInjection(spec, { dec: '_0xd', tab: '_0xt', run: '_0xr' }, {});
+        if (!inj) { bad.push(name + '/seed' + seed + '(未注入)'); continue; }
+        // 规约数组字面量：[[op,beh,arg],...]
+        const m = /var S=\[(\[[^\]]*\](?:,\[[^\]]*\])*)\]/.exec(inj.src);
+        if (!m) { bad.push(name + '/seed' + seed + '(找不到规约数组)'); continue; }
+        const ops = (m[1].match(/\[\d+,/g) || []).map((x) => +x.slice(1, -1));
+        const dup = ops.filter((o, i) => ops.indexOf(o) !== i);
+        if (dup.length) {
+          bad.push(name + '/seed' + seed + ' 重复操作码 ' + [...new Set(dup)].join(','));
+        }
+      }
+    }
+    ok(bad.length === 0, '40 个 seed × 2 用例：规约数组里的操作码两两不同',
+      [...new Set(bad)].slice(0, 3).join(' | '));
+  }
+
+  // ---- ② 动态：大量 seed 结果必须一致 ----
+  {
+    const bad = [];
+    for (const [name, fnSrc, argStr] of [
+      ['双形参', 'function f(a,b){return a+b+a*b;}', '3,5'],
+      ['三形参', 'function f(a,b,c){return a*100+b*10+c+a*b;}', '1,2,3'],
+      ['累加循环', 'function f(n){var s=0;for(var i=1;i<=n;i++){s=s+i;}return s;}', '12'],
+      ['位运算', 'function f(a,b){return (a&b)+(a|b)+(a^b)+(a<<1);}', '12,10'],
+    ]) {
+      const want = native(fnSrc, { args: argStr });
+      for (let seed = 1; seed <= 40; seed++) {
+        const r = runInjected(fnSrc, seed, { args: argStr });
+        const got = r.reason ? null : r.out.trim();
+        if (got !== want) {
+          bad.push(name + '/seed' + seed + '=' + got + '(期望' + want + ')');
+        }
+      }
+    }
+    ok(bad.length === 0, '4 个用例 × 40 个 seed 的结果全部一致（不撞操作码）',
+      bad.slice(0, 4).join(' | '));
+  }
+}
+
 section('注入产物：动态 handler 表');
 {
   // 表必须在运行期由循环构造，而不是以函数字面量形式出现在产物里。

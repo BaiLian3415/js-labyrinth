@@ -142,12 +142,45 @@ export function buildInjection(spec, names, opts) {
   // 编号，不是固定常量。
   const used = usedBehaviors(spec);
   const entries = [];
+  /** 已被占用的**变换后**操作码。真实条目与虚假条目共用一张，虚拟条目不许撞。 */
+  const taken = new Set();
   for (const [op, beh, arg] of used) {
-    entries.push('[' + encodeOpcode(op, shift) + ',' + beh + ',' + (arg | 0) + ']');
+    const t = encodeOpcode(op, shift);
+    taken.add(t);
+    entries.push('[' + t + ',' + beh + ',' + (arg | 0) + ']');
   }
   // 虚假条目：永不执行，但让表的大小与真实条目数无关
   for (let i = 0; i < decoy; i++) {
-    const op = (randInt(0x20, 0xf0) + shift) & 0xff;
+    // 虚假条目的操作码**必须避开本程序真实用到的那些**。
+    //
+    // ==================== 这里出过一次静默算错，必须写清楚 ====================
+    //
+    // 建表是 `for(...) h[(e[0]-sh)&255] = VMC_bh(...)`，而 entries 是打乱后遍历的，
+    // 所以**同一个操作码出现两次时，后遍历到的覆盖先遍历到的**。虚假条目与真实
+    // 条目撞上同一个操作码，就等于把那条真实指令的 handler 换成 DUP/POP ——
+    // 字节码完全正确、内核完全正常，只是那条指令算出来是垃圾。
+    //
+    // 首版取 `randInt(0x20,0xf0)+shift` 而**不检查冲突**。真实操作码跨 0x11~0xbd、
+    // 本程序用到 8 条，虚假条目 13~17 条，单条撞上的概率约 4%，整体约四成；
+    // 撞上后再乘"打乱后谁赢"的一半 —— 实测 60 个 seed 里 6 个算错，
+    // f(3,5) 返回 0 / 3 / 11 / 12 / 42 而不是 23。
+    //
+    // 因为打乱顺序随机，失败**随构建随机**：同一个输入sometimes 对有时候错。
+    // 这类"偶发的值错误"最难归因 —— 产物不报错、控制流照跑、字节数一模一样。
+    //
+    // 修法就是不许撞。0x20..0xf0 有 209 个候选、真实用掉不到十几条，
+    // 重试几次必然找得到空位，不存在排不开的情况。
+    let op = -1;
+    for (let tries = 0; tries < 64; tries++) {
+      const cand = (randInt(0x20, 0xf0) + shift) & 0xff;
+      if (!taken.has(cand)) { op = cand; break; }
+    }
+    // 理论上不可达（209 个候选 vs 最多几十条已占）。真到了就用第一个空位兜底，
+    // 绝不把 -1 写进产物 —— 那会让建表拿到一个诡异的键。
+    if (op < 0) {
+      for (let c = 0; c < 256; c++) { if (!taken.has(c)) { op = c; break; } }
+    }
+    taken.add(op);
     // 行为取无害的（DUP/POP）。万一被误执行也不会毁掉栈。
     entries.push('[' + op + ',' + (BEHAVIOR.DUP + randInt(0, 1)) + ',0]');
   }
