@@ -116,8 +116,25 @@ const SHFL_FORMS = [
 ];
 
 const IPOS_SRC = 'function ipos(_0t,_0P1,_0P2,_0N){return (((_0t*_0P1)%_0N)*_0P2)%_0N;}';
-const MIX_SRC = 'function mix(_0h,_0v,_0t,_0ph){_0h=mul32(_0h^_0v,16777619);' +
-  'if(_0ph){_0h=mul32(_0h^(_0t&255),16777619);}return _0h>>>0;}';
+
+// mix 的乘数 16777619 是 FNV 的素数，属于算法规范参数：**不能换值**。
+// mix 算出的 h 就是载荷的校验尾（见 makeShellLayer 里的 tailWord），构建期算、
+// 运行期重算比对，两侧必须逐位一致——换值会让每个产物都解不开。
+// 只能换写法：16777619 === 0x01000193 === (1<<24)|0x193。
+const MIX_FORMS = [
+  { id: 'dec', prime: '16777619' },
+  { id: 'hex', prime: '0x01000193' },
+  { id: 'shift', prime: '((1<<24)|0x193)' },
+];
+
+/** 按给定变体装配 mix 的源码文本。 */
+function buildMixSrc(vi) {
+  const P = MIX_FORMS[vi % MIX_FORMS.length].prime;
+  return 'function mix(_0h,_0v,_0t,_0ph){_0h=mul32(_0h^_0v,' + P + ');' +
+    'if(_0ph){_0h=mul32(_0h^(_0t&255),' + P + ');}return _0h>>>0;}';
+}
+
+const MIX_SRC = buildMixSrc(0);
 
 /** 每族的变体数。抽出来给自测遍历全部组合用。 */
 export const PRIMITIVE_VARIANT_COUNTS = {
@@ -125,10 +142,11 @@ export const PRIMITIVE_VARIANT_COUNTS = {
   lcg: LCG_FORMS.length,
   xs32: XS32_FORMS.length,
   shfl: SHFL_FORMS.length,
+  mix: MIX_FORMS.length,
 };
 
 /** 默认变体（族 0）。既是不选时的取值，也是自测的基线。 */
-export const DEFAULT_VARIANTS = { mul32: 0, lcg: 0, xs32: 0, shfl: 0 };
+export const DEFAULT_VARIANTS = { mul32: 0, lcg: 0, xs32: 0, shfl: 0, mix: 0 };
 
 // 当前生效的变体。构建期所有原语调用都转发到这里的族实现，所以「产物里那一份」
 // 与「构建期算表用的那一份」必然是同一族——这是本文件最容易出错的地方：
@@ -147,7 +165,7 @@ export function buildPrimitivesText(v) {
     XS32_FORMS[v.xs32].src,
     SHFL_FORMS[v.shfl].src,
     IPOS_SRC,
-    MIX_SRC,
+    buildMixSrc(v.mix === undefined ? 0 : v.mix),
   ].join('');
 }
 
@@ -170,6 +188,7 @@ export function choosePrimitiveVariants(rng) {
     lcg: pick(LCG_FORMS.length),
     xs32: pick(XS32_FORMS.length),
     shfl: pick(SHFL_FORMS.length),
+    mix: pick(MIX_FORMS.length),
   };
   setPrimitiveVariants(v);
   return v;
@@ -207,7 +226,17 @@ export const PRIMITIVES_TEXT = buildPrimitivesText(DEFAULT_VARIANTS);
 /** 直接实现的那组原语，导出给自测比对。 */
 export const primitivesDirect = RT;
 
-const JUNK_MULT = 2654435761; // 差量与非法计数混入密钥流种子的常数，两侧共用
+// 差量与非法计数混入密钥流种子的乘数。
+//
+// 原先写死 2654435761（= 0x9e3779b1，公开的黄金比例常数），扫字面量即可定位。
+// 它**不是算法规范参数**——只是在往 keyState 里掺一个构建期已知的乘数，让"改坏
+// 载荷 → 差量变化 → 解不开"这条依赖多一处冗余，所以逐构建换一个即可。
+// 唯一约束：同一次 makeShellLayer 里的三处引用必须是同一个值（构建期不再重算它，
+// 三处都直接写进产物文本，所以只要在一个地方摇一次）。
+function junkMult() {
+  // 取奇数：偶数会让低位的抹除概率上升，掺入的差量更容易被低熵掩盖。
+  return ((randInt(0x10000000, 0x7fffffff) << 1) | 1) >>> 0;
+}
 
 
 /** 载荷转 UTF-8 字节数组，构建期使用。 */
@@ -359,6 +388,7 @@ function makeShellLayer(payload, variant, mode) {
   // 用的是同一个 CUR。
   const variants = choosePrimitiveVariants(randFn);
   const primitivesText = buildPrimitivesText(variants);
+  const JUNK_MULT = junkMult();
   const plain = utf8Bytes(payload);
   const L = plain.length;
   const N = L + 4; // 额外 4 字节校验尾

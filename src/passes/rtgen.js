@@ -225,12 +225,16 @@ function buildLoader(spec) {
   // ---- 6) 加载链 ----
   const raw = bytesArr(modBytes);
   const hashBase = randInt(1, 0xffffffff) >>> 0;
+  // 乘数是 FNV 的素数，属算法规范参数，不能换值（E2 由它派生，两侧必须一致）。
+  // 只能换写法：16777619 === 0x01000193 === (1<<24)|0x193。逐构建挑一种，
+  // "扫十进制 16777619 字面量"这招就不总能命中。
+  const hvPrime = ['16777619', '0x01000193', '((1<<24)|0x193)'][randInt(0, 2)];
   let hv = hashBase >>> 0;
   for (let i = 0; i < raw.length; i++) hv = (Math.imul(hv ^ raw[i], 16777619) >>> 0) >>> 0;
   const E1 = randInt(1, 0xffffffff) >>> 0;
   const E2 = (E1 ^ hv) | 0;
   P('function ' + N.hv + '(b) { var h = ' + hashBase + ' >>> 0, i; '
-    + 'for (i = 0; i < b.length; i++) { h = ' + N.mul + '(h ^ b[i], 16777619) >>> 0; } return h >>> 0; }');
+    + 'for (i = 0; i < b.length; i++) { h = ' + N.mul + '(h ^ b[i], ' + hvPrime + ') >>> 0; } return h >>> 0; }');
   // 获取器链：逐层原生性检查，层数与形态逐次随机
   const scNames = [];
   for (let d = 0; d <= layers; d++) scNames.push(uk());

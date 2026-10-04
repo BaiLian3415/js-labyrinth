@@ -40,6 +40,23 @@ function isVMCompiled(fn) {
   return compiledSet.has(fn);
 }
 
+// xorshift32 的 keyState 兜底常量。
+//
+// 原先写死 0x9e3779b9，那是公开的"黄金比例哈希常数"——扫字面量即可定位到本类
+// 实现。这里逐构建换一个：它**不是算法规范参数**，只是"取到 0 时换个非零值"，
+// 唯一约束是非零（0 是 xorshift32 的不动点）。
+//
+// 每次调用给一个不同的值，但同一次构建内必须处处相同——调用点通过
+// ctx.__vmKeyFallback 缓存第一次的结果（构建期派生与运行期注入是两处代码）。
+function vmKeyFallback() {
+  let v;
+  do {
+    // 取一个高斯位数的奇数：xorshift32 在偶数或低熵初值下推进质量会下降。
+    v = (randInt(0x10000000, 0x7fffffff) << 1) | 1;
+  } while (v === 0);
+  return v >>> 0;
+}
+
 // 片段判定。分析走法与编译走法共用同一实现
 
 function hasSpread(list) {
@@ -754,6 +771,10 @@ function compileFunction(fn, ctx) {
   // 所以形态多态性不受影响。
   const keyText = opts.vmCompileKey ? String(opts.vmCompileKey) : '';
   const keyed = !!keyText;
+  // 兜底常量在整个 pass 运行期固定一次（存在 ctx 上，与 __vmKeySeq 同一模式）：
+  // 构建期算派生与运行期注入兜底在代码上是两处，必须同值，各自摇会得到不同值。
+  if (ctx.__vmKeyFallback === undefined) ctx.__vmKeyFallback = vmKeyFallback();
+  const keyFallback = ctx.__vmKeyFallback;
   let keySeq = 0;
   let keyState = 0;
   if (keyed) {
@@ -764,7 +785,13 @@ function compileFunction(fn, ctx) {
     const tag = keyText + '#' + keySeq;
     for (let i = 0; i < tag.length; i++) h = Math.imul(h ^ tag.charCodeAt(i), 0x01000193) >>> 0;
     keyState = h >>> 0;
-    if (keyState === 0) keyState = 0x9e3779b9; // 0 是 xorshift32 的不动点，避开
+    // 0 是 xorshift32 的不动点，兜底值必须非零。
+    //
+    // 这个值是**任意选取**的（不是算法规范参数），所以逐构建换一个：0x9e3779b9
+    // 是公开的"黄金比例常数"，扫字面量就能定位。约束只有两条——非零、且运行期
+    // 注入的那份必须与构建期一致（见 emitKeyedSetup 的同名兜底），否则派生出的
+    // 密钥材料两侧对不上。
+    if (keyState === 0) keyState = keyFallback;
   }
   // xorshift32 推进后取模落进 [lo, hi]，与 randInt 的返回区间一致
   const krand = (lo, hi) => {
@@ -3608,10 +3635,10 @@ function compileFunction(fn, ctx) {
           )), num(0x01000193)), num(0))),
         ]),
       ),
-      // 0 是 xorshift32 的不动点，与构建期同一处兜底
+      // 0 是 xorshift32 的不动点，与构建期同一处兜底（同一个值，见 ctx.__vmKeyFallback）
       t.ifStatement(
         t.binaryExpression('===', KS(), num(0)),
-        t.blockStatement([setKS(num(0x9e3779b9))])),
+        t.blockStatement([setKS(num(ctx.__vmKeyFallback))])),
     ];
     stmts.push(
       ...take(rt.K1, 0x10001, 0x7ffffffe, true),
