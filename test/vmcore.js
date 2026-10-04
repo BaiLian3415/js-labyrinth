@@ -3,16 +3,22 @@
  *
  * 跑法：node test/vmcore.js
  *
- * **CORE_SRC 必须 eval 出来跑真代码**，不能抄一份到测试里：抄的那份会与源码
+ * **内核源码必须 eval 出来跑真代码**，不能抄一份到测试里：抄的那份会与源码
  * 漂移，漂移了就等于没测。测试文件不在核心模块图里，这里的 eval 是允许的
  * （核心模块图里连一处字符串代码生成都不能留，有断言）。
  *
  * 验法是**端到端**：喂真字节码、跑真内核、比真实值。不看字节码长什么样，
  * 只看结果对不对 —— 这个内核的失败模式全都是"能跑、值是错的"。
+ *
+ * 主体部分用**确定性**内核（CORE_SRC，buildCore(null)）跑，便于定位。
+ * 最后一节单独对 buildCore(rand) 生成的多份内核跑同一批程序 ——
+ * 内核是逐构建生成的，所以"生成器在某个 seed 下产出坏代码"是一类真实故障，
+ * 只测一个变体等于没测生成器。
  */
 import {
-  OPCODES, INSN_W, OPCODE_NAMES, scrambleOpcode, encodeOpcode, CORE_SRC,
+  OPCODES, INSN_W, OPCODE_NAMES, scrambleOpcode, encodeOpcode, CORE_SRC, buildCore,
 } from '../src/rt/vmcore.js';
+import parserMod from '../src/ast/parser.js';
 import { ok, report, section, cleanTmp } from './_harness.js';
 
 const RT = (0, eval)('(function(){' + CORE_SRC + '\nreturn {run:VMC_run};})()');
@@ -31,6 +37,10 @@ const mkHandlers = (extra) => {
   // 直接存进去会让槽里躺着一个几十几百的整数，看起来"能用"但语义全错
   // （首版如此，于是内层写槽之后断言读到 1 而不是 99）。
   h[OPCODES.SET] = (c, i) => { c.L[i.oa] = c.pv(); c.nxt(); };
+  // ARGV 读形参。没注册它的话 ARGV 是未知操作码、被当填充跳过，
+  // 栈上什么都没有，后面的 ADD 弹到 undefined 得 0 —— 而形参用例会显示
+  // "7+8=0"，看起来像 ARGV 通路坏了，实际是这张表漏了一条。
+  h[OPCODES.ARGV] = (c, i) => { c.push(c.arg(i.oa)); c.nxt(); };
   h[OPCODES.DUP] = (c) => { c.push(c.tv(0)); c.nxt(); };
   h[OPCODES.POP] = (c) => { c.pop(); c.nxt(); };
   h[OPCODES.ADD] = bin((a, b) => (a + b) | 0);
@@ -376,6 +386,193 @@ section('真实程序');
       opShift: shift, entry: 0, limit: 5000,
     });
     ok(r.ret === 3, 'shift=' + shift + ' 下语义不变', 'got ' + JSON.stringify(r.ret));
+  }
+}
+
+section('逐构建内核生成器');
+{
+  // 这一节是 buildCore 的正身测试。主体部分只跑确定性内核（CORE_SRC），
+  // 那是**一个**变体；而产物用的是 buildCore(rand)，所以"某个 seed 下生成了
+  // 坏代码"是一类真实且几乎无法在别的测试里暴露的故障 —— 它只在被打包进
+  // 某个用户的产物、且那个产物恰好算错时才显形。
+  //
+  // 所以这里对多份生成的内核跑**同一批真程序**，任何一份不对就点名是哪份。
+
+  /** 一个带种子的取样器（与 rand.js 的 int 同签名） */
+  const seeded = (seed) => {
+    let s = seed | 0;
+    return (a, b) => {
+      s = (Math.imul(s, 1103515245) + 12345) & 0x7fffffff;
+      return a + (s % (b - a + 1));
+    };
+  };
+
+  const N = 60;
+  const kernels = [];
+  let syntaxBad = '';
+  for (let s = 1; s <= N; s++) {
+    const src = buildCore(seeded(s));
+    try {
+      const rt = (0, eval)('(function(){' + src + '\nreturn {run:VMC_run};})()');
+      if (typeof rt.run !== 'function') syntaxBad += s + '(不是函数) ';
+      kernels.push({ s, rt });
+    } catch (e) {
+      syntaxBad += s + '(' + String(e.message).slice(0, 40) + ') ';
+    }
+  }
+  ok(syntaxBad === '', N + ' 份生成的内核全部语法正确且导出 VMC_run', syntaxBad);
+  ok(kernels.length === N, '内核份数与请求一致', kernels.length + '/' + N);
+
+  // 生成的名字不能是保留字。这条独立于语法检查：语法检查只能覆盖有限的
+  // 种子（曾漏掉一个撞上 new 的），而这里是按构造证明 —— 名字里含字母 z，
+  // JS 保留字里没有任何一个含 z。断言直接从产物里把标识符抠出来核对，
+  // 免得哪天有人为了"名字好看些"把 z 去掉。
+  {
+    const KEYWORDS = new Set(['break', 'case', 'catch', 'class', 'const', 'continue',
+      'debugger', 'default', 'delete', 'do', 'else', 'enum', 'export', 'extends',
+      'finally', 'for', 'function', 'if', 'implements', 'import', 'in', 'instanceof',
+      'interface', 'let', 'new', 'null', 'package', 'private', 'protected', 'public',
+      'return', 'static', 'super', 'switch', 'this', 'throw', 'try', 'typeof', 'var',
+      'void', 'while', 'with', 'yield', 'await', 'arguments', 'eval']);
+    // 用自研解析器精确取"当标识符用"的 Identifier，而不是拿正则猜位置。
+    // 猜位置这条路已经证伪：`,new Array(...)` 里的 new 是表达式、不是标识符，
+    // 正则却当成标识符，于是 60 份内核全部假失败。解析器没有这种歧义。
+    const bad = [];
+    for (let s = 1; s <= N; s++) {
+      const src = buildCore(seeded(s));
+      let ast;
+      try {
+        ast = parserMod.parse(src, { sourceType: 'script' }).program;
+      } catch (e) {
+        bad.push('seed' + s + '(解析失败:' + String(e.message).slice(0, 30) + ')');
+        continue;
+      }
+      const hits = [];
+      const walk = (n, parent, key) => {
+        if (!n || typeof n !== 'object') return;
+        if (Array.isArray(n)) { n.forEach((c) => walk(c, parent, key)); return; }
+        if (n.type === 'Identifier') {
+          // 属性名（非计算）与对象字面量的键不是标识符引用
+          const isMemberProp = parent && parent.type === 'MemberExpression'
+            && key === 'property' && parent.computed !== true;
+          const isPropKey = parent && (parent.type === 'Property' || parent.type === 'PropertyDefinition')
+            && key === 'key' && parent.computed !== true;
+          if (!isMemberProp && !isPropKey && KEYWORDS.has(n.name)) hits.push(n.name);
+        }
+        for (const k of Object.keys(n)) {
+          if (k === 'loc' || k === 'range') continue;
+          walk(n[k], n, k);
+        }
+      };
+      walk(ast, null, null);
+      for (const h of hits) bad.push('seed' + s + ':' + h);
+    }
+    ok(bad.length === 0, '生成的内核里没有保留字被当标识符用',
+      bad.slice(0, 4).join(' '));
+  }
+
+  // 同一批程序，逐份内核跑
+  {
+    // (1 + 2*3) - 4 = 3。**期望值不手写**：1+6-4=3 是对的，但历史上就是
+    // 手写期望值把"编译器有 bug"和"期望值本身错了"混在一起查了半天。
+    const insns = [
+      { op: OPCODES.PUSH, oa: 2 }, { op: OPCODES.PUSH, oa: 3 },
+      { op: OPCODES.MUL }, { op: OPCODES.PUSH, oa: 1 },
+      { op: OPCODES.ADD }, { op: OPCODES.PUSH, oa: 4 },
+      { op: OPCODES.SUB }, { op: OPCODES.RET },
+    ];
+    const bad = [];
+    for (const k of kernels) {
+      for (const shift of [0, 7, 129, 255]) {
+        const r = k.rt.run(bytes(insns, shift), {
+          handler: mkHandlers(), consts: [], mem: {}, mask: 0,
+          opShift: shift, entry: 0, limit: 5000,
+        });
+        if (r.ret !== 3) bad.push('seed' + k.s + ' shift' + shift + ' 得 ' + JSON.stringify(r.ret));
+      }
+    }
+    ok(bad.length === 0, N + ' 份内核 × 4 个 shift 都算出同一个真实值 3',
+      bad.slice(0, 3).join('; '));
+  }
+
+  // 帧机制（递归路径）必须逐份都对 —— 换帧点上的 C.L 同步是两条形态里
+  // 最容易写错的一处：漏一处 sync，内层帧写槽就写到外层去了。
+  {
+    const bad = [];
+    for (const k of kernels) {
+      const L = [0, 0];
+      const r = k.rt.run(bytes([
+        { op: OPCODES.PUSH, oa: 5 }, { op: OPCODES.SET, oa: 0 },
+        { op: OPCODES.CALL, oa: 2, ob: 0 },
+        { op: OPCODES.RET },
+        { op: OPCODES.RET },
+        { op: OPCODES.PUSH, oa: 99 }, { op: OPCODES.SET, oa: 0 },
+        { op: OPCODES.RET },
+      ], 0), {
+        handler: mkHandlers(), consts: [], mem: {}, mask: 0,
+        opShift: 0, entry: 0, limit: 5000, L,
+      });
+      if (L[0] !== 5) bad.push('seed' + k.s + ' 外层槽被内层污染=' + L[0]);
+      if (r.depth !== 0) bad.push('seed' + k.s + ' depth=' + r.depth);
+    }
+    ok(bad.length === 0, '每份内核的帧切换都正确（每帧槽位隔离）', bad.slice(0, 3).join('; '));
+  }
+
+  // 形参：ARGV 通路依赖 C.args / C.arg，名字是随机生成的
+  {
+    const bad = [];
+    for (const k of kernels) {
+      const r = k.rt.run(bytes([
+        { op: OPCODES.ARGV, oa: 0 }, { op: OPCODES.ARGV, oa: 1 },
+        { op: OPCODES.ADD }, { op: OPCODES.RET },
+      ], 0), {
+        handler: mkHandlers(), consts: [], mem: {}, mask: 0,
+        opShift: 0, entry: 0, limit: 5000, args: [7, 8],
+      });
+      if (r.ret !== 15) bad.push('seed' + k.s + ' 形参和=' + JSON.stringify(r.ret));
+    }
+    ok(bad.length === 0, '每份内核的形参通路都正确（7+8=15）', bad.slice(0, 3).join('; '));
+  }
+
+  // 内核文本必须逐构建不同 —— 这一整节工作的目的就是它。
+  // 断言用"两两不同的份数"，比"与 CORE_SRC 不同"更强：后者在生成器退化
+  // 成只换一个变量时也会通过。
+  {
+    const texts = new Set();
+    for (let s = 1; s <= N; s++) texts.add(buildCore(seeded(s)));
+    ok(texts.size === N, N + ' 份内核的文本两两不同', 'unique=' + texts.size);
+    ok(texts.size > 1 && !texts.has(CORE_SRC),
+      '生成的内核与确定性 CORE_SRC 不同（产物不能总用同一个）');
+  }
+
+  // ES5 约束：宿主可能没有 ES2015。箭头、解构、默认参数、模板串一律不许出现。
+  {
+    const bad = [];
+    for (let s = 1; s <= N; s++) {
+      const src = buildCore(seeded(s));
+      if (/=>/.test(src)) bad.push(s + '(箭头)');
+      if (/\bconst\b|\blet\b/.test(src)) bad.push(s + '(const/let)');
+      if (/`/.test(src)) bad.push(s + '(模板串)');
+      if (/\.\.\./.test(src)) bad.push(s + '(展开/rest)');
+    }
+    ok(bad.length === 0, '生成的内核保持 ES5 语法（无箭头/const/let/模板串/展开）',
+      bad.slice(0, 4).join(' '));
+  }
+
+  // 确定性：同一个种子必须给出同一份内核，否则"这次构建长什么样"无法复现，
+  // diff 与问题定位都无从谈起。
+  ok(buildCore(seeded(12345)) === buildCore(seeded(12345)),
+    '同一种子产出同一份内核（可复现）');
+  ok(buildCore(null) === CORE_SRC, 'CORE_SRC 就是 buildCore(null)');
+  ok(buildCore(null) === buildCore(null), 'buildCore(null) 无副作用、可重复调用');
+
+  // 体积：逐构建生成会往内核里加干扰项，但不该失控。
+  {
+    const lens = [];
+    for (let s = 1; s <= N; s++) lens.push(buildCore(seeded(s)).length);
+    const lo = Math.min(...lens), hi = Math.max(...lens);
+    ok(lo > 1500 && hi < 4200, '内核体积在合理区间', lo + '..' + hi + ' 字节');
+    ok(hi - lo < 900, '体积波动有限（干扰项数量受控）', '极差 ' + (hi - lo));
   }
 }
 

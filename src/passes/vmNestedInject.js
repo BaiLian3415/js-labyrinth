@@ -21,7 +21,7 @@
  */
 
 import rand from '../utils/rand.js';
-import { CORE_SRC, INSN_W, OPCODES, encodeOpcode } from '../rt/vmcore.js';
+import { buildCore, INSN_W, OPCODES, encodeOpcode } from '../rt/vmcore.js';
 
 const { randInt } = rand;
 
@@ -154,7 +154,10 @@ export function buildInjection(spec, names, opts) {
   shuffleArr(entries);
 
   const L = [];
-  L.push(CORE_SRC);
+  // 逐构建生成内核。**不能用固定的 CORE_SRC** —— 那是测试与 diff 用的，
+  // 每份构建一字不差就等于"反编译者写一个模板吃掉所有未来构建"（实测结论：
+  // 内层这一档唯一输外层的就是 ISA 隐蔽性，必须在这一维上补回来）。
+  L.push(buildCore(randInt));
   L.push(behaviorSrc);
   // 解密：密文每字节两位基 36 → XOR 掉位置项
   L.push('function ' + names.dec + '(s,m){var o=[],i;'

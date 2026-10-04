@@ -1,28 +1,43 @@
 /**
- * 内层可信内核（trusted core）—— 外层 Dispatcher 的执行后端。
+ * 内层可信内核（trusted core）—— 用户字节码的执行后端。
  *
  * ============================ 这个文件的形态 ============================
  *
- * 运行期代码放在 CORE_SRC 这个**字符串**里，而不是写成模块里的函数。原因是
- * 注入产物时需要它的**源码文本**：构建期把这段文本原样 parse 进产物，而不能
- * import 一个模块（产物流水线里没有模块解析）。
+ * 运行期代码是**逐构建生成的源码文本**，而不是模块里的函数。原因是注入产物时
+ * 需要它的源码文本：构建期把这段文本原样 parse 进产物，而不能 import 一个模块
+ * （产物流水线里没有模块解析）。
  *
  * 为什么不反过来"写成函数、再从源码里抽文本"？因为核心模块图里禁止一切字符串
  * 代码生成（test/minify.js 有断言），不能 eval；而手抄两份必然漂移。
- * 所以单一真相是**这段字符串**：
- *   · 产物侧：原样注入
+ * 所以单一真相是**buildCore 这个生成器**：
+ *   · 产物侧：buildCore(rand) 的输出原样注入
  *   · 测试侧：test/vmcore.js 把它 eval 出来跑（测试文件不在核心模块图里，
  *     那里的 eval 是允许的）
  * 编译期需要的操作码表则是**真的 JS 对象**（见下），因为编译器要在构建期查它。
- * CORE_SRC 里不含操作码表——运行期只认"解变换后的数字"，不需要知道名字。
+ * 内核里不含操作码表——运行期只认"解变换后的数字"，不需要知道名字。
  *
- * ============================ 为什么要有一台不被虚拟化的 VM ============================
+ * ============================ 为什么内核要逐构建生成 ============================
  *
- * 用户函数由外层 vm.js 编译成字节码、由外层 handler 表驱动。但保护外层 handler
- * 需要另一台 VM，VM 又需要 handler —— 无限 regress。终止点是手写的紧凑内核：
- * 它不参与混淆流水线，因此不会再被自己编译。
+ * 这是实测逼出来的。固定内核有个致命性质：**2KB 的 CORE_SRC 每个构建一字不差**。
+ * 反编译者读一次、写一个针对 VMC_run 的模板，就能处理此后所有构建 —— 与外层
+ * VM 那种"每个构建 handler 表构造与分发循环都不同"相比，是把最难的那一维
+ * 保护白送出去。内层赢的是体积（每函数 4.2KB vs 外层 10KB），输的是这一维，
+ * 所以必须在这一维上补回来才值得作为一档推出去。
  *
- * 代价要说清楚：它小到能被人读完，它的能力边界就是这份保护的边界。
+ * 变化点只有一个硬约束：**每一处都必须与原版语义完全等价**。等价性不是靠
+ * "看起来一样"，是靠逐点论证（见 buildCore 里每一处的注释）：
+ *   · 局部变量改名 —— 纯重命名，作用域内无冲突
+ *   · x|0 的多种写法 —— 都等价于 ToInt32(x)（JS 规范里位运算的转换规则）
+ *   · var 声明顺序 —— var 提升，顺序不影响语义
+ *   · 恒等语句（junk）—— 只对已经是 int32 的量做 ToInt32
+ *   · C.L 用取值器还是普通字段 —— 两条路径都在每个换帧点同步
+ * 凡是证明不了等价的，一律不做。
+ *
+ * ============================ 边界 ============================
+ *
+ * 这一档的能力边界就是它的保护边界：内核小到能被人读完（这正是它不参与混淆
+ * 流水线的代价），它认得的指令就是它能保护的东西。编不了的写法一律退让给
+ * 外层单层档，不产出半成品。
  *
  * ============================ 指令编码 ============================
  *
@@ -189,25 +204,191 @@ export function unstash(v, mask) { return ((v | 0) ^ mask) | 0; }
  * 这里刻意写成 ES5 风格（var + function，无箭头、无解构、无默认参数）：
  * 内核是要放进任意宿主的最小可信部分，宿主可能没有 ES2015。
  */
-export const CORE_SRC = [
-  'function VMC_run(code,H){',
-  'var un=function(o){return (o-H.opShift)&255;};',
-  'var mask=H.mask|0;',
-  'var hd=H.handler||{};',
-  'var lim=(H.limit>>>0)||100000;',
-  'var n=0;var done=0;var good=1;var ret;',
-  'var V=H.V||[];',
-  'var fr=[],sp=0;',
-  'function mkfr(pc0,L0){return {pc:pc0,stk:[],L:L0,base:0};}',
+// ---------------------------------------------------------------- 运行期源码
+
+/**
+ * 逐构建生成内核源码。
+ *
+ * ============================ 这个函数的约束 ============================
+ *
+ * 它生成的是**要被执行**的代码，不是模板占位。任何一个变化点都必须与原版
+ * 语义完全等价 —— 而"看起来等价"不算证明。所以下面每一处随机化都配了
+ * 等价性论证；凡是论证不了的，不做。
+ *
+ * 四条随机化维度（按"收益 / 风险"排序）：
+ *
+ *   1. **局部变量改名**。反编译者第一件事是 grep C.pop / mask / sp 这类名字，
+ *    命中即定位。整个内核的局部作用域改名之后，这一手完全失效。
+ *    安全性：纯重命名。所有名字在函数内唯一，且内核只引用自己生成的名字。
+ *    用两字母随机前缀而不是从词表里挑，是为了不必维护保留字表 ——
+ *    没有任何 JS 关键字以两个字母的小写串开头。
+ *
+ *   2. **x|0 的多种写法**：x|0、~~x、x^0、x|0|0。
+ *    等价性：JS 规范里位运算的操作数一律先 ToInt32，而 ToInt32(x) 正是 x|0 的
+ *    定义；x^0 的右操作数 ToInt32(0)=0，异或 0 不改变值，所以 x^0 也等于
+ *    ToInt32(x)。四条在**任意 number** 上等价，不限于整数。
+ *
+ *   3. **var 声明顺序**。等价性：var 提升到函数作用域顶部，纯声明之间的顺序对
+ *    读取无影响。只打乱纯声明，不打乱派生赋值（var F=mkfr(...) 这类留在原位 ——
+ *    虽然 function 声明提升让它其实也可以动，但没必要赌）。
+ *
+ *   4. **恒等语句（junk）与永不执行的干扰函数**。恒等语句只对**已保证是 int32**
+ *    的量做 ToInt32（sp / pc / n / mask / good）；不碰 ret，因为 ret 装任意类型，
+ *    ToInt32 会把字符串与对象毁掉。
+ *
+ * **只放在序言与每调用一次的函数里，绝不放在指令循环和 C.push/C.pop 里** ——
+ * 那些是每次执行都走的热路径，往里塞语句等于按指令数放大运行开销。
+ * 实测内层已经比原生慢 110 倍，往热路径加东西会直接变成不可用。
+ *
+ * ES5 约束不变：var + function，无箭头、无解构、无默认参数。宿主可能没有 ES2015。
+ *
+ * @param {(min:number,max:number)=>number} int 闭区间整数取样器。
+ *   传 null 用内置的确定性 LCG —— 测试与 diff 需要内核源码稳定可 diff。
+ * @returns {string} 内核源码（ES5）
+ */
+export function buildCore(int) {
+  const R = int || mkDetRng();
+
+  // ---- 名字 ----
+  //
+  // 形如 `ne` + `z` + 序号（`nez0`、`nez1`…）。
+  //
+  // 中间那个 **z 是刻意放的**：JS 保留字里没有任何一个含字母 z（break/case/
+  // catch/class/const/continue/debugger/default/delete/do/else/enum/export/
+  // extends/finally/for/function/if/implements/import/in/instanceof/
+  // interface/let/new/null/package/private/protected/public/return/static/
+  // super/switch/this/throw/try/typeof/var/void/while/with/yield/await/
+  // arguments/eval —— 逐个核过，一个都没有）。所以含 z 的标识符**在构造上就不可能是
+  // 保留字**，不必维护词表，也不会因为词表漏词而产出语法错误的产物。
+  //
+  // 踩过的坑：原来生成的是 `前缀 + 序号`，而序号小于 10 时 base36 只有一位，
+  // 名字就成了三个小写字母 —— `new` 恰好三个字母，于是 seed 22 生成了
+  // `function f(a,new,b)`，产物直接语法错误。报错信息是 "Unexpected token 'new'"，
+  // 与病因（名字生成器）看起来毫无关系。
+  const pre = ALPHA[R(0, 25)] + ALPHA[R(0, 25)];
+  let seq = 0;
+  const nm = () => pre + 'z' + (seq++).toString(36);
+
+  const nCode = nm(), nH = nm();
+  const nUn = nm(), nMask = nm(), nHd = nm(), nLim = nm();
+  const nN = nm(), nDone = nm(), nGood = nm(), nRet = nm();
+  const nV = nm(), nFr = nm(), nSp = nm(), nF = nm(), nStk = nm(), nPc = nm(), nC = nm();
+  const nMkfr = nm(), nPc0 = nm(), nL0 = nm();
+  const nO = nm(), nI = nm(), nD = nm(), nVv = nm();
+  const nNf = nm(), nCfr = nm(), nAt = nm(), nOp = nm(), nIns = nm(), nFnd = nm();
+
+  // ---- 表达式形态 ----
+  const I32 = [
+    (e) => '(' + e + '|0)',
+    (e) => '(~~(' + e + '))',
+    (e) => '((' + e + ')^0)',
+    (e) => '(' + e + '|0|0)',
+  ];
+  const i32 = I32[R(0, I32.length - 1)];
+  // 取指里的操作码还原：(o - shift) & 255。o 与 shift 都在 0..255，
+  // 差值在 [-255,255]，所以 +256 与不加在 &255 之后同余 —— 等价。
+  const DEC = [
+    (o, s) => '((' + o + '-' + s + ')&255)',
+    (o, s) => '(((' + o + '-' + s + ')+256)&255)',
+    (o, s) => '(((' + o + '-' + s + ')&255)|0)',
+    (o, s) => '(255&((' + o + '-' + s + ')))',
+  ];
+  const dec = DEC[R(0, DEC.length - 1)];
+
+  // ---- 恒等语句候选 ----
+  // 只列已经保证 int32 的量。见上面"只放在序言与每调用一次的函数里"那条说明。
+  const IDEN = [
+    [nSp, nSp], [nPc, nPc], [nN, nN], [nMask, nMask], [nGood, nGood],
+  ];
+  const junk = (k) => {
+    const out = [];
+    const cnt = R(0, k);
+    for (let i = 0; i < cnt; i++) {
+      const t = IDEN[R(0, IDEN.length - 1)];
+      out.push(t[0] + '=' + i32(t[1]) + ';');
+    }
+    return out;
+  };
+
+  // C.L 用取值器还是普通字段。
+  //
+  // 取值器版只有一行，但 Object.defineProperty(x,"L",{get:...}) 是个很强的
+  // 指纹 —— "一个带取值器的上下文对象" 在真实代码里罕见。字段版多几行同步语句，
+  // 但形态普通得多。两条路径的等价性靠"每个换帧点都同步"保证：
+  // pushFrame 与 doRet 是仅有的两个换帧点，都必须更新。
+  const useGetter = R(0, 99) < 45;
+
+  // ---- var 声明（可打乱）----
+  //
+  // **每条都必须自带 var**，不能只写赋值：漏掉 var 就成了给未声明的全局赋值，
+  // 产物里表现为 ReferenceError，而报错点在 eval 出来的内核里，与真正的病因
+  // （生成器少写一个关键字）毫无关系。
+  //
+  // 之所以敢逐条打乱：var 提升到函数作用域顶部，所以纯声明之间的先后对读取
+  // 没有影响。**恒等语句绝不能放进这个数组** —— 打乱之后 `mask=mask|0` 可能
+  // 排在 `mask=H.mask|0` 之前，把掩码清零。栈槽算出来的下标全部解不开，
+  // 而产物不报错、只是返回一堆乱七八糟的值。恒等语句一律放在下面固定位置的
+  // 序言里（所有派生赋值之后）。
+  const decls = [
+    'var ' + nMask + '=' + i32(nH + '.mask') + ';',
+    'var ' + nHd + '=' + nH + '.handler||{};',
+    'var ' + nLim + '=(' + nH + '.limit>>>0)||100000;',
+    'var ' + nN + '=0;',
+    'var ' + nDone + '=0;',
+    'var ' + nGood + '=1;',
+    'var ' + nFr + '=[],' + nSp + '=0;',
+  ];
+  // 干扰函数的个数先抽：随机序列的推进点要和后面的分支错开，
+  // 否则同一个取样序列会同时决定"有没有干扰函数"和"干扰函数写什么"。
+  const nDecoy = R(0, 2);
+  const fieldsPick = R(0, 1);
+  if (R(0, 99) < 50) {
+    decls.push('var ' + nRet + '=void 0;');
+  } else {
+    decls.push('var ' + nRet + ';');
+  }
+  shuffleIn(decls, R);
+
+  // ---- 永不执行的干扰函数 ----
+  // 纯函数、无副作用、不被引用。作用是让"这段代码里有哪些东西"与实际无关。
+  const decoys = [];
+  for (let i = 0; i < nDecoy; i++) {
+    const f = nm(), a = nm(), b = nm(), c = nm();
+    const body = [
+      'return (' + a + '^' + b + ');',
+      'return (' + a + '+' + b + ')|0;',
+      'return (' + a + '&' + b + ')*' + c + ';',
+      'var t=' + a + '-' + b + ';return (t^' + c + ');',
+      'if(' + a + '>' + b + '){return ' + a + ';}return ' + b + ';',
+    ][R(0, 4)];
+    decoys.push('function ' + f + '(' + a + ',' + b + ',' + c + '){' + body + '}');
+  }
+
+  const L = [];
+  for (const d of decoys) L.push(d);
+  L.push('function VMC_run(' + nCode + ',' + nH + '){');
+  L.push('var ' + nUn + '=function(' + nO + '){return ' + dec(nO, nH + '.opShift') + ';};');
+  for (const d of decls) L.push(d);
+  L.push(nV + '=' + nH + '.V||[];');
+  L.push('function ' + nMkfr + '(' + nPc0 + ',' + nL0 + '){return {pc:' + nPc0
+    + ',stk:[],L:' + nL0 + ',base:0};}');
   // 第一帧**必须放进 fr[0]**。否则 RET 时 fr[sp-1] 取到 undefined，
   // 被当成'最外层返回'而直接结束 —— 任何一次函数调用都会把整个执行提前结束掉。
-  'var F=mkfr(H.entry|0,H.L||[]);',
-  'fr[0]=F;',
-  'var stk=F.stk;var pc=F.pc;',
-  'var C={code:code,mask:mask,consts:H.consts||[],regs:H.regs||[],mem:H.mem||{}};',
-  // 局部槽随帧走：递归时每帧一套，互不干扰（这就是"嵌套调用状态隔离"）。
-  'Object.defineProperty(C,"L",{get:function(){return F.L;}});',
-  'C.mk=(H.mk===undefined)?mask:(H.mk|0);',
+  L.push('var ' + nF + '=' + nMkfr + '(' + i32(nH + '.entry') + ',' + nH + '.L||[]);');
+  L.push(nFr + '[0]=' + nF + ';');
+  L.push('var ' + nStk + '=' + nF + '.stk;' + nPc + '=' + nF + '.pc;');
+  // 恒等语句放在这里：所有派生赋值之后。此时 pc/sp/n/good/mask 都已是 int32，
+  // 对它们做 ToInt32 是真正的恒等变换。
+  for (const d of junk(2)) L.push(d);
+  L.push('var ' + nC + '={' + nCode + ':' + nCode + ',' + nMask + ':' + nMask
+    + ',consts:' + nH + '.consts||[],regs:' + nH + '.regs||[],mem:' + nH + '.mem||{}};');
+  if (useGetter) {
+    // 局部槽随帧走：递归时每帧一套，互不干扰（这就是"嵌套调用状态隔离"）。
+    L.push('Object.defineProperty(' + nC + ',"L",{get:function(){return ' + nF + '.L;}});');
+  } else {
+    L.push(nC + '.L=' + nF + '.L;');
+  }
+  L.push(nC + '.mk=(' + nH + '.mk===undefined)?' + nMask + ':' + i32(nH + '.mk') + ';');
   // ---- 形参 ----
   //
   // 入口实参由宿主直接给（被保护的函数体被替换成一次 run 调用，实参原样传进来）。
@@ -215,8 +396,8 @@ export const CORE_SRC = [
   // 形参，于是"能保护的范围"窄到没有实用价值。
   //
   // 越界返回 undefined 而不是抛错：和栈/槽一样，这里不做类型闸门，由编译期保证。
-  'C.args=H.args||[];',
-  'C.arg=function(i){return C.args[i|0];};',
+  L.push(nC + '.args=' + nH + '.args||[];');
+  L.push(nC + '.arg=function(' + nI + '){return ' + nC + '.args[' + i32(nI) + '];};');
   // ---- 值表 ----
   //
   // 栈与槽里存的**不是值本身，而是值表的下标**。原因：值的类型不止整数 ——
@@ -224,23 +405,23 @@ export const CORE_SRC = [
   //
   // 把值移出栈、放进值表之后，栈里永远是整数，混淆照旧有效；值的身份以数组
   // 下标的形式露出来，但那只是一个位置，不含类型信息。
-  'C.V=V;',
-  'C.alloc=function(v){V.push(v);return V.length-1;};',
-  'C.push=function(v){stk.push((C.alloc(v)^mask)&0x3fffffff);};',
-  'C.pop=function(){var i=stk.pop();return (i===undefined)?0:((i^mask)&0x3fffffff);};',
-  'C.peek=function(d){var i=stk[stk.length-1-(d||0)];return i===undefined?0:(i^mask)&0x3fffffff;};',
-  'C.poke=function(d,v){var k=stk.length-1-(d||0);if(k>=0){stk[k]=(C.alloc(v)^mask)&0x3fffffff;}};',
+  L.push(nC + '.V=' + nV + ';');
+  L.push(nC + '.alloc=function(' + nVv + '){' + nV + '.push(' + nVv + ');return ' + nV + '.length-1;};');
+  L.push(nC + '.push=function(' + nVv + '){' + nStk + '.push((' + nC + '.alloc(' + nVv + ')^' + nMask + ')&0x3fffffff);};');
+  L.push(nC + '.pop=function(){var ' + nI + '=' + nStk + '.pop();return (' + nI + '===undefined)?0:((' + nI + '^' + nMask + ')&0x3fffffff);};');
+  L.push(nC + '.peek=function(' + nD + '){var ' + nI + '=' + nStk + '[' + nStk + '.length-1-(' + nD + '||0)];return ' + nI + '===undefined?0:(' + nI + '^' + nMask + ')&0x3fffffff;};');
+  L.push(nC + '.poke=function(' + nD + ',' + nVv + '){var k=' + nStk + '.length-1-(' + nD + '||0);if(k>=0){' + nStk + '[k]=(' + nC + '.alloc(' + nVv + ')^' + nMask + ')&0x3fffffff;}};');
   // 取栈顶的**值**而不是下标：tv=看栈顶，pv=弹出并返回。
-  'C.tv=function(d){return V[C.peek(d||0)];};',
-  'C.pv=function(){return V[C.pop()];};',
-  'C.spc=function(v){pc=v|0;};',
-  'C.nxt=function(){pc=(pc+1)|0;};',
-  'C.jmp=function(d){pc=(pc+(d|0))|0;};',
-  'C.gpc=function(){return pc|0;};',
-  'C.ret=function(v){ret=v;};',
-  'C.stop=function(){done=1;};',
-  'C.fail=function(){good=0;done=1;};',
-  'C.depth=function(){return sp;};',
+  L.push(nC + '.tv=function(' + nD + '){return ' + nV + '[' + nC + '.peek(' + nD + '||0)];};');
+  L.push(nC + '.pv=function(){return ' + nV + '[' + nC + '.pop()];};');
+  L.push(nC + '.spc=function(' + nVv + '){' + nPc + '=' + i32(nVv) + ';};');
+  L.push(nC + '.nxt=function(){' + nPc + '=' + i32(nPc + '+1') + ';};');
+  L.push(nC + '.jmp=function(' + nD + '){' + nPc + '=' + i32(nPc + '+(' + i32(nD) + ')') + ';};');
+  L.push(nC + '.gpc=function(){return ' + i32(nPc) + ';};');
+  L.push(nC + '.ret=function(' + nVv + '){' + nRet + '=' + nVv + ';};');
+  L.push(nC + '.stop=function(){' + nDone + '=1;};');
+  L.push(nC + '.fail=function(){' + nGood + '=0;' + nDone + '=1;};');
+  L.push(nC + '.depth=function(){return ' + nSp + ';};');
   // ---- 调用 / 返回 ----
   //
   // 调用者栈顶连续 argc 个值就是实参。进入新帧时把它们**搬进新帧的栈底**，
@@ -249,38 +430,85 @@ export const CORE_SRC = [
   // frame.base 记的是"参数区在调用者栈上的起始高度"，RET 时据此把返回值
   // 压到正确位置。首版没有帧，于是递归会共用同一个 pc，fib 变成死循环 ——
   // 而产物不报错，只是算不出值。
-  'C.pushFrame=function(target,argc){',
-  '  var nf=mkfr(target,new Array(argc+16));',
-  '  nf.base=stk.length-argc;',
-  '  for(var i=0;i<argc;i++){nf.stk[i]=stk[nf.base+i];}',
-  '  fr[++sp]=nf;F=nf;stk=nf.stk;pc=nf.pc;',
-  '};',
-  'C.doRet=function(v){',
-  '  var c=fr[sp-1];',
-  '  if(!c){ret=v;done=1;return;}',
-  '  sp--;F=c;stk=c.stk;pc=c.pc;',
-  '  stk.length=F.base;',
-  '  C.push(v);C.nxt();',
-  '  ret=undefined;',
-  '};',
-  'while(!done){',
+  L.push(nC + '.pushFrame=function(target,argc){');
+  L.push('  var ' + nNf + '=' + nMkfr + '(target,new Array(argc+16));');
+  L.push('  ' + nNf + '.base=' + nStk + '.length-argc;');
+  L.push('  for(var ' + nI + '=0;' + nI + '<argc;' + nI + '++){' + nNf + '.stk[' + nI + ']=' + nStk + '[' + nNf + '.base+' + nI + '];}');
+  L.push('  ' + nFr + '[++' + nSp + ']=' + nNf + ';' + nF + '=' + nNf + ';' + nStk + '=' + nNf + '.stk;' + nPc + '=' + nNf + '.pc;');
+  if (!useGetter) L.push('  ' + nC + '.L=' + nNf + '.L;');
+  for (const d of junk(1)) L.push('  ' + d);
+  L.push('};');
+  L.push(nC + '.doRet=function(' + nVv + '){');
+  L.push('  var ' + nCfr + '=' + nFr + '[' + nSp + '-1];');
+  L.push('  if(!' + nCfr + '){' + nRet + '=' + nVv + ';' + nDone + '=1;return;}');
+  L.push('  ' + nSp + '--;' + nF + '=' + nCfr + ';' + nStk + '=' + nCfr + '.stk;' + nPc + '=' + nCfr + '.pc;');
+  if (!useGetter) L.push('  ' + nC + '.L=' + nCfr + '.L;');
+  L.push('  ' + nStk + '.length=' + nF + '.base;');
+  L.push('  ' + nC + '.push(' + nVv + ');' + nC + '.nxt();');
+  L.push('  ' + nRet + '=void 0;');
+  for (const d of junk(1)) L.push('  ' + d);
+  L.push('};');
+  L.push('while(!' + nDone + '){');
   // 深度上限：递归爆栈必须有界失败，不能靠宿主自己的 RangeError ——
   // 那会让产物带着一个不可预期的异常退出，看起来像"随机崩溃"。
-  'if(sp>200){C.fail();break;}',
-  'if(++n>lim){C.fail();break;}',
-  'var at=pc*6;',
-  'if(at<0||at+6>code.length){C.fail();break;}',
-  'var op=un(code[at]);',
-  'var I={op:op,oa:code[at+1],ob:code[at+2],oc:code[at+3],od:code[at+4],fl:code[at+5]};',
-  'var f=hd[op];',
-  'if(f===undefined){C.nxt();continue;}',
-  'F.pc=pc;',
-  'f(C,I);',
-  'if(!good){break;}',
-  '}',
-  'return {V:V,pc:pc,n:n,done:done,ok:good,ret:ret,mask:mask,depth:sp};',
-  '}',
-].join('\n');
+  L.push('if(' + nSp + '>200){' + nC + '.fail();break;}');
+  L.push('if(++' + nN + '>' + nLim + '){' + nC + '.fail();break;}');
+  L.push('var ' + nAt + '=' + nPc + '*6;');
+  L.push('if(' + nAt + '<0||' + nAt + '+6>' + nCode + '.length){' + nC + '.fail();break;}');
+  L.push('var ' + nOp + '=' + nUn + '(' + nCode + '[' + nAt + ']);');
+  // 操作数字节的属性顺序也打乱：纯粹是文本差异，不影响任何求值。
+  const fields = ['op:' + nOp, 'oa:' + nCode + '[' + nAt + '+1]', 'ob:' + nCode + '[' + nAt + '+2]',
+    'oc:' + nCode + '[' + nAt + '+3]', 'od:' + nCode + '[' + nAt + '+4]', 'fl:' + nCode + '[' + nAt + '+5]'];
+  if (fieldsPick) shuffleIn(fields, R);
+  L.push('var ' + nIns + '={' + fields.join(',') + '};');
+  L.push('var ' + nFnd + '=' + nHd + '[' + nOp + '];');
+  // 未知 opcode / 虚假 handler 都落在这里：当填充跳过，不报错。真实程序不该有
+  // 未知操作码，但让分析者无法用"遇到未知 opcode 就抛错"区分真假路径。
+  L.push('if(' + nFnd + '===undefined){' + nC + '.nxt();continue;}');
+  L.push(nF + '.pc=' + nPc + ';');
+  L.push(nFnd + '(' + nC + ',' + nIns + ');');
+  L.push('if(!' + nGood + '){break;}');
+  L.push('}');
+  L.push('return {V:' + nV + ',pc:' + nPc + ',n:' + nN + ',done:' + nDone
+    + ',ok:' + nGood + ',ret:' + nRet + ',mask:' + nMask + ',depth:' + nSp + '};');
+  L.push('}');
+  return L.join('\n');
+}
+
+/** 小写字母表，用于随机前缀。 */
+const ALPHA = 'abcdefghijklmnopqrstuvwxyz';
+
+/** 按传入的取样器原地打乱（Fisher-Yates）。 */
+function shuffleIn(a, R) {
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = R(0, i);
+    const t = a[i]; a[i] = a[j]; a[j] = t;
+  }
+  return a;
+}
+
+/**
+ * 确定性取样器：只在没传 rand 时用。
+ *
+ * CORE_SRC 需要**逐字节稳定** —— 测试拿它 eval、diff 拿它比对、"这次构建的内核
+ * 长什么样"要能被复现。构建期路径一律传 rand。
+ */
+function mkDetRng() {
+  let s = 0x2545f491;
+  return function (a, b) {
+    s = (Math.imul(s, 1103515245) + 12345) & 0x7fffffff;
+    return a + (s % (b - a + 1));
+  };
+}
+
+/**
+ * 确定性内核源码。
+ *
+ * 用途只有两个：测试（eval 它跑真程序）与 diff。**产物不要用它** ——
+ * 每份构建都用同一个内核，正是这一档要解决的问题。
+ * 产物侧用 buildCore(randInt)。
+ */
+export const CORE_SRC = buildCore(null);
 
 export default {
   OPCODES, INSN_W, OPCODE_NAMES,
