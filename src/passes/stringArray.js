@@ -154,12 +154,28 @@ export default function stringArray(ast, options, ctx) {
     .filter(Boolean);
   const isReservedString = (v) => reservedRe.length > 0 && reservedRe.some((re) => re.test(v));
 
+  // forceTransformStrings：命中的一律收进池，绕过 stringArrayThreshold 的抽样。
+  //
+  // 为什么需要：threshold 是按长度/权重随机丢弃的，所以「某个串这次没进池」是正常的，
+  // 产物与产物之间会漂。密钥、URL、特征串这类**不该以明文出现在产物里**的东西不能
+  // 靠概率——某次构建恰好收了就没事、恰好没收就直接裸奔，这个不确定性本身就是洞。
+  // 显式点名要进池，就不给它抛硬币的机会。
+  //
+  // 优先级高于 reservedStrings：保留名单的语义是"别动它"，强制入池的语义是"必须动它"，
+  // 两者冲突时以强制为准（否则点名了却不生效，是最难查的一类配置错误）。所以下面
+  // 两处都是先判 isForced 再判 isReserved。
+  const forceRe = (options.forceTransformStrings || [])
+    .map((s) => { try { return new RegExp(s); } catch (e) { return null; } })
+    .filter(Boolean);
+  const isForced = (v) => forceRe.length > 0 && forceRe.some((re) => re.test(v));
+
   const candidates = [];
   traverse(ast, {
     StringLiteral(path) {
       if (!isEligible(path)) return;
-      if (isReservedString(path.node.value)) return;
-      if (rng() > threshold) return;
+      const forced = isForced(path.node.value);
+      if (!forced && isReservedString(path.node.value)) return;
+      if (!forced && rng() > threshold) return;
       // 非计算属性的键位置字符串要先置 computed，才能在键位换成解码调用
       const pp = path.parentPath;
       if (pp && pp.isObjectProperty && pp.isObjectProperty() && !pp.node.computed && pp.node.key === path.node) {
@@ -169,12 +185,15 @@ export default function stringArray(ast, options, ctx) {
     },
     TemplateLiteral(path) {
       if (path.node.expressions.length > 0) return;
-      if (rng() > threshold) return;
       const quasis = path.node.quasis;
       if (quasis.length !== 1) return;
       const q = quasis[0].value;
       const value = q.cooked !== undefined && q.cooked !== null ? q.cooked : q.raw;
-      if (isReservedString(value)) return;
+      const forced = isForced(value);
+      if (!forced) {
+        if (rng() > threshold) return;
+        if (isReservedString(value)) return;
+      }
       candidates.push({ path, value, parts: null });
     },
     noScope: true,
