@@ -65,6 +65,7 @@ const FILES = [
   'handler-poly.js',
   'vmcore.js',
   'vm-nested.js',
+  'vm-nested-inject.js',
   'chinese-names.js',
   'vm.js',
   'anti-analysis.js',

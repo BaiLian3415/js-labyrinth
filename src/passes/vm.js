@@ -27,7 +27,10 @@
  */
 import t from '../ast/types.js';
 import parser from '../ast/parser.js';
+const { parse } = parser;
 import rtlib from './rtlib.js';
+import { compileNested } from './vmNested.js';
+import { buildInjection } from './vmNestedInject.js';
 import rand from '../utils/rand.js';
 const { shuffle, uniqueName, randInt } = rand;
 import i18n from '../i18n.js';
@@ -733,6 +736,86 @@ function opWordWidth(e) {
 }
 
 // 编译器
+
+/**
+ * 嵌套档注入：拿内层编译器的 spec 产物，构造解密/建表/run 产物并塞进函数体。
+ *
+ * 由 tryNested 在外层体替换**之前**调用：此时 fn.body.body 仍是用户写的原始
+ * 语句，是内层编译器唯一能正确看待的形态。成功后整段 body 被替换；失败则由
+ * 调用方回退到单层档。
+ *
+ * @returns {boolean} 是否真的套上了
+ */
+function applyNested(fn, opts, ctx, spec) {
+  // spec 由 tryNested 提前用 compileNested(fn.body.body, …paramNames) 算好。
+  // applyNested 只负责拿 spec 构建注入产物、把声明与入口塞进函数体。
+  if (!spec) return false;
+  const names = {
+    dec: uniqueName(ctx.usedNames, '_0x'),
+    tab: uniqueName(ctx.usedNames, '_0x'),
+    run: uniqueName(ctx.usedNames, '_0x'),
+  };
+  const inj = buildInjection(spec, names, {
+    decoyOps: opts.vmNestedDecoys,
+    limit: opts.vmNestedLimit,
+  });
+  if (!inj) return false;
+  // 机制声明进**本函数体**，不走 rtlib.insertHead。
+  //
+  // 为什么不用 insertHead：那条路径要往 Program 头部插，而头部已经被 rtlib /
+  // integrityCheck / banner 占着，插入顺序错了会让掩码赋值晚于校验器执行，
+  // 触发假失配投毒（vm.js 里那段注释记的就是这个坑）。就地放在函数体开头
+  // 既避开顺序纠缠，也保证这些声明在被替换掉的 handler 循环之前就绪。
+  let decls;
+  try {
+    decls = parse(inj.src, { sourceType: 'script' }).program.body;
+  } catch (e) {
+    return false;   // 注入源码自研解析器都解析不了：放弃这一份，不产出半成品
+  }
+  let call;
+  try {
+    call = parse(inj.call, { sourceType: 'script' }).program.body[0];
+  } catch (e) {
+    return false;
+  }
+  if (!decls.length || !call) return false;
+  fn.body = t.blockStatement([...decls, call]);
+  return true;
+}
+
+/**
+ * 内层档入口：在外层 VM 体替换之前，试着把函数交给手写内核保护。
+ *
+ * 此时 fn.body.body 仍是用户写的原始语句（还没被替换成 handler 循环），
+ * 是内层编译器唯一能正确看待的形态。成功后整段 body 被替换成解密/建表/run
+ * 的产物；失败（语法超出内核能力范围）则返回 false，调用方照常走外层单层档。
+ *
+ * @returns {boolean} 成功替换为 true
+ */
+function tryNested(fn, opts, ctx) {
+  try {
+    // 形参名单必须原样传给编译器：Locals 的槽只有 var 声明会现场分配，
+    // 参数本身声明不占任何槽 —— 少传一个就编不少带参数的函数。
+    const paramNames = fn.params && Array.isArray(fn.params)
+      ? fn.params.filter((p) => p.type === 'Identifier').map((p) => p.name)
+      : [];
+    const spec = compileNested(
+      fn.body.body,
+      randInt(0, 255),
+      opts.vmNestedBudget,
+      paramNames,
+    );
+    if (!spec) return false;
+    const nested = applyNested(fn, opts, ctx, spec);
+    if (!nested) return false;
+    ctx.__vmNestedApplied = (ctx.__vmNestedApplied || 0) + 1;
+    return true;
+  } catch (e) {
+    // 嵌套档是可选增强，出错就退让。绝不能因为它让整个构建失败。
+    ctx.__vmNestedFailed = (ctx.__vmNestedFailed || 0) + 1;
+    return false;
+  }
+}
 
 function compileFunction(fn, ctx) {
   const opts = ctx.options;
@@ -3666,18 +3749,38 @@ function compileFunction(fn, ctx) {
     );
     return stmts;
   };
-  fn.body = t.blockStatement([
-    // 运行期密钥派生必须排在 runtimeDecl 之前：MASK 与链种子的初始化要读它算出的值
-    ...rtKeyStmts(),
-    runtimeDecl,
-    // 形态 B 的 handler 表与干扰项共享垃圾体，都是不变量，在循环外构建一次
-    ...preLoopStmts,
-    ...rotStmts,
-    ...paramCopies,
-    interpLoop,
-  ]);
-  fn.body.body.unshift(...dirStmts);
-  if (fn.type === 'ArrowFunctionExpression') fn.expression = false;
+  // ------------------------------------------------------------ 嵌套档
+  //
+  // 把函数体交给手写的可信内核（src/rt/vmcore.js）保护：编译器扫描的是**用户
+  // 的原始 AST**（此时 body 还没被替换成 handler 循环），成功后整段 body 被
+  // 替换成解密 → 建表 → 交给内核执行的产物。
+  //
+  // 语义变换为："小函数跳过外层 VM，直接由内层核心保护"。判定时机是 compileFunction
+  // 刚进来、还没开始构造 handler 循环之前：那时 fn.body.body 仍是用户写的原语，
+  // 内核才能看见它。成功替换后就不再走外层体替换（否则会把嵌入码砸了）。
+  // 编译不了（包含调用/成员/try-catch 等）就原样退让，让外层单层档接手。
+  const vmNestedApplied = opts.vmNested ? tryNested(fn, opts, ctx) : false;
+  // tryNested 已经在成功时累加 __vmNestedApplied / 失败时累加 __vmNestedFailed，
+  // 这里只读返回值决定是否跳过外层体替换。
+
+  if (vmNestedApplied) {
+    // 内层档已替换 fn.body，外层体替换（handler 循环 + 解释器）不用做
+    fn.body.body.unshift(...dirStmts);
+    if (fn.type === 'ArrowFunctionExpression') fn.expression = false;
+  } else {
+    fn.body = t.blockStatement([
+      // 运行期密钥派生必须排在 runtimeDecl 之前：MASK 与链种子的初始化要读它算出的值
+      ...rtKeyStmts(),
+      runtimeDecl,
+      // 形态 B 的 handler 表与干扰项共享垃圾体，都是不变量，在循环外构建一次
+      ...preLoopStmts,
+      ...rotStmts,
+      ...paramCopies,
+      interpLoop,
+    ]);
+    fn.body.body.unshift(...dirStmts);
+    if (fn.type === 'ArrowFunctionExpression') fn.expression = false;
+  }
 
   // WASM 档元数据，供 wasm pass 读取；不开启 wasm 时没有消费方
   fn.__vmMeta = {

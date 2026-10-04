@@ -67,6 +67,18 @@ export default {
   "controlFlowDepth": 2,
   "controlFlowLoopFlattening": true,
   "vmProtection": true,
+  // 嵌套虚拟化：把外层的 handler 循环本身再编译成第二份字节码，交给手写的
+  // 可信内核（src/rt/vmcore.js）执行。regress 在此终止——内核不参与流水线。
+  // 需要 vmProtection 为真才有意义。
+  "vmNested": false,
+  // 嵌套档的编译预算（语句条数上限）。超了放弃这一份函数，保留单层产物。
+  "vmNestedBudget": 400,
+  // 嵌套档 handler 表里的虚假条目数。null = 按构建随机取 4~10（默认）；
+  // 给具体数字则用该值；给 0 表示不掺虚假条目。
+  // 不设为 0 是因为"表大小与真实条目数无关"本身就是要藏的东西。
+  "vmNestedDecoys": null,
+  // 嵌套档单次执行的指令步数上限（防死循环，也是有界的失败路径）。
+  "vmNestedLimit": 20000,
   // 字节码编码。开启时每个字节码字按「值 ^ 位置散列 ^ 掩码 ^ 链值 ^ 块密钥」逐字
   // 加密，取指做同一逆运算，并在每次调用入口把整个 B 数组原位重写一遍。
   // 关掉后字节码以明文整数数组存在（操作码编号、跳转目标、常量下标都直接可读），
