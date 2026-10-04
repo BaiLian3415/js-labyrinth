@@ -183,41 +183,86 @@ export function unstash(v, mask) { return ((v | 0) ^ mask) | 0; }
  * 内核是要放进任意宿主的最小可信部分，宿主可能没有 ES2015。
  */
 export const CORE_SRC = [
-  'function VMC_un(op,sh){return (op-sh)&255;}',
-  'function VMC_st(v,m){return (v|m)^m;}',
-  'function VMC_us(v,m){return (v|m)^m;}',
   'function VMC_run(code,H){',
   'var un=function(o){return (o-H.opShift)&255;};',
   'var mask=H.mask|0;',
-  'var stk=[];var mem=H.mem||{};var hd=H.handler||{};',
-  'var pc=H.entry|0;var lim=(H.limit>>>0)||100000;',
+  'var hd=H.handler||{};',
+  'var lim=(H.limit>>>0)||100000;',
   'var n=0;var done=0;var good=1;var ret;',
-  'var C={code:code,mem:mem,stk:stk,mask:mask,consts:H.consts||[],regs:H.regs||[]};',
-  'C.push=function(v){stk.push((v^mask)|0);};',
-  'C.pop=function(){return (stk.pop()^mask)|0;};',
-  'C.peek=function(d){var v=stk[stk.length-1-(d||0)];return v===undefined?0:(v^mask)|0;};',
-  'C.poke=function(d,v){var i=stk.length-1-(d||0);if(i>=0){stk[i]=(v^mask)|0;}};',
+  'var V=H.V||[];',
+  'var fr=[],sp=0;',
+  'function mkfr(pc0,L0){return {pc:pc0,stk:[],L:L0,base:0};}',
+  // 第一帧**必须放进 fr[0]**。否则 RET 时 fr[sp-1] 取到 undefined，
+  // 被当成'最外层返回'而直接结束 —— 任何一次函数调用都会把整个执行提前结束掉。
+  'var F=mkfr(H.entry|0,H.L||[]);',
+  'fr[0]=F;',
+  'var stk=F.stk;var pc=F.pc;',
+  'var C={code:code,mask:mask,consts:H.consts||[],regs:H.regs||[],mem:H.mem||{}};',
+  // 局部槽随帧走：递归时每帧一套，互不干扰（这就是"嵌套调用状态隔离"）。
+  'Object.defineProperty(C,"L",{get:function(){return F.L;}});',
+  'C.mk=(H.mk===undefined)?mask:(H.mk|0);',
+  // ---- 值表 ----
+  //
+  // 栈与槽里存的**不是值本身，而是值表的下标**。原因：值的类型不止整数 ——
+  // 字符串、数组、对象、函数都要能过栈，而 XOR 混淆只对整数成立。
+  //
+  // 把值移出栈、放进值表之后，栈里永远是整数，混淆照旧有效；值的身份以数组
+  // 下标的形式露出来，但那只是一个位置，不含类型信息。
+  'C.V=V;',
+  'C.alloc=function(v){V.push(v);return V.length-1;};',
+  'C.push=function(v){stk.push((C.alloc(v)^mask)&0x3fffffff);};',
+  'C.pop=function(){var i=stk.pop();return (i===undefined)?0:((i^mask)&0x3fffffff);};',
+  'C.peek=function(d){var i=stk[stk.length-1-(d||0)];return i===undefined?0:(i^mask)&0x3fffffff;};',
+  'C.poke=function(d,v){var k=stk.length-1-(d||0);if(k>=0){stk[k]=(C.alloc(v)^mask)&0x3fffffff;}};',
+  // 取栈顶的**值**而不是下标：tv=看栈顶，pv=弹出并返回。
+  'C.tv=function(d){return V[C.peek(d||0)];};',
+  'C.pv=function(){return V[C.pop()];};',
   'C.spc=function(v){pc=v|0;};',
   'C.nxt=function(){pc=(pc+1)|0;};',
   'C.jmp=function(d){pc=(pc+(d|0))|0;};',
   'C.gpc=function(){return pc|0;};',
-  'C.ret=function(v){ret=(v|0);};',
+  'C.ret=function(v){ret=v;};',
   'C.stop=function(){done=1;};',
   'C.fail=function(){good=0;done=1;};',
+  'C.depth=function(){return sp;};',
+  // ---- 调用 / 返回 ----
+  //
+  // 调用者栈顶连续 argc 个值就是实参。进入新帧时把它们**搬进新帧的栈底**，
+  // 被调方读参数只需看自己栈底，不必知道调用者栈长什么样。
+  //
+  // frame.base 记的是"参数区在调用者栈上的起始高度"，RET 时据此把返回值
+  // 压到正确位置。首版没有帧，于是递归会共用同一个 pc，fib 变成死循环 ——
+  // 而产物不报错，只是算不出值。
+  'C.pushFrame=function(target,argc){',
+  '  var nf=mkfr(target,new Array(argc+16));',
+  '  nf.base=stk.length-argc;',
+  '  for(var i=0;i<argc;i++){nf.stk[i]=stk[nf.base+i];}',
+  '  fr[++sp]=nf;F=nf;stk=nf.stk;pc=nf.pc;',
+  '};',
+  'C.doRet=function(v){',
+  '  var c=fr[sp-1];',
+  '  if(!c){ret=v;done=1;return;}',
+  '  sp--;F=c;stk=c.stk;pc=c.pc;',
+  '  stk.length=F.base;',
+  '  C.push(v);C.nxt();',
+  '  ret=undefined;',
+  '};',
   'while(!done){',
+  // 深度上限：递归爆栈必须有界失败，不能靠宿主自己的 RangeError ——
+  // 那会让产物带着一个不可预期的异常退出，看起来像"随机崩溃"。
+  'if(sp>200){C.fail();break;}',
   'if(++n>lim){C.fail();break;}',
   'var at=pc*6;',
   'if(at<0||at+6>code.length){C.fail();break;}',
   'var op=un(code[at]);',
   'var I={op:op,oa:code[at+1],ob:code[at+2],oc:code[at+3],od:code[at+4],fl:code[at+5]};',
   'var f=hd[op];',
-  // 未知 opcode / 虚假 handler 都落这里：当填充跳过，不报错。真实程序不该有
-  // 未知操作码，但让分析者无法用"遇到未知 opcode 就抛错"区分真假路径。
   'if(f===undefined){C.nxt();continue;}',
+  'F.pc=pc;',
   'f(C,I);',
   'if(!good){break;}',
   '}',
-  'return {stk:stk,mem:mem,pc:pc,n:n,done:done,ok:good,ret:ret,mask:mask};',
+  'return {V:V,pc:pc,n:n,done:done,ok:good,ret:ret,mask:mask,depth:sp};',
   '}',
 ].join('\n');
 

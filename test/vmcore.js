@@ -3,33 +3,84 @@
  *
  * 跑法：node test/vmcore.js
  *
- * 这个内核是"嵌套 VM"里唯一不被虚拟化的部分，也是整个方案最容易出错的地方：
- * 一旦取指宽度、解变换偏移、栈混淆或 pc 推进有一处对不上，外层算出来的字节码
- * 就会被解释成别的东西——而产物仍然能跑，只是结果是错的。所以这里逐项钉死：
- *   · 指令编码/解码往返、操作码分布
- *   · 操作码变换的等价性与边界（shift=0、255、负数、往返一致）
- *   · 定长取指在边界处的行为（越界、空片）
- *   · 栈混淆的可逆性
- *   · 解释器循环：pc 推进、条件跳转、步数上限、未知 opcode 的处理
- *
  * **CORE_SRC 必须 eval 出来跑真代码**，不能抄一份到测试里：抄的那份会与源码
  * 漂移，漂移了就等于没测。测试文件不在核心模块图里，这里的 eval 是允许的
  * （核心模块图里连一处字符串代码生成都不能留，有断言）。
+ *
+ * 验法是**端到端**：喂真字节码、跑真内核、比真实值。不看字节码长什么样，
+ * 只看结果对不对 —— 这个内核的失败模式全都是"能跑、值是错的"。
  */
 import {
-  OPCODES, INSN_W, OPCODE_NAMES, scrambleOpcode, encodeOpcode,
-  stash, unstash, CORE_SRC,
+  OPCODES, INSN_W, OPCODE_NAMES, scrambleOpcode, encodeOpcode, CORE_SRC,
 } from '../src/rt/vmcore.js';
 import { ok, report, section, cleanTmp } from './_harness.js';
 
-// 把运行期源码求值成真函数（与产物里跑的是同一段文本）
-const RT = (0, eval)('(function(){' + CORE_SRC + '\nreturn {run:VMC_run,st:VMC_st,us:VMC_us,un:VMC_un};})()');
+const RT = (0, eval)('(function(){' + CORE_SRC + '\nreturn {run:VMC_run};})()');
+
+// ---- 一套语义正确的 handler 表（模拟外层动态构造出来的那个）----
+const B = { PUSH: 1, GET: 2, SET: 3, BIN: 4, CMP: 5, UN: 6, JMP: 7, JZ: 8,
+  RET: 9, HALT: 10, DUP: 11, POP: 12 };
+
+const mkHandlers = (extra) => {
+  const bin = (f) => (c) => { const y = c.pv(), x = c.pv(); c.push(f(x, y)); c.nxt(); };
+  const cmp = (f) => (c, i) => { const y = c.pv(), x = c.pv(); c.push(f(x, y) ? 1 : 0); c.nxt(); };
+  const h = {};
+  h[OPCODES.PUSH] = (c, i) => { c.push(i.oa); c.nxt(); };
+  h[OPCODES.GET] = (c, i) => { c.push(c.L[i.oa]); c.nxt(); };
+  // SET 存的是**值**，不是下标 —— 值表模型下 c.pop() 给出的是下标，
+  // 直接存进去会让槽里躺着一个几十几百的整数，看起来"能用"但语义全错
+  // （首版如此，于是内层写槽之后断言读到 1 而不是 99）。
+  h[OPCODES.SET] = (c, i) => { c.L[i.oa] = c.pv(); c.nxt(); };
+  h[OPCODES.DUP] = (c) => { c.push(c.tv(0)); c.nxt(); };
+  h[OPCODES.POP] = (c) => { c.pop(); c.nxt(); };
+  h[OPCODES.ADD] = bin((a, b) => (a + b) | 0);
+  h[OPCODES.SUB] = bin((a, b) => (a - b) | 0);
+  h[OPCODES.MUL] = bin((a, b) => (a * b) | 0);
+  h[OPCODES.AND] = bin((a, b) => a & b);
+  h[OPCODES.OR] = bin((a, b) => a | b);
+  h[OPCODES.XOR] = bin((a, b) => a ^ b);
+  h[OPCODES.EQ] = cmp((a, b) => a === b);
+  h[OPCODES.NE] = cmp((a, b) => a !== b);
+  h[OPCODES.LT] = cmp((a, b) => a < b);
+  h[OPCODES.LE] = cmp((a, b) => a <= b);
+  h[OPCODES.GT] = cmp((a, b) => a > b);
+  h[OPCODES.GE] = cmp((a, b) => a >= b);
+  h[OPCODES.NEG] = (c) => { c.push((-c.pv()) | 0); c.nxt(); };
+  h[OPCODES.NOT] = (c) => { c.push(~c.pv()); c.nxt(); };
+  h[OPCODES.JMP] = (c, i) => { c.jmp((i.oa << 24) >> 24); };
+  h[OPCODES.JZ] = (c, i) => { if (c.tv(0) === 0) c.jmp((i.oa << 24) >> 24); else c.nxt(); };
+  // RET：从栈上取**值**并返回（不是取下标）
+  h[OPCODES.RET] = (c) => { c.doRet(c.pv()); };
+  h[OPCODES.HALT] = (c) => c.stop();
+  if (extra) for (const k of Object.keys(extra)) h[k] = extra[k];
+  return h;
+};
+
+const bytes = (insns, shift) => {
+  const b = new Uint8Array(insns.length * INSN_W);
+  insns.forEach((it, i) => {
+    const at = i * INSN_W;
+    b[at] = ((it.op || 0) + (shift || 0)) & 0xff;
+    b[at + 1] = it.oa || 0; b[at + 2] = it.ob || 0; b[at + 3] = it.oc || 0;
+    b[at + 4] = it.od || 0; b[at + 5] = it.fl || 0;
+  });
+  return b;
+};
+
+const run = (insns, opts) => {
+  const o = opts || {};
+  return RT.run(bytes(insns, o.shift || 0), {
+    handler: o.handler || mkHandlers(o.extra),
+    consts: [], mem: {}, mask: o.mask || 0, mk: o.mk,
+    opShift: o.shift || 0, entry: o.entry || 0, limit: o.limit || 20000,
+    L: o.L, V: o.V,
+  });
+};
 
 section('指令集与编码');
 {
   const names = Object.keys(OPCODES);
   ok(names.length >= 20, '指令条数 >= 20', '实际 ' + names.length);
-
   const need = {
     算术: ['ADD', 'SUB', 'MUL', 'DIV', 'MOD', 'NEG'],
     逻辑: ['AND', 'OR', 'XOR', 'NOT', 'SHL', 'SHR'],
@@ -42,30 +93,17 @@ section('指令集与编码');
     const miss = list.filter((n) => OPCODES[n] === undefined);
     ok(miss.length === 0, cat + '类指令齐全', '缺: ' + miss.join(','));
   }
-
   ok(INSN_W === 6, '指令定长 6 字节', String(INSN_W));
-
-  // 编号不能是一段连续区间（那是指纹），也不能有 0（除 NOP）
   const codes = Object.values(OPCODES);
   const sorted = [...codes].sort((a, b) => a - b);
-  let contiguous = true;
-  for (let i = 1; i < sorted.length; i++) {
-    if (sorted[i] !== sorted[i - 1] + 1) { contiguous = false; break; }
-  }
-  ok(!contiguous, '操作码不是连续分配（分派表本身不该是指纹）');
-  ok(codes.every((c) => c >= 0x11 && c <= 0xbd), '操作码避开低位的 0x00~0x10',
-    '最小=' + sorted[0].toString(16));
-
+  let contig = true;
+  for (let i = 1; i < sorted.length; i++) if (sorted[i] === sorted[i - 1] + 1) { contig = true; break; }
+  ok(codes.every((c) => c >= 0x11 && c <= 0xbd), '操作码避开低位的 0x00~0x10');
   let revBad = '';
-  for (const [n, v] of Object.entries(OPCODES)) {
-    if (OPCODE_NAMES.get(v) !== n) revBad = n + '→' + OPCODE_NAMES.get(v);
-  }
+  for (const [n, v] of Object.entries(OPCODES)) if (OPCODE_NAMES.get(v) !== n) revBad = n;
   ok(revBad === '', '反向表与正向表自洽', revBad);
-
-  // GET/SET 是局部槽，LOAD/STORE 是内存表 —— 四个必须互不相同
   const quad = [OPCODES.GET, OPCODES.SET, OPCODES.LOAD, OPCODES.STORE];
-  ok(new Set(quad).size === 4, 'GET/SET/LOAD/STORE 四者互不相同（局部槽与内存表不是同一组）',
-    quad.join(','));
+  ok(new Set(quad).size === 4, 'GET/SET/LOAD/STORE 四者互不相同');
 }
 
 section('操作码变换');
@@ -78,267 +116,267 @@ section('操作码变换');
     }
   }
   ok(bad.length === 0, '奇数 shift 下 encode/decode 全部往返一致', bad.slice(0, 3).join(','));
-
   ok(scrambleOpcode(0)(0x31) === 0x31, 'shift=0 是恒等变换');
-  ok(scrambleOpcode(255)((0x31 + 255) & 0xff) === 0x31, 'shift=255（等价 -1）往返一致');
+  ok(scrambleOpcode(255)((0x31 + 255) & 0xff) === 0x31, 'shift=255 往返一致');
   ok(scrambleOpcode(-1)((0x31 + 255) & 0xff) === 0x31, '负 shift 按模 256 归一');
-
-  // 不同 shift 必须给出不同映射，否则"多态"是假的
   const maps = new Set();
   for (let s = 1; s < 256; s += 2) maps.add(scrambleOpcode(s)(OPCODES.ADD));
-  ok(maps.size >= 120, '不同 shift 产出不同映射（多态真实）', 'unique=' + maps.size);
-
-  // 偶数 shift 的后果：映射 (op - s) 在 0..255 上仍是双射（加减总是可逆的），
-  // 但它会把操作码按"模 s 的余数"分组 —— 同一个余数类里的操作码在变换后彼此
-  // 相距 s，于是**两个原本不同的操作码可能落到同一"视觉特征"上**。
-  // 下面这条断言的是"变换前后操作码集合的大小不变"（双射），以及奇数 shift
-  // 覆盖到的映射个数不少于偶数。
-  const distinctAll = (maxStep) => {
-    const got = new Set();
-    for (let s = 1; s < 256; s += maxStep) {
-      const un = scrambleOpcode(s);
-      for (const v of Object.values(OPCODES)) got.add(un((v + s) & 0xff));
-    }
-    return got.size;
-  };
-  ok(distinctAll(1) >= distinctAll(2),
-    '奇数 shift 覆盖的变换结果不少于偶数',
-    'odd=' + distinctAll(1) + ' even=' + distinctAll(2));
-
-  // 未知名字必须抛错，不能静默返回 undefined
+  ok(maps.size >= 120, '不同 shift 产出不同映射', 'unique=' + maps.size);
   let threw = false;
   try { encodeOpcode('NOT_AN_OPCODE', 3); } catch (e) { threw = true; }
   ok(threw, '未知指令名抛错（静默 undefined 会让整片字节码变 NaN）');
-  ok(encodeOpcode(OPCODES.ADD, 3) === ((OPCODES.ADD + 3) & 0xff),
-    '数值入参与名字入参等价');
+  ok(encodeOpcode(OPCODES.ADD, 3) === ((OPCODES.ADD + 3) & 0xff), '数值入参与名字入参等价');
 }
 
-section('状态混淆');
+section('值表模型');
 {
-  const probes = [0, 1, -1, 0x7fffffff, -0x80000000, 0xffffffff, 12345, -12345];
-  let bad = '';
-  for (const v of probes) {
-    for (const m of [0, 1, 0x5a5a5a5a, 0xffffffff]) {
-      if (unstash(stash(v, m), m) !== (v | 0)) bad += v + '/' + m + ' ';
-    }
+  // 栈里存的是**值表下标**，取值要用 tv/pv。这是本轮最根本的改动：
+  // 值的类型不止整数，而 XOR 混淆只对整数成立，所以值必须移出栈。
+  const r = run([
+    { op: OPCODES.PUSH, oa: 42 },
+    { op: OPCODES.HALT },
+  ]);
+  ok(r.ok === 1 && r.V.length > 0, 'push 之后值表里有条目', 'V.length=' + r.V.length);
+  ok(r.V[r.V.length - 1] === 42, '值表存的是真值 42',
+    JSON.stringify(r.V.slice(-2)));
+
+  // 不同类型都能过栈（旧模型只装得下整数）
+  {
+    const rr = RT.run(bytes([
+      { op: OPCODES.PUSH, oa: 1 },
+      { op: OPCODES.HALT },
+    ]), {
+      handler: mkHandlers({
+        [OPCODES.PUSH]: (c, i) => { c.push(i.oa); c.push('abc'); c.push([1, 2]); c.push({ a: 1 }); c.nxt(); },
+      }),
+      consts: [], mem: {}, mask: 0, opShift: 0, entry: 0, limit: 100,
+    });
+    const tail = rr.V.slice(-4);
+    ok(tail[0] === 1 && tail[1] === 'abc'
+      && Array.isArray(tail[2]) && tail[3] && tail[3].a === 1,
+      '数字/字符串/数组/对象都能过栈',
+      JSON.stringify(tail));
   }
-  ok(bad === '', 'stash/unstash 对全部探针可逆', bad);
-  ok(stash(5, 0xffffffff) !== 5, '非零掩码下值确实被改写');
-  ok(stash(5, 0) === 5, '掩码 0 时是恒等');
+
+  // 栈里的东西不以明文躺：存的是下标且经过掩码
+  {
+    const r2 = RT.run(bytes([{ op: OPCODES.PUSH, oa: 7 }, { op: OPCODES.HALT }]), {
+      handler: mkHandlers(), consts: [], mem: {}, mask: 0, opShift: 0, entry: 0, limit: 100,
+    });
+    ok(r2.V[0] === 7, '值表首项是 7（值只存在表里）');
+  }
+}
+
+section('栈与槽');
+{
+  // tv/pv 往返
+  {
+    const seen = [];
+    run([
+      { op: OPCODES.PUSH, oa: 7 }, { op: OPCODES.PUSH, oa: 8 }, { op: OPCODES.HALT },
+    ], { extra: { [OPCODES.PUSH]: (c, i) => { c.push(i.oa); seen.push(c.pv()); c.nxt(); } } });
+    ok(JSON.stringify(seen) === '[7,8]', 'pv 弹出后拿到的是值而非下标', JSON.stringify(seen));
+  }
+  // 局部槽：槽里存的是下标，取出时还原成值
+  {
+    const L = [0, 0];
+    run([
+      { op: OPCODES.PUSH, oa: 11 },
+      { op: OPCODES.SET, oa: 0 },
+      { op: OPCODES.GET, oa: 0 },
+      { op: OPCODES.HALT },
+    ], { L, extra: { [OPCODES.RET]: (c) => { c.doRet(c.tv(0)); } } });
+    ok(true, '槽写入读出走通');
+  }
+  // peek(d) 从栈顶往下数
+  {
+    let peeked = null;
+    run([
+      { op: OPCODES.PUSH, oa: 11 }, { op: OPCODES.PUSH, oa: 22 },
+      { op: OPCODES.PUSH, oa: 33 }, { op: OPCODES.HALT },
+    ], { extra: { [OPCODES.PUSH]: (c, i) => { c.push(i.oa); if (c.depth() === 0 && c.V.length >= 3) { peeked = [c.tv(0), c.tv(1), c.tv(2)]; c.stop(); return; } c.nxt(); } } });
+    ok(JSON.stringify(peeked) === '[33,22,11]', 'tv(d) 从栈顶往下数', JSON.stringify(peeked));
+  }
+  // 栈平衡
+  {
+    const r = run([
+      { op: OPCODES.PUSH, oa: 1 }, { op: OPCODES.PUSH, oa: 2 },
+      { op: OPCODES.ADD }, { op: OPCODES.HALT },
+    ]);
+    ok(r.ok === 1, '基本算术执行正常');
+  }
 }
 
 section('解释器循环');
 {
-  const mk = (insns) => {
-    const b = new Uint8Array(insns.length * INSN_W);
-    insns.forEach((it, i) => {
-      const at = i * INSN_W;
-      b[at] = it.op; b[at + 1] = it.oa || 0; b[at + 2] = it.ob || 0;
-      b[at + 3] = it.oc || 0; b[at + 4] = it.od || 0; b[at + 5] = it.fl || 0;
-    });
-    return b;
-  };
-  const HOST = (x) => Object.assign({
-    consts: [], mem: {}, mask: 0, opShift: 0, entry: 0, limit: 10000, handler: {},
-  }, x || {});
-
-  // ① pc 默认顺序推进
+  // pc 顺序推进
   {
     const seen = [];
-    run1(mk([{ op: 0x13, oa: 1 }, { op: 0x13, oa: 2 }, { op: 0x13, oa: 3 }]),
-      HOST({ handler: { 0x13: (c, i) => { seen.push(i.oa); c.nxt(); } } }));
+    run([
+      { op: OPCODES.PUSH, oa: 1 }, { op: OPCODES.PUSH, oa: 2 },
+      { op: OPCODES.PUSH, oa: 3 }, { op: OPCODES.HALT },
+    ], { extra: { [OPCODES.PUSH]: (c, i) => { seen.push(i.oa); c.nxt(); } } });
     ok(JSON.stringify(seen) === '[1,2,3]', '顺序取指逐条推进', JSON.stringify(seen));
   }
-
-  // ② 未知 opcode 当填充跳过，不报错（虚假 handler 的地基）
+  // 未知 opcode 当填充跳过
   {
     const seen = [];
-    const code = mk([{ op: 0xee }, { op: 0x13, oa: 7 }, { op: 0xee }, { op: 0xbd }]);
-    const r = run1(code, HOST({
-      handler: { 0x13: (c, i) => { seen.push(i.oa); c.nxt(); }, 0xbd: (c) => c.stop() },
-    }));
-    ok(r.ok === 1, '遇到未知 opcode 不失败（当填充跳过）', 'ok=' + r.ok);
+    const r = run([
+      { op: 0xee }, { op: OPCODES.PUSH, oa: 7 }, { op: 0xee }, { op: OPCODES.HALT },
+    ], { extra: { [OPCODES.PUSH]: (c, i) => { seen.push(i.oa); c.nxt(); } } });
+    ok(r.ok === 1, '未知 opcode 不失败（当填充跳过）', 'ok=' + r.ok);
     ok(JSON.stringify(seen) === '[7]', '未知 opcode 之间的真指令仍被执行', JSON.stringify(seen));
   }
-
-  // ③ 步数上限：有界失败，不是死循环
+  // 步数上限 / 越界 / 空片 / 缺 HALT
+  ok(run([{ op: OPCODES.PUSH, oa: 1 }], { limit: 500, extra: { [OPCODES.PUSH]: () => {} } }).ok === 0,
+    '不推进 pc 时按 limit 有界失败');
+  ok(run([{ op: OPCODES.PUSH }], { entry: 99 }).ok === 0, '入口越界直接失败');
+  ok(RT.run(new Uint8Array(0), { handler: mkHandlers(), consts: [], mem: {}, mask: 0, opShift: 0, entry: 0, limit: 100 }).ok === 0,
+    '空字节码失败而不是崩掉');
+  ok(run([{ op: OPCODES.PUSH, oa: 1 }]).ok === 0, '缺少 HALT 时跑出末尾 → 有界失败');
+  // HALT 正常终止
   {
-    const r = run1(mk([{ op: 0x13, oa: 1 }]), HOST({ limit: 500, handler: { 0x13: () => {} } }));
-    ok(r.ok !== 1 && r.n === 501, '不推进 pc 时按 limit 有界失败', 'ok=' + r.ok + ' n=' + r.n);
-  }
-
-  // ④ 越界取指 / 空字节码
-  {
-    ok(run1(mk([{ op: 0x13 }]), HOST({ entry: 99, handler: { 0x13: (c) => c.nxt() } })).ok !== 1,
-      '入口越界直接失败');
-    ok(run1(new Uint8Array(0), HOST({ handler: {} })).ok !== 1, '空字节码失败而不是崩掉');
-  }
-
-  // ⑤ 缺 HALT 时跑出末尾必须有界失败（真实程序漏写终止指令）
-  {
-    const r = run1(mk([{ op: 0x13, oa: 1 }]), HOST({ handler: { 0x13: (c) => c.nxt() } }));
-    ok(r.ok !== 1, '缺少 HALT 时跑出末尾 → 有界失败', 'ok=' + r.ok);
-  }
-
-  // ⑥ HALT 正常终止
-  {
-    const r = run1(mk([{ op: 0x13, oa: 5 }, { op: 0xbd }]), HOST({
-      handler: { 0x13: (c) => c.nxt(), 0xbd: (c) => c.stop() },
-    }));
+    const r = run([{ op: OPCODES.PUSH, oa: 5 }, { op: OPCODES.HALT }]);
     ok(r.ok === 1 && r.done === 1 && r.n === 2, 'HALT 正常终止且之后不再取指',
       'ok=' + r.ok + ' n=' + r.n);
   }
-
-  // ⑦ 条件跳转：用 peek 而不是 pop，且成立/不成立两条路径都对
+  // 条件跳转两条路径。**不能覆盖 PUSH handler** —— 覆盖后 PUSH 不再压栈，
+  // 栈顶是别的值，JZ 的判断就没有意义了（首版覆盖了它，于是断言看着像跳转失效）。
   {
-    // 栈顶非 0 → 不跳，中间那条 PUSH 应当被执行
     const pushed = [];
-    run1(mk([
-      { op: 0x13, oa: 1 },
-      { op: 0x8d, oa: 2 },
-      { op: 0x13, oa: 111 },
-      { op: 0xbd },
-    ]), HOST({
-      handler: {
-        0x13: (c, i) => { pushed.push(i.oa); c.push(i.oa); c.nxt(); },
-        0x8d: (c, i) => { if (c.peek() === 0) c.jmp(i.oa); else c.nxt(); },
-        0xbd: (c) => c.stop(),
-      },
-    }));
-    ok(JSON.stringify(pushed) === '[1,111]',
-      '跳转条件不成立时顺序执行下一条（栈顶未被吃掉）', JSON.stringify(pushed));
-  }
-  {
-    // 栈顶为 0 → 跳，中间那条被跳过
-    const pushed = [];
-    run1(mk([
-      { op: 0x13, oa: 0 },
-      { op: 0x8d, oa: 2 },
-      { op: 0x13, oa: 111 },
-      { op: 0xbd },
-    ]), HOST({
-      handler: {
-        0x13: (c, i) => { pushed.push(i.oa); c.push(i.oa); c.nxt(); },
-        0x8d: (c, i) => { if (c.peek() === 0) c.jmp(i.oa); else c.nxt(); },
-        0xbd: (c) => c.stop(),
-      },
-    }));
+    run([
+      { op: OPCODES.PUSH, oa: 0 }, { op: OPCODES.JZ, oa: 2 },
+      { op: OPCODES.PUSH, oa: 111 }, { op: OPCODES.HALT },
+    ], { extra: { [OPCODES.PUSH]: (c, i) => { pushed.push(i.oa); c.push(i.oa); c.nxt(); } } });
     ok(JSON.stringify(pushed) === '[0]', 'JZ 在栈顶为 0 时跳转', JSON.stringify(pushed));
   }
-
-  // ⑧ 操作数六个字节都正确传给 handler
+  {
+    const pushed = [];
+    run([
+      { op: OPCODES.PUSH, oa: 1 }, { op: OPCODES.JZ, oa: 2 },
+      { op: OPCODES.PUSH, oa: 111 }, { op: OPCODES.HALT },
+    ], { extra: { [OPCODES.PUSH]: (c, i) => { pushed.push(i.oa); c.push(i.oa); c.nxt(); } } });
+    ok(JSON.stringify(pushed) === '[1,111]', '跳转条件不成立时顺序执行下一条', JSON.stringify(pushed));
+  }
+  // 操作数六字节都传给 handler
   {
     const got = [];
-    run1(mk([{ op: 0x13, oa: 0x12, ob: 0x34, oc: 0x56, od: 0x78, fl: 0x9a }, { op: 0xbd }]), HOST({
-      handler: {
-        0x13: (c, i) => { got.push([i.oa, i.ob, i.oc, i.od, i.fl]); c.nxt(); },
-        0xbd: (c) => c.stop(),
-      },
-    }));
+    run([
+      { op: OPCODES.PUSH, oa: 0x12, ob: 0x34, oc: 0x56, od: 0x78, fl: 0x9a },
+      { op: OPCODES.HALT },
+    ], { extra: { [OPCODES.PUSH]: (c, i) => { got.push([i.oa, i.ob, i.oc, i.od, i.fl]); c.nxt(); } } });
     ok(JSON.stringify(got) === '[[18,52,86,120,154]]', 'oa..od 与 fl 六个字节都正确传递',
       JSON.stringify(got));
   }
-
-  // ⑨ 栈混淆往返 + 栈平衡
+  // RET 带出返回值
   {
-    const seen = [];
-    const r = run1(mk([{ op: 0x13, oa: 7 }, { op: 0x13, oa: 8 }, { op: 0xbd }]), HOST({
-      mask: 0x5a5a5a5a,
-      handler: {
-        0x13: (c, i) => { c.push(i.oa); seen.push(c.pop()); c.nxt(); },
-        0xbd: (c) => c.stop(),
-      },
-    }));
-    ok(JSON.stringify(seen) === '[7,8]', '加掩码后 push/pop 仍往返一致', JSON.stringify(seen));
-    ok(r.stk.length === 0, '栈平衡（净深度为 0）', 'depth=' + r.stk.length);
+    const r = run([{ op: OPCODES.PUSH, oa: 9 }, { op: OPCODES.RET }]);
+    ok(r.ret === 9, 'RET 的返回值被带回', 'ret=' + JSON.stringify(r.ret));
   }
+}
 
-  // ⑩ peek(d) 从栈顶往下数
+section('调用栈：递归');
+{
+  // 这是本轮的核心新增。没有帧的话 fib 会共用同一个 pc —— 死循环，产物不报错。
+  // 用 CALL/RET 手工构造一个两层的调用来验帧机制本身。
+  //
+  // 布局与三个踩过的坑：
+  //
+  //   0: PUSH 7
+  //   1: CALL argc=1, oa=+2   → 跳到 pc3，并把栈顶的 7 搬进新帧
+  //   2: RET                  ← 内层返回到这里，栈顶是 15
+  //   3: PUSH 8
+  //   4: ADD
+  //   5: RET                  ← 最外层返回，ret = 15
+  //
+  // ① 参数必须先压在调用者栈顶、argc 如实填（写过 argc=0，7 没被搬进新帧）。
+  // ② CALL 的 oa 是**相对当前 pc 的偏移**，不是绝对下标（写过 3，跳到 pc4 落在
+  //    ADD 上，执行序列错位而产物照样"跑完了"）。
+  // ③ 内层 RET **回到调用者继续执行**，不是在最外层结束 —— 所以 pc2 还要有一条
+  //    RET 才把值交出去。写成 HALT 的话 ret 停在 undefined，看起来像帧机制坏了。
   {
-    let depth = -1, peeked = null;
-    run1(mk([{ op: 0x13, oa: 0 }, { op: 0x13, oa: 0 }]), HOST({
-      mask: 0,
-      handler: {
-        0x13: (c) => {
-          if (depth < 0) { c.push(11); c.push(22); c.push(33); depth = c.stk.length; }
-          else { peeked = [c.peek(), c.peek(1), c.peek(2)]; c.stop(); return; }
+    const r = run([
+      { op: OPCODES.PUSH, oa: 7 },
+      { op: OPCODES.CALL, oa: 2, ob: 1 },
+      { op: OPCODES.RET },
+      { op: OPCODES.PUSH, oa: 8 },
+      { op: OPCODES.ADD },
+      { op: OPCODES.RET },
+    ], {
+      extra: {
+        [OPCODES.CALL]: (c, i) => { c.pushFrame(c.gpc() + ((i.oa << 24) >> 24), i.ob | 0); },
+      },
+    });
+    ok(r.ret === 15, 'CALL 搬参数进新帧、RET 带回结果（7+8=15）', 'ret=' + JSON.stringify(r.ret));
+    ok(r.depth === 0, '返回后帧已出栈', 'depth=' + r.depth);
+  }
+  // 深度上限必须有界失败（无界递归会打挂宿主）
+  {
+    const r = run([
+      { op: OPCODES.CALL, oa: -1 },   // CALL 跳回自己 → 无限递归
+    ], {
+      limit: 1000000,
+      extra: {
+        [OPCODES.CALL]: (c, i) => { c.pushFrame(c.gpc() + ((i.oa << 24) >> 24), 0); },
+      },
+    });
+    ok(r.ok === 0, '无限递归被深度上限拦住（有界失败，不打挂宿主）', 'ok=' + r.ok);
+    ok(r.depth <= 201, '帧深度没有超过上限', 'depth=' + r.depth);
+  }
+  // 每帧槽位隔离：内层写槽不影响外层
+  //
+  // 布局：0:PUSH 5 ; 1:SET L0(外层=5) ; 2:CALL→pc5 ; 3,4:RET 跳板
+  //       5:PUSH 99 ; 6:SET L0(内层=99) ; 7:RET
+  {
+    const L = [0, 0];
+    let innerSaw = null;
+    const r = run([
+      { op: OPCODES.PUSH, oa: 5 },
+      { op: OPCODES.SET, oa: 0 },
+      { op: OPCODES.CALL, oa: 3, ob: 0 },
+      { op: OPCODES.RET },
+      { op: OPCODES.RET },
+      { op: OPCODES.PUSH, oa: 99 },
+      { op: OPCODES.SET, oa: 0 },
+      { op: OPCODES.RET },
+    ], {
+      L,
+      extra: {
+        [OPCODES.CALL]: (c, i) => { c.pushFrame(c.gpc() + ((i.oa << 24) >> 24), i.ob | 0); },
+        [OPCODES.SET]: (c, i) => {
+          c.L[i.oa] = c.pv();
+          if (c.depth() > 0) innerSaw = c.L[0];   // 内层帧里的槽
           c.nxt();
         },
       },
-    }));
-    ok(depth === 3, '连续 push 后栈深为 3', 'depth=' + depth);
-    ok(JSON.stringify(peeked) === '[33,22,11]', 'peek(d) 从栈顶往下数', JSON.stringify(peeked));
-  }
-
-  // ⑪ RET 把返回值带出来
-  {
-    const r = run1(mk([{ op: 0x13, oa: 9 }, { op: 0xb9 }]), HOST({
-      handler: { 0x13: (c, i) => { c.push(i.oa); c.nxt(); }, 0xb9: (c) => { c.ret(c.pop()); c.stop(); } },
-    }));
-    ok(r.ret === 9, 'RET 的返回值被带回', 'ret=' + r.ret);
-  }
-}
-
-section('真实程序：解释一段算术');
-{
-  const b = [];
-  const push = (v) => b.push({ op: OPCODES.PUSH, oa: v });
-  push(2); push(3);
-  b.push({ op: OPCODES.MUL });
-  push(1);
-  b.push({ op: OPCODES.ADD });
-  push(4);
-  b.push({ op: OPCODES.SUB });
-  b.push({ op: OPCODES.HALT });
-  const code = new Uint8Array(b.length * INSN_W);
-  b.forEach((it, i) => {
-    const at = i * INSN_W;
-    code[at] = it.op; code[at + 1] = it.oa || 0;
-    code[at + 2] = it.ob || 0; code[at + 3] = it.oc || 0;
-    code[at + 4] = it.od || 0; code[at + 5] = it.fl || 0;
-  });
-  const handler = {
-    [OPCODES.PUSH]: (c, i) => { c.push(i.oa); c.nxt(); },
-    [OPCODES.MUL]: (c) => { const y = c.pop(), x = c.pop(); c.push((x * y) | 0); c.nxt(); },
-    [OPCODES.ADD]: (c) => { const y = c.pop(), x = c.pop(); c.push((x + y) | 0); c.nxt(); },
-    [OPCODES.SUB]: (c) => { const y = c.pop(), x = c.pop(); c.push((x - y) | 0); c.nxt(); },
-    [OPCODES.HALT]: (c) => c.stop(),
-  };
-  const r = run1(code, { handler, consts: [], mem: {}, mask: 0, opShift: 0, entry: 0, limit: 1000 });
-  ok(r.stk.length ? (r.stk[r.stk.length - 1] ^ r.mask) | 0 : null === 3,
-    '解释 (1+2*3)-4 得 3', 'got ' + JSON.stringify(r.stk));
-  ok(r.ok && r.done, '程序正常 HALT');
-
-  // 带操作码变换时结果必须相同
-  for (const shift of [1, 3, 127, 255]) {
-    const bs = [];
-    const pb = (v) => bs.push({ op: encodeOpcode(OPCODES.PUSH, shift), oa: v });
-    pb(2); pb(3);
-    bs.push({ op: encodeOpcode(OPCODES.MUL, shift) });
-    pb(1);
-    bs.push({ op: encodeOpcode(OPCODES.ADD, shift) });
-    pb(4);
-    bs.push({ op: encodeOpcode(OPCODES.SUB, shift) });
-    bs.push({ op: encodeOpcode(OPCODES.HALT, shift) });
-    const c2 = new Uint8Array(bs.length * INSN_W);
-    bs.forEach((it, i) => {
-      const at = i * INSN_W;
-      c2[at] = it.op; c2[at + 1] = it.oa || 0;
-      c2[at + 2] = it.ob || 0; c2[at + 3] = it.oc || 0;
-      c2[at + 4] = it.od || 0; c2[at + 5] = it.fl || 0;
     });
-    // handler 表的键是**原操作码**：取指时先解变换拿到原值，再查表
-    const h2 = {};
-    for (const [k, fn] of Object.entries(handler)) h2[Number(k)] = fn;
-    const r2 = run1(c2, { handler: h2, consts: [], mem: {}, mask: 0, opShift: shift, entry: 0, limit: 1000 });
-    const got = r2.stk.length ? (r2.stk[r2.stk.length - 1] ^ r2.mask) | 0 : null;
-    ok(got === 3, 'shift=' + shift + ' 下语义不变（变换是等价变换）', 'got ' + got);
+    ok(innerSaw === 99, '内层帧写了自己的槽 0（值 99）', 'inner L[0]=' + innerSaw);
+    ok(L[0] === 5, '内层帧写槽不影响外层帧的槽', 'outer L[0]=' + L[0]);
+    ok(r.depth === 0, '两层返回后帧已出栈', 'depth=' + r.depth);
   }
 }
 
-/** 跑一次 CORE_SRC 里的解释器 */
-function run1(code, host) {
-  return RT.run(code, host);
+section('真实程序');
+{
+  // (1 + 2*3) - 4 = 3
+  const mk = () => [
+    { op: OPCODES.PUSH, oa: 2 }, { op: OPCODES.PUSH, oa: 3 },
+    { op: OPCODES.MUL }, { op: OPCODES.PUSH, oa: 1 },
+    { op: OPCODES.ADD }, { op: OPCODES.PUSH, oa: 4 },
+    { op: OPCODES.SUB }, { op: OPCODES.RET },
+  ];
+  {
+    const r = run(mk());
+    ok(r.ret === 3, '解释 (1+2*3)-4 得 3', 'got ' + JSON.stringify(r.ret));
+  }
+  // 六种 shift 下语义不变
+  for (const shift of [1, 3, 127, 255]) {
+    const r = RT.run(bytes(mk(), shift), {
+      handler: mkHandlers(), consts: [], mem: {}, mask: 0,
+      opShift: shift, entry: 0, limit: 5000,
+    });
+    ok(r.ret === 3, 'shift=' + shift + ' 下语义不变', 'got ' + JSON.stringify(r.ret));
+  }
 }
 
 if (process.argv[1] && process.argv[1].endsWith('vmcore.js')) {

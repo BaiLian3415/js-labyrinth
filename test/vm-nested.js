@@ -38,8 +38,8 @@ function execute(code, shift, slots) {
   K[OPCODES.GET] = (c, i) => { c.push(st(locals[i.oa])); c.nxt(); };
   // SET 只写不推。赋值语句的"自身有值"由编译器在 SET 之前显式 DUP 表达，
   // handler 若自己多推一个，栈就会多出一份垃圾 —— 首版正是在这里出的 3025。
-  K[OPCODES.SET] = (c, i) => { locals[i.oa] = st(c.pop()); c.nxt(); };
-  K[OPCODES.DUP] = (c) => { c.push(c.peek(0)); c.nxt(); };
+  K[OPCODES.SET] = (c, i) => { locals[i.oa] = st(c.pv()); c.nxt(); };
+  K[OPCODES.DUP] = (c) => { c.push(c.tv(0)); c.nxt(); };
   K[OPCODES.POP] = (c) => { c.pop(); c.nxt(); };
   for (const [name, fn] of Object.entries({
     ADD: (a, b) => (a + b) | 0, SUB: (a, b) => (a - b) | 0,
@@ -47,7 +47,7 @@ function execute(code, shift, slots) {
     MOD: (a, b) => (a % b) | 0,
   })) {
     K[OPCODES[name]] = (c) => {
-      const b = c.pop(), a = c.pop();
+      const b = c.pv(), a = c.pv();
       c.push(fn(a, b) | 0); c.nxt();
     };
   }
@@ -59,22 +59,25 @@ function execute(code, shift, slots) {
     GT: (a, b) => (a > b ? 1 : 0), GE: (a, b) => (a >= b ? 1 : 0),
   })) {
     K[OPCODES[name]] = (c) => {
-      const b = c.pop(), a = c.pop();
+      const b = c.pv(), a = c.pv();
       c.push(fn(a, b) | 0); c.nxt();
     };
   }
-  K[OPCODES.NEG] = (c) => { c.push((-c.pop()) | 0); c.nxt(); };
-  K[OPCODES.NOT] = (c) => { c.push((~c.pop()) | 0); c.nxt(); };
+  K[OPCODES.NEG] = (c) => { c.push((-c.pv()) | 0); c.nxt(); };
+  K[OPCODES.NOT] = (c) => { c.push((~c.pv()) | 0); c.nxt(); };
   K[OPCODES.JMP] = (c, i) => { c.jmp((i.oa << 24) >> 24); };
   K[OPCODES.JZ] = (c, i) => {
-    if (c.peek() === 0) c.jmp((i.oa << 24) >> 24); else c.nxt();
+    // 值表模型下 peek() 给的是**下标**，判断条件要用 tv() 取值。
+    // 写成 peek()===0 时，条件值 0 的下标是 0 或 1（取决于分配顺序），
+    // 于是 JZ 该跳不跳、不该跳却跳 —— 表现为 if/else 分支正好反了。
+    if (c.tv(0) === 0) c.jmp((i.oa << 24) >> 24); else c.nxt();
   };
-  K[OPCODES.RET] = (c) => { c.ret(c.pop()); c.stop(); };
+  K[OPCODES.RET] = (c) => { c.ret(c.pv()); c.stop(); };
   K[OPCODES.HALT] = (c) => c.stop();
   const handler = {};
   for (const [k, fn] of Object.entries(K)) handler[Number(k)] = fn;
   const r = RT.run(code, {
-    handler, consts: [], mem: {}, mask: st(0) ^ 0x37, opShift: shift,
+    handler, consts: [], mem: {}, mask: 0x37, opShift: shift,
     entry: 0, limit: 20000,
   });
   return { ret: r.ret === undefined ? null : r.ret, r, locals };
