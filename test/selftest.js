@@ -22,6 +22,7 @@
  *   guide-fnv        引导层 FNV 多种等价写法：构建期与运行期逐位相同
  *   domain-redirect  域名锁定重定向：跳转位置、合法地址、危险 scheme 拒绝
  *   force-strings    强制入池字符串：绕过抽样阈值、优先级、非法正则
+ *   source-loc       解析器位置追踪：语句级 start/end/loc，默认关闭
  *   vm               VM 保护、动态操作码、分发表密文化、寄存器模型
  *   anti-analysis    Anti-CDP 与域名锁定
  *   minify           AST 简化、DCE、命名策略、属性名重命名、杂项
@@ -55,6 +56,7 @@ const FILES = [
   'guide-fnv.js',
   'domain-redirect.js',
   'force-strings.js',
+  'source-loc.js',
   'chinese-names.js',
   'vm.js',
   'anti-analysis.js',

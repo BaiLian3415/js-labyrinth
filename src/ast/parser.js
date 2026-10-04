@@ -496,6 +496,56 @@ class Parser {
     this.allowIn = true; // 解析 for 的初始化部分时会临时关掉 in 二元运算符
     this.sourceType = this.options.sourceType || 'unambiguous';
     this.isModule = this.sourceType === 'module';
+    // 位置追踪（source map 的前置）。默认关：关着时 parseStatement 里那几次判断
+    // 是唯一的成本，逐节点挂 start/end/loc 会让每个 AST 节点多三个字段，而混淆流水线
+    // 一次构建要造几十万个节点。
+    this.trackLoc = !!this.options.locations;
+    // 行首下标表：offset → {line, column}。建一次、之后二分，行列都 1 起算
+    // （与 Babel 的 loc 一致：line 从 1 开始、column 从 0 开始）。
+    this._lineStarts = this.trackLoc ? Parser._indexLines(this.lexer.code) : null;
+  }
+
+  /** 扫出行首下标。第一个元素恒为 0（首行起点）。 */
+  static _indexLines(code) {
+    const starts = [0];
+    for (let i = 0; i < code.length; i++) {
+      if (code.charCodeAt(i) === 10) starts.push(i + 1);
+    }
+    return starts;
+  }
+
+  /**
+   * 源码下标 → 行列。行首表二分，O(log 行数)。
+   * @param {number} idx 源码下标
+   * @returns {{line:number, column:number}} line 从 1 起、column 从 0 起
+   */
+  posToLoc(idx) {
+    const starts = this._lineStarts;
+    let lo = 0;
+    let hi = starts.length - 1;
+    while (lo < hi) {
+      const mid = (lo + hi + 1) >> 1;
+      if (starts[mid] <= idx) lo = mid;
+      else hi = mid - 1;
+    }
+    return { line: lo + 1, column: idx - starts[lo] };
+  }
+
+  /**
+   * 给节点挂 start/end/loc。只在 options.locations 打开时调用。
+   *
+   * 粒度是**语句级**：parseStatement 是全部语句（含嵌套）的唯一入口，在这里记一次
+   * 就覆盖了所有层级。刻意不做表达式级——表达式节点数量是语句级的几十倍，而映射堆栈
+   * 时真正用得上的是"这一行来自源码哪一行"，语句级已经够用。
+   */
+  _locate(node, startIdx) {
+    if (!node || typeof node !== 'object') return node;
+    const endTok = this.peek();
+    const endIdx = endTok && typeof endTok.idx === 'number' ? endTok.idx : this.lexer.pos;
+    node.start = startIdx;
+    node.end = endIdx;
+    node.loc = { start: this.posToLoc(startIdx), end: this.posToLoc(endIdx) };
+    return node;
   }
 
   peek() { return this.lexer.peek(); }
@@ -614,10 +664,15 @@ class Parser {
   parseStatement() {
     const t0 = this.peek();
     if (t0.type === 'eof') return null;
+    const startIdx = t0.idx !== undefined ? t0.idx : 0;
     const node = this._parseStatementInner();
     // 记下语句在源码里的起始下标，vm comment 模式要拿它和注释区间做重叠判断。
     // 这是个轻量附加字段，generator 与 traverse 会跳过不认识的键，types.js 也不复制它。
-    if (node && typeof node === 'object') node.srcIdx = t0.idx !== undefined ? t0.idx : 0;
+    if (node && typeof node === 'object') {
+      node.srcIdx = startIdx;
+      // source map 的位置追踪（默认关，见构造器里的说明）
+      if (this.trackLoc) this._locate(node, startIdx);
+    }
     return node;
   }
 
