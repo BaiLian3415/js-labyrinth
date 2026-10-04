@@ -103,6 +103,28 @@ export default function domainLock(ast, options, ctx) {
   const mode = (couple && options.stringArray !== false) ? 'coupled'
     : (poisonKeys ? 'poison' : 'throw');
 
+  // 重定向地址（domainLockRedirectUrl）。只在 throw 模式下有意义：coupled 与
+  // poison 两种降级里，失配的后果是整池字符串静默乱码，控制流压根不会走到跳转语句，
+  // 所以那里加跳转是死代码。throw 模式是唯一"装载期就失败"的形态，跳转放在抛错
+  // 之前，非授权域看到的是空白页而不是一句英文报错。
+  //
+  // 三个方向都要防：
+  //   · 相对地址（"/x"）原样留着，浏览器按当前文档解析
+  //   · 绝对 http(s) 原样留着
+  //   · javascript: 之类会执行代码的 scheme 直接拒掉——否则这个选项就成了一个
+  //     "往产物里注入任意脚本"的入口
+  const rawRedirect = typeof options.domainLockRedirectUrl === 'string'
+    ? options.domainLockRedirectUrl.trim() : '';
+  let redirect = '';
+  let redirectSuppressed = null;
+  if (rawRedirect) {
+    const lower = rawRedirect.toLowerCase();
+    const safe = lower.startsWith('/') || lower.startsWith('./') || lower.startsWith('../')
+      || lower.startsWith('https://') || lower.startsWith('http://');
+    if (safe) redirect = 'location.replace(' + JSON.stringify(rawRedirect) + ');';
+    else redirectSuppressed = 'domainLockRedirectUrl(unsafe-scheme)';
+  }
+
   // ---- 构建期常量（逐构建随机）----
   const saltH = randInt(0x1000000, 0x7fffffff);   // hostname 折叠盐
   const saltP = randInt(0x1000000, 0x7fffffff);   // host:port 折叠盐
@@ -179,7 +201,9 @@ export default function domainLock(ast, options, ctx) {
       .join('');
     P('if(!m){' + writes + '}');
   } else {
-    // 最弱兜底：装载期显式失败
+    // 最弱兜底：装载期显式失败。配了重定向地址就先跳走——跳转在 throw 之前，
+    // 两者都执行得到：非授权域看到的是空白页而不是一句英文报错。
+    if (redirect) P('if(!m){' + redirect + '}');
     P('if(!m){throw new Error("JsLabyrinth: this build is locked to another domain");}');
   }
   P('}');
@@ -225,5 +249,9 @@ export default function domainLock(ast, options, ctx) {
     rounds,
     saltH,
     hostFn: fn,
+    // 只在 throw 模式且地址合法时 redirect 为真。coupled/poison 两种降级里跳转是
+    // 死代码（控制流走不到），如实报出来，别让 stats 显示"配了"而产物里没有。
+    redirect: mode === 'throw' && !!redirect,
+    suppressed: redirectSuppressed,
   };
 };

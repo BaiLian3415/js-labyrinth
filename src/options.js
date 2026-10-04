@@ -255,6 +255,9 @@ export default {
   // 匹配结果密钥耦合进字符串池解密密钥：非授权域整池乱码、删引导调用授权域
   // 自己乱码、改校验函数体被完整性校验检出。Paid 档可用（plus+）。
   "domainLock": "",
+  // 非授权域在「装载期抛错」那种降级下先跳这里再抛错；另两种降级走不到（见
+  // domainLock.js 的注释）。只接受相对地址与 http(s)。
+  "domainLockRedirectUrl": "",
   "sentinelRate": 0.5,
   "debugPoison": true,
   "consoleStub": false,
