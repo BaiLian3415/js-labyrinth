@@ -15,8 +15,12 @@ import parserMod from '../src/ast/parser.js';
 const { parse } = parserMod;
 import { compileNested } from '../src/passes/vmNested.js';
 import {
-  OPCODES, INSN_W, scrambleOpcode, encodeOpcode, runBytecode,
+  OPCODES, INSN_W, scrambleOpcode, encodeOpcode, CORE_SRC,
 } from '../src/rt/vmcore.js';
+
+// 跑的是 CORE_SRC 里那段源码（与产物里注入的是同一份文本），
+// 而不是 import 一个函数——测试必须验真正会进产物的那份。
+const RT = (0, eval)('(function(){' + CORE_SRC + '\nreturn {run:VMC_run};})()');
 import { ok, report, section, cleanTmp, runNode } from './_harness.js';
 
 /**
@@ -30,13 +34,13 @@ function execute(code, shift, slots) {
   const K = {};
   // 局部变量：GET/SET 走一张与 regs 平行的小表（内核不区分，handler 自己分）
   const locals = new Array(slots).fill(0);
-  K[OPCODES.PUSH] = (c, i) => { c.push(i.oa); c.next(); };
-  K[OPCODES.GET] = (c, i) => { c.push(st(locals[i.oa])); c.next(); };
+  K[OPCODES.PUSH] = (c, i) => { c.push(i.oa); c.nxt(); };
+  K[OPCODES.GET] = (c, i) => { c.push(st(locals[i.oa])); c.nxt(); };
   // SET 只写不推。赋值语句的"自身有值"由编译器在 SET 之前显式 DUP 表达，
   // handler 若自己多推一个，栈就会多出一份垃圾 —— 首版正是在这里出的 3025。
-  K[OPCODES.SET] = (c, i) => { locals[i.oa] = st(c.pop()); c.next(); };
-  K[OPCODES.DUP] = (c) => { c.push(c.peek(0)); c.next(); };
-  K[OPCODES.POP] = (c) => { c.pop(); c.next(); };
+  K[OPCODES.SET] = (c, i) => { locals[i.oa] = st(c.pop()); c.nxt(); };
+  K[OPCODES.DUP] = (c) => { c.push(c.peek(0)); c.nxt(); };
+  K[OPCODES.POP] = (c) => { c.pop(); c.nxt(); };
   for (const [name, fn] of Object.entries({
     ADD: (a, b) => (a + b) | 0, SUB: (a, b) => (a - b) | 0,
     MUL: (a, b) => (a * b) | 0, DIV: (a, b) => (a / b) | 0,
@@ -44,7 +48,7 @@ function execute(code, shift, slots) {
   })) {
     K[OPCODES[name]] = (c) => {
       const b = c.pop(), a = c.pop();
-      c.push(fn(a, b) | 0); c.next();
+      c.push(fn(a, b) | 0); c.nxt();
     };
   }
   for (const [name, fn] of Object.entries({
@@ -56,20 +60,20 @@ function execute(code, shift, slots) {
   })) {
     K[OPCODES[name]] = (c) => {
       const b = c.pop(), a = c.pop();
-      c.push(fn(a, b) | 0); c.next();
+      c.push(fn(a, b) | 0); c.nxt();
     };
   }
-  K[OPCODES.NEG] = (c) => { c.push((-c.pop()) | 0); c.next(); };
-  K[OPCODES.NOT] = (c) => { c.push((~c.pop()) | 0); c.next(); };
-  K[OPCODES.JMP] = (c, i) => { c.jump((i.oa << 24) >> 24); };
+  K[OPCODES.NEG] = (c) => { c.push((-c.pop()) | 0); c.nxt(); };
+  K[OPCODES.NOT] = (c) => { c.push((~c.pop()) | 0); c.nxt(); };
+  K[OPCODES.JMP] = (c, i) => { c.jmp((i.oa << 24) >> 24); };
   K[OPCODES.JZ] = (c, i) => {
-    if (c.peek() === 0) c.jump((i.oa << 24) >> 24); else c.next();
+    if (c.peek() === 0) c.jmp((i.oa << 24) >> 24); else c.nxt();
   };
-  K[OPCODES.RET] = (c) => { c.setRet(c.pop()); c.setHalted(); };
-  K[OPCODES.HALT] = (c) => c.setHalted();
+  K[OPCODES.RET] = (c) => { c.ret(c.pop()); c.stop(); };
+  K[OPCODES.HALT] = (c) => c.stop();
   const handler = {};
   for (const [k, fn] of Object.entries(K)) handler[Number(k)] = fn;
-  const r = runBytecode(code, {
+  const r = RT.run(code, {
     handler, consts: [], mem: {}, mask: st(0) ^ 0x37, opShift: shift,
     entry: 0, limit: 20000,
   });
@@ -236,7 +240,24 @@ section('编译器：不支持的语法必须退让');
     accepted.join('; '));
 }
 
-section('编译器：产出形状');
+section('编译器：产出形状与不许硬编码操作码');
+{
+  // 操作码表重新分段过一次，那次把 7 处 emit.insn(0x13) 留成了旧值 ——
+  // 0x13 恰好从 DUP 变成了 PUSH，于是所有 DUP 都在发 PUSH。
+  // 表现是"循环与 if 全算成 0"，而编译照常成功、字节码长度不变。
+  // 这里读源码文本断言：发射指令只能走 OPCODES.xxx，不能写字面量。
+  const fs = await import('node:fs');
+  const srcText = fs.readFileSync(
+    new URL('../src/passes/vmNested.js', import.meta.url), 'utf8');
+  const literalOps = [...srcText.matchAll(/emit\.insn\(\s*0x[0-9a-fA-F]+/g)]
+    .map((m) => m[0]);
+  ok(literalOps.length === 0,
+    '发射指令不硬编码操作码字面量（全部走 OPCODES.xxx）',
+    '发现 ' + literalOps.length + ' 处: ' + literalOps.slice(0, 3).join(' '));
+  const literalPatch = [...srcText.matchAll(/emit\.patch\(\s*\w+\s*,\s*0x[0-9a-fA-F]+/g)];
+  ok(literalPatch.length === 0, '回填指令同样不硬编码操作码',
+    '发现 ' + literalPatch.length + ' 处');
+}
 {
   const src = 'function f(){var a=1;var b=2;return a+b;}';
   const got = run(src);

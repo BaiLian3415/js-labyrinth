@@ -195,7 +195,7 @@ function compileCond(node, emit, locals, budget, jumpIfZero) {
   if (!compileExpr(node, emit, locals, budget)) return false;
   // 条件值留一个副本：EQ/LT 之类的比较不消费，但裸值要留给分支判断
   if (jumpIfZero) {
-    emit.insn(0x13);            // DUP：复制条件值供下方 JZ 读
+    emit.insn(OPCODES.DUP);            // DUP：复制条件值供下方 JZ 读
     const j = emit.placeholder();
     emit.insn(OPCODES.POP);      // 另一份丢弃，保持栈平衡
     return j;
@@ -304,7 +304,7 @@ function compileFor(node, emit, locals, budget) {
   let exitJmp = -1;
   if (node.test) {
     if (!compileExpr(node.test, emit, locals, budget)) return false;
-    emit.insn(0x13);                        // DUP
+    emit.insn(OPCODES.DUP);                        // DUP
     const jz = emit.placeholder();
     emit.insn(OPCODES.POP);
     // 前跳距离要等循环体编完才知道，先记着
@@ -341,7 +341,7 @@ function compileFor(node, emit, locals, budget) {
 function compileWhile(node, emit, locals, budget) {
   const top = emit.length / INSN_W;
   if (!compileExpr(node.test, emit, locals, budget)) return false;
-  emit.insn(0x13);
+  emit.insn(OPCODES.DUP);
   const jz = emit.placeholder();
   emit.insn(OPCODES.POP);
   if (!compileStmt(node.body, emit, locals, budget)) return false;
@@ -384,7 +384,7 @@ function compileExpr(node, emit, locals, budget) {
       const s = locals.slot(left.name);
       if (node.operator === '=') {
         if (!compileExpr(node.right, emit, locals, budget)) return false;
-        emit.insn(0x13);                 // DUP：赋值表达式本身也有值
+        emit.insn(OPCODES.DUP);                 // DUP：赋值表达式本身也有值
         emit.insn(OPCODES.SET, s);
         return true;
       }
@@ -542,7 +542,7 @@ function isZeroLiteral(node) {
 /** && / || 编成分支：左侧不成立就短路 */
 function compileShortCircuit(node, emit, locals, budget) {
   if (!compileExpr(node.left, emit, locals, budget)) return false;
-  emit.insn(0x13);                     // DUP：结果值
+  emit.insn(OPCODES.DUP);                     // DUP：结果值
   const isAnd = node.operator === '&&';
   // && 时左侧假 → 走右侧；|| 时左侧真 → 走右侧。
   // 统一编成 "条件不满足就跳过右侧"，所以比较方向随运算符取反。
@@ -777,8 +777,17 @@ export function compileNested(body, shift, budgetN) {
   if (locals.size > 255) return null;
   const emit = new Emit(shift);
   const budget = { n: budgetN || 400 };
-  emit.insn(0x2a);                    // 首条：占位的 MUL 会被后面 patch 掉
-  emit.patch(0, OPCODES.NOP);         // 入口 NOP，兼作"这不是空程序"的标记
+  // 首条固定一条 NOP。
+  //
+  // 它的作用是给"pc 从 0 开始"一个明确的起点：入口处 pc=0 指向它，
+  // 之后才是真正的指令。这样字节码非空这件事有个可判定的形式
+  // （第一条永远是 NOP），也让反汇编时"程序头"一眼可辨。
+  //
+  // 曾经的写法是发一条占位的 MUL 再 patch 成 NOP —— 那是硬编码操作码的
+  // 另一个来源：操作码表重新分段后 0x2a 变成了别的指令，占位符本身错了，
+  // 而 patch 会把它改回 NOP 所以"看起来对"，只有 NOP 的语义变化才会暴露问题。
+  // 现在直接发 OPCODES.NOP，不绕。
+  emit.insn(OPCODES.NOP);
   if (!compileBody(body, emit, locals, budget)) return null;
   emit.insn(OPCODES.HALT);
   return {
