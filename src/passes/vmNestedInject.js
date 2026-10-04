@@ -21,7 +21,7 @@
  */
 
 import rand from '../utils/rand.js';
-import { CORE_SRC, INSN_W, encodeOpcode } from '../rt/vmcore.js';
+import { CORE_SRC, INSN_W, OPCODES, encodeOpcode } from '../rt/vmcore.js';
 
 const { randInt } = rand;
 
@@ -32,24 +32,33 @@ const SLOTS = 'SL';
 export const BEHAVIOR = {
   PUSH: 1, GET: 2, SET: 3, BIN: 4, CMP: 5, UN: 6,
   JMP: 7, JZ: 8, RET: 9, HALT: 10, DUP: 11, POP: 12,
+  ARGV: 13,
 };
 
 /**
- * 算子码表。键是**解码后**的操作码。
+ * 算子码表。键是**解码后**的操作码，值是 VMC_bin 的 case 号。
+ *
+ * 键必须写成 `OPCODES.ADD` 而不是 0x31。写死的编号在操作码表**重新分段**后会
+ * 静默失效：0x31 从 ADD 变成别的东西，这里的映射还指向旧值，于是那条指令在
+ * 字节码里照常出现、建表时挂上错误的行为码，产物不报错、只是算错。
+ * 本会话已经踩过一次同样的坑（vmNested.js 里 7 处 emit.insn(0x13)，0x13 恰好
+ * 从 DUP 变成 PUSH，所有 DUP 都在发 PUSH，编译成功且字节码长度一模一样）。
  *
  * 必须与 vmNested.js 里 BINOP/CMPOP/一元 的集合一致；两边不同就会出现
  * "操作码认识、行为码不认识"的条目，建表时落到兜底分支（当填充跳过），
  * 产物于是静默算错。
  */
 const ARITH = {
-  0x31: 0, 0x35: 1, 0x39: 2,           // ADD SUB MUL
-  0x51: 3, 0x55: 4, 0x59: 5,           // AND OR XOR
-  0x61: 6, 0x65: 7, 0x69: 8,           // SHL SHR USHR
+  [OPCODES.ADD]: 0, [OPCODES.SUB]: 1, [OPCODES.MUL]: 2,
+  [OPCODES.AND]: 3, [OPCODES.OR]: 4, [OPCODES.XOR]: 5,
+  [OPCODES.SHL]: 6, [OPCODES.SHR]: 7, [OPCODES.USHR]: 8,
 };
 const COMPARE = {
-  0x71: 0, 0x75: 1, 0x79: 2, 0x7d: 3, 0x81: 4, 0x85: 5,
+  [OPCODES.EQ]: 0, [OPCODES.NE]: 1,
+  [OPCODES.LT]: 2, [OPCODES.LE]: 3,
+  [OPCODES.GT]: 4, [OPCODES.GE]: 5,
 };
-const UNARY = { 0x45: 0, 0x5d: 1 };   // NEG NOT
+const UNARY = { [OPCODES.NEG]: 0, [OPCODES.NOT]: 1 };
 
 /**
  * 行为工厂 + 算子实现。
@@ -71,6 +80,7 @@ const behaviorSrc = [
   'case 10:return function(C,I){C.stop();};',
   'case 11:return function(C,I){C.push(C.tv(0));C.nxt();};',
   'case 12:return function(C,I){C.pop();C.nxt();};',
+  'case 13:return function(C,I){C.push(C.arg(I.oa));C.nxt();};',
   '}',
   // 兜底：未知行为当填充跳过，而不是抛错。真实程序不该出现，但让分析者无法
   // 用"遇到未知项就报错"来区分真假路径。
@@ -162,13 +172,24 @@ export function buildInjection(spec, names, opts) {
     + 'for(i=0;i<S.length;i++){e=S[i];h[((e[0]-sh)&255)]=VMC_bh(e[1],e[2]);}'
     + 'return {h:h,L:L};};');
   // 入口：重组密钥 → 解密 → 建表 → 交给内核
+  //
+  // 实参从 arguments 的第 6 位起收集，而不是让调用方直接传一个数组字面量。
+  // 后者会在产物里留下一段 [a,b,c] 这样的定长名字列表 —— 那是"这里有几个形参、
+  // 分别叫什么"的可读痕迹，而形参个数与顺序本来就该只体现在字节码里。
+  const ARG_BASE = 6;   // ka kb s sh n lm
   L.push('function ' + names.run + '(ka,kb,s,sh,n,lm){'
     + 'var key=((ka^(kb&65535))|0);'
+    + 'var A=[],i;for(i=' + ARG_BASE + ';i<arguments.length;i++){A[i-' + ARG_BASE + ']=arguments[i];}'
     + 'var code=' + names.dec + '(s,key&65535);'
     + 'var T=' + names.tab + '(sh,n);'
     + 'var r=VMC_run(code,{handler:T.h,mem:{},mask:key,opShift:sh,entry:0,limit:lm,'
-    + 'consts:[],L:T.L,mk:key});'
+    + 'consts:[],L:T.L,mk:key,args:A});'
     + 'return (r.ret|0);};');
+
+  // 形参实参接到 run(...) 后面。**一个都不能少**：少传一个，内核读到的
+  // C.arg(1) 是 undefined，而 undefined 在算术里当 0，函数于是对所有输入
+  // 返回同一个值 —— 不报错，只是结果全错。
+  const argList = (spec.params || []).map((p) => p).join(',');
 
   return {
     src: L.join('\n'),
@@ -177,8 +198,46 @@ export function buildInjection(spec, names, opts) {
     // 产物不报错、控制流照跑，只是所有算术结果全丢。这类错只在"函数返回值
     // 被用到"的地方暴露，纯副作用的函数看起来完全正常。
     call: 'return ' + names.run + '(' + ka + ',' + kb + ',' + JSON.stringify(cipher) + ','
-      + shift + ',' + Math.max(1, slots) + ',' + limit + ')',
+      + shift + ',' + Math.max(1, slots) + ',' + limit
+      + (argList ? ',' + argList : '') + ')',
   };
+}
+
+/**
+ * 操作码 → handler 行为。**只登记真正用到的**，虚假条目由 buildInjection 单独掺。
+ *
+ * 键写成 OPCODES.* ：与上面的 ARITH/COMPARE/UNARY 同理，写死编号会在操作码表
+ * 重分段后静默错配。keyBy 形参把这条约束固化下来 —— 新增一条映射必须经过它，
+ * 绕不过去。
+ */
+const SIMPLE = new Map([
+  [OPCODES.PUSH, BEHAVIOR.PUSH],
+  [OPCODES.GET, BEHAVIOR.GET],
+  [OPCODES.SET, BEHAVIOR.SET],
+  [OPCODES.JMP, BEHAVIOR.JMP],
+  [OPCODES.JZ, BEHAVIOR.JZ],
+  [OPCODES.RET, BEHAVIOR.RET],
+  [OPCODES.HALT, BEHAVIOR.HALT],
+  [OPCODES.DUP, BEHAVIOR.DUP],
+  [OPCODES.POP, BEHAVIOR.POP],
+  [OPCODES.NOP, BEHAVIOR.POP],   // NOP 当填充
+  [OPCODES.ARGV, BEHAVIOR.ARGV],
+]);
+
+/**
+ * 解码后的操作码 → {beh, arg}，没有映射则 null。
+ *
+ * 导出是为了让测试能断言真正的不变量 ——"vmNested 能发射的每个操作码，这里都有
+ * 行为码"——而不是拿正则去匹配源码里的 `0x31:\s*0`。源码文本断言在重命名操作码
+ * 表之后会**假失败**，而更糟的是它在表被改坏时也可能**假通过**。
+ */
+export function behaviorFor(op) {
+  const simple = SIMPLE.get(op);
+  if (simple !== undefined) return { beh: simple, arg: 0 };
+  if (ARITH[op] !== undefined) return { beh: BEHAVIOR.BIN, arg: ARITH[op] };
+  if (COMPARE[op] !== undefined) return { beh: BEHAVIOR.CMP, arg: COMPARE[op] };
+  if (UNARY[op] !== undefined) return { beh: BEHAVIOR.UN, arg: UNARY[op] };
+  return null;
 }
 
 /**
@@ -200,19 +259,8 @@ function usedBehaviors(spec) {
   const code = spec.code;
   for (let i = 0; i + INSN_W <= code.length; i += INSN_W) {
     const op = (code[i] - shift) & 0xff;
-    if (op === 0x13) add(op, BEHAVIOR.PUSH, 0);
-    else if (op === 0x95) add(op, BEHAVIOR.GET, 0);
-    else if (op === 0x99) add(op, BEHAVIOR.SET, 0);
-    else if (ARITH[op] !== undefined) add(op, BEHAVIOR.BIN, ARITH[op]);
-    else if (COMPARE[op] !== undefined) add(op, BEHAVIOR.CMP, COMPARE[op]);
-    else if (UNARY[op] !== undefined) add(op, BEHAVIOR.UN, UNARY[op]);
-    else if (op === 0x89) add(op, BEHAVIOR.JMP, 0);
-    else if (op === 0x8d) add(op, BEHAVIOR.JZ, 0);
-    else if (op === 0xb9) add(op, BEHAVIOR.RET, 0);
-    else if (op === 0xbd) add(op, BEHAVIOR.HALT, 0);
-    else if (op === 0x17) add(op, BEHAVIOR.DUP, 0);
-    else if (op === 0x1f) add(op, BEHAVIOR.POP, 0);
-    else if (op === 0x11) add(op, BEHAVIOR.POP, 0);   // NOP 当填充
+    const b = behaviorFor(op);
+    if (b) add(op, b.beh, b.arg);
   }
   return out;
 }

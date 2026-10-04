@@ -669,8 +669,27 @@ function isNumericExpr(node, locals, numericSlots) {
  * 这不是完整数据流分析（不做循环迭代、不做 phi 节点），只是挡住
  * "先赋数字、后赋字符串"这类直接自相矛盾的写法。
  */
-function markNumericSlots(body, locals) {
+function markNumericSlots(body, locals, params) {
   const numeric = new Set();
+  // 形参直接标为数值（且整数）。
+  //
+  // ====================== 这一条是本档最大的能力边界 ======================
+  //
+  // 内核的算术按 |0 走（(x+y)|0、(x*y)|0、(-x)|0），所以它只在**参数与中间值
+  // 全程是 32 位整数**时才与原生等价。形参的类型编译期无从得知，只能由调用方
+  // 保证 —— 于是这里是整档唯一一处"假设输入类型"的地方。
+  //
+  // 假设错了的后果不是报错，是**静默算错**：f(a,b){return a+b} 被调用成
+  // f("3", 4) 时原生得 "34"，内层得 7。函数不抛异常、控制流照跑，只是结果不对。
+  //
+  // 为什么不干脆不标（让带参数的函数一律编不了）：那样这一档几乎保护不了任何
+  // 真实函数——真实代码里几乎每个函数都有形参。也不为什么在运行期加类型检查
+  // 然后回退：回退需要留一份**未保护的原始函数体**在产物里，那等于把这一档
+  // 要藏的东西直接交出去。
+  //
+  // 所以这是明确的取舍：**内层档只适用于整数域的数值函数**，它不是"更强的保护"，
+  // 而是"另一类函数的保护"，用错地方会静默出错。选项说明里写死了这一点。
+  for (const p of (params || [])) numeric.add(p);
   // 先把所有声明的槽建出来（isNumericExpr 查的是"这个槽是不是数值"，
   // 而不是"这个槽存在吗"，所以顺序上可以先建后判）。
   for (const st of walkStmts(body)) {
@@ -715,8 +734,10 @@ function markNumericSlots(body, locals) {
  * 产物照样能跑只是值错了 —— 所以凡是可能涉及除法的整数槽都不标，
  * 让用到它们的算式退让给单层档。
  */
-function markIntSlots(body, numeric) {
+function markIntSlots(body, numeric, params) {
   const ints = new Set();
+  // 形参一律当整数种子：与 markNumericSlots 里同一个 int32 假设。
+  for (const p of (params || [])) ints.add(p);
   for (let round = 0; round < 4; round++) {
     let changed = false;
     for (const st of walkStmts(body)) {
@@ -766,15 +787,37 @@ function* walkStmts(body) {
 
 /**
  * 把一个函数体编译成嵌套档字节码。
- * @returns {{code:Uint8Array, slots:number, shift:number}|null} 编不了返回 null
+ *
+ * @param {Array} body 函数体的 statement 数组
+ * @param {number} shift 操作码变换偏移
+ * @param {number} budgetN 语句条数上限
+ * @param {string[]} [paramNames] 形参名，按顺序。
+ *
+ *   **形参必须传进来**，否则带参数的函数一律编不了：Locals 的槽是在编译过程中
+ *   由 var 声明现场分配的，参数不声明任何东西，于是 `locals.has('a')` 为 false，
+ *   Identifier 分支直接返回 false，整个函数退回单层档。这不是"边界"，是漏了 ——
+ *   真实代码里几乎每个函数都有形参。
+ *
+ * @returns {{code:Uint8Array, slots:number, shift:number, params:string[]}|null}
+ *   编不了返回 null。**调用方必须检查 null**：静默产出一份错字节码的后果是
+ *   产物能跑、值是错的，只在用到返回值的地方暴露。
  */
-export function compileNested(body, shift, budgetN) {
+export function compileNested(body, shift, budgetN, paramNames) {
+  const params = Array.isArray(paramNames) ? paramNames : [];
   const locals = new Locals();
+  // 形参槽**先**占掉：槽号按分配顺序递增，形参排在 var 之前，于是序言里的
+  // 槽号与字节码里的槽号天然一致，不需要额外记一张映射表。
+  for (const p of params) locals.slot(p);
   preScan(body, locals);
-  locals.numeric = markNumericSlots(body, locals);
-  locals.numericInt = markIntSlots(body, locals.numeric);
+  locals.numeric = markNumericSlots(body, locals, params);
+  locals.numericInt = markIntSlots(body, locals.numeric, params);
   // 槽位数不能超过 255（oa 是单字节）
   if (locals.size > 255) return null;
+  // 槽 0 从来没被写就被读的话，读到的是建表时填的 0，而原生是 undefined。
+  // 形参可以合法地少于声明的个数（f(1) 调 f(a,b)），那种情况下漏掉的形参槽
+  // 就会躺着一个 0。所以**实际形参数必须写进字节码**——由序言的 ARGV 条数
+  // 体现，注入层据此决定传几个实参。这里只做一次自检。
+  if (locals.size === 0 && params.length > 0) return null;
   const emit = new Emit(shift);
   const budget = { n: budgetN || 400 };
   // 首条固定一条 NOP。
@@ -788,12 +831,21 @@ export function compileNested(body, shift, budgetN) {
   // 而 patch 会把它改回 NOP 所以"看起来对"，只有 NOP 的语义变化才会暴露问题。
   // 现在直接发 OPCODES.NOP，不绕。
   emit.insn(OPCODES.NOP);
+  // 序言：ARGV i ; SET slot_i
+  //
+  // 逐个搬而不是一次全搬，是因为槽号由分配顺序决定、与形参下标不一定同号
+  // （形参可能重名或与 var 冲突）。搬错了槽，函数读到的就是另一个变量的值。
+  for (let i = 0; i < params.length; i++) {
+    emit.insn(OPCODES.ARGV, i);
+    emit.insn(OPCODES.SET, locals.slot(params[i]));
+  }
   if (!compileBody(body, emit, locals, budget)) return null;
   emit.insn(OPCODES.HALT);
   return {
     code: emit.toBytes(),
     slots: locals.size,
     shift,
+    params,
     insnCount: emit.length / INSN_W,
   };
 }

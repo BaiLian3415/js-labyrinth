@@ -14,12 +14,47 @@ import os from 'node:os';
 import path from 'node:path';
 import parserMod from '../src/ast/parser.js';
 import { compileNested } from '../src/passes/vmNested.js';
-import { buildInjection } from '../src/passes/vmNestedInject.js';
+import { buildInjection, behaviorFor } from '../src/passes/vmNestedInject.js';
+import { OPCODES, OPCODE_NAMES, INSN_W } from '../src/rt/vmcore.js';
 import rand from '../src/utils/rand.js';
 import { ok, report, section, cleanTmp, runNode } from './_harness.js';
 
 const { parse } = parserMod;
 const TMP = path.join(os.tmpdir(), 'jslb-vni-' + process.pid);
+
+/**
+ * 反推「编译器实际会发射哪些操作码」。
+ *
+ * 从一批覆盖各种语句形态的用例编译出来的字节码里扫出来，而不是手抄一份名单。
+ * 手抄的名单有一个致命性质：编译器新增一条指令后它不会变，于是覆盖断言变成
+ * 一句空话，永远通过。这里让名单跟着编译器走。
+ */
+const COVERAGE_SOURCES = [
+  'function f(){var a=3;var b=5;return a+b+a-b+a*b;}',
+  'function f(){var a=3;var b=5;return (a&b)+(a|b)+(a^b)+(a<<1)+(a>>1)+(a>>>1);}',
+  'function f(){var a=3;var b=5;return (a<b)+(a<=b)+(a>b)+(a>=b)+(a==b)+(a!=b);}',
+  'function f(){var a=3;return -a+~a;}',
+  'function f(){var s=0;for(var i=1;i<=5;i++){s=s+i;}return s;}',
+  'function f(){var i=0;while(i<3){i++;}return i;}',
+  'function f(){var a=1;if(a){a=2;}else{a=3;}return a;}',
+  'function f(){var a=1;a+=2;a-=1;return a++;}',
+  'function f(){var a=1;return (a&&2)||(0||3);}',
+];
+
+function emittedOpcodes() {
+  const set = new Set();
+  for (const src of COVERAGE_SOURCES) {
+    rand.setSeed(1);
+    const fn = parse(src, { sourceType: 'script' }).program.body[0];
+    const shift = 0;
+    const spec = compileNested(fn.body.body, shift, 400);
+    if (!spec || !spec.code) continue;
+    for (let i = 0; i + INSN_W <= spec.code.length; i += INSN_W) {
+      set.add((spec.code[i] - spec.shift) & 0xff);
+    }
+  }
+  return [...set].sort((a, b) => a - b);
+}
 
 /** 编译 + 注入，返回可直接执行的完整脚本 */
 function injectScript(fnSrc, seed, opts) {
@@ -28,16 +63,24 @@ function injectScript(fnSrc, seed, opts) {
   const m = /^(?:async\s+)?function\s+([A-Za-z_$][\w$]*)/.exec(fnSrc);
   if (!m) return null;
   const shift = (seed * 37 + 11) & 0xff;
-  const spec = compileNested(fn.body.body, shift, 500);
+  // 形参名单必须原样传给编译器：少了它，带参数的函数一律编不了
+  // （Locals 的槽由 var 声明现场分配，参数不声明任何东西）。
+  const params = fn.params.filter((p) => p.type === 'Identifier').map((p) => p.name);
+  const spec = compileNested(fn.body.body, shift, 500, params);
   if (!spec) return null;
   const names = {
     dec: '_0xd', tab: '_0xt', run: '_0xr', entry: m[1],
   };
   const inj = buildInjection(spec, names, opts || {});
   if (!inj) return null;
-  // 入口函数体替换成一次 run 调用
-  return inj.src + '\nfunction ' + m[1] + '(){' + inj.call + ';}\n'
-    + 'process.stdout.write(String(' + m[1] + '()));\n';
+  // 入口函数体替换成一次 run 调用。**外层签名原样保留** —— 形参名由产物自己
+  // 声明，inj.call 里引用的就是这些名字；这里若把签名改成无参，inj.call 引用
+  // 的 a/b/c 全部 ReferenceError，而报错点在注入产物里，与"内层不支持形参"
+  // 这件事毫无关系，极难归因。
+  const sig = fn.params.map((p) => p.name).join(',');
+  const args = (opts && opts.args) || '';
+  return inj.src + '\nfunction ' + m[1] + '(' + sig + '){' + inj.call + ';}\n'
+    + 'process.stdout.write(String(' + m[1] + '(' + args + ')));\n';
 }
 
 function runInjected(fnSrc, seed, opts) {
@@ -58,10 +101,12 @@ function runInjected(fnSrc, seed, opts) {
   }
 }
 
-/** 原生 JS 的真值 */
-function native(fnSrc) {
+/** 原生 JS 的真值。opts.args 里的实参列表对注入侧与原生侧必须一致。 */
+function native(fnSrc, opts) {
   const m = /function\s+([A-Za-z_$][\w$]*)\s*\(/.exec(fnSrc);
-  return runNode(fnSrc + '\nprocess.stdout.write(String(' + m[1] + '()));\n', 'vni-native.js').trim();
+  const args = (opts && opts.args) || '';
+  return runNode(fnSrc + '\nprocess.stdout.write(String(' + m[1] + '(' + args + ')));\n',
+    'vni-native.js').trim();
 }
 
 /**
@@ -69,9 +114,9 @@ function native(fnSrc) {
  * 内核的比较指令产出 0/1，而 JS 是 true/false，产物层还原布尔是接入流水线
  * 那一步的职责，这里按内核语义断言并在用例名里标明。
  */
-function expectedOf(src, name) {
+function expectedOf(src, name, opts) {
   if (name.startsWith('比较')) return '1';
-  return native(src);
+  return native(src, opts);
 }
 
 section('注入产物：端到端语义');
@@ -96,17 +141,31 @@ section('注入产物：端到端语义');
 // 还原成布尔是接入流水线那一步的职责。
 ['比较（内核给 0/1）', 'function f(){var a=3;var b=5;return a<b;}'],
     ['嵌套算术', 'function f(){var a=2;var b=3;return (a+b)*4-2;}'],
+    // ---- 形参 ----
+    //
+    // 形参搬错是这一档最典型的静默错：实参少传一个，漏掉的槽躺着一个 0，
+    // 而 0 在算术里完全合法，于是函数对所有输入返回同一个数、不抛任何异常。
+    // 所以形参用例必须**每组换一组实参**，否则"恒返回同一个值"的实现也能全过。
+    ['单形参', 'function f(a){return a*3+1;}', '7'],
+    ['双形参', 'function f(a,b){return a+b+a*b;}', '3,5'],
+    ['三形参与 var 混用', 'function f(a,b){var s=a+b;var t=s*2;return t-s;}', '4,9'],
+    ['形参与槽号不重合', 'function f(x,y,z){var a=x;var b=y;var c=z;return a*100+b*10+c;}', '1,2,3'],
+    ['形参驱动循环', 'function f(n){var s=0;for(var i=1;i<=n;i++){s=s+i;}return s;}', '10'],
+    ['形参驱动条件', 'function f(a){if(a){return a*2;}else{return a*3;}}', '5'],
+    ['形参与比较', 'function f(a,b){return (a<b)+(a<=b)+(a>b)+(a>=b);}', '3,5'],
+    ['零与负形参', 'function f(a,b){return a-b;}', '0,-9'],
   ];
   let pass = 0;
   const fails = [];
-  for (const [name, src] of CASES) {
+  for (const [name, src, argStr] of CASES) {
     // 每个用例跑 3 个 seed：密钥、shift、虚假条目数都随构建变。
     // **三个 seed 必须都对**——只看最后一个会把"某些 shift 下算错"漏掉，
     // 而 shift 恰恰是最容易出错的那个变量（建表时减回原值这一步）。
-    const want = expectedOf(src, name);
+    const opts = { args: argStr || '' };
+    const want = expectedOf(src, name, opts);
     const bads = [];
     for (const seed of [1, 7, 19]) {
-      const r = runInjected(src, seed);
+      const r = runInjected(src, seed, opts);
       const got = r.reason ? null : r.out.trim();
       if (got !== want) bads.push('seed' + seed + '=' + (got === null ? r.reason : got));
     }
@@ -116,10 +175,11 @@ section('注入产物：端到端语义');
   ok(fails.length === 0, pass + '/' + CASES.length + ' 个用例注入后语义正确（每例 3 seed 全对）',
     fails.slice(0, 4).join('; '));
   // 逐例明细，失败时能精确定位
-  for (const [name, src] of CASES) {
-    const want = expectedOf(src, name);
+  for (const [name, src, argStr] of CASES) {
+    const opts = { args: argStr || '' };
+    const want = expectedOf(src, name, opts);
     const got = [1, 7, 19].map((s) => {
-      const r = runInjected(src, s);
+      const r = runInjected(src, s, opts);
       return r.reason ? null : r.out.trim();
     });
     ok(got.every((g) => g === want), '[明细] ' + name + ' = ' + want,
@@ -159,10 +219,23 @@ section('算子表完整性');
   }
   ok(missing === '', '算术/比较/一元的每条指令在注入产物里都有可执行行为（3 seed）', missing);
 
-  // ADD 单独钉一条：它最常用，也正是被漏掉的那个
-  ok(/0x31:\s*0/.test(
-    fs.readFileSync(new URL('../src/passes/vmNestedInject.js', import.meta.url), 'utf8')),
-  'ARITH 表含 ADD（0x31 → 0）');
+  // 覆盖完整性：编译器**能发射**的每个操作码都必须查得到行为码。
+  //
+  // 这条替换掉原先的 `/0x31:\s*0/` 源码正则。正则是断言"源码里长这样"，而真正
+  // 要断的是"这张表覆盖了编译器发射的全部指令"——前者改个写法就假失败，后者才
+  // 会在表漏条目时真的失败。漏条目的后果是那条指令在建表阶段找不到条目、被当填充
+  // 跳过，产物照跑只是算错（曾漏 ADD，返回 undefined 而无任何编译期报错）。
+  //
+  // 集合从编译器实际发射的操作码反推，而不是手抄一份名单 —— 手抄的那份迟早对不上。
+  const emitted = emittedOpcodes();
+  const uncovered = emitted.filter((op) => behaviorFor(op) === null);
+  ok(uncovered.length === 0,
+    '编译器发射的每个操作码都有行为码',
+    '未覆盖 ' + uncovered.map((o) => OPCODE_NAMES.get(o) || ('0x' + o.toString(16))).join(','));
+
+  // 反向：behaviorFor 必须对未映射的操作码返回 null，不能给个兜底行为码。
+  // 兜底会让"漏映射"变成"静默算错"，正是要防的那类。
+  ok(behaviorFor(0xee) === null, '未映射操作码返回 null（不给兜底行为码）');
 }
 
 section('注入产物：动态 handler 表');
