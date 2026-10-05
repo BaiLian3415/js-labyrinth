@@ -763,6 +763,43 @@ section('其他');
   }
 }
 
+section('选项元数据：说明完整性');
+{
+  // 每个选项都必须有中英文名称与中英文说明，缺一不可。
+  //
+  // 为什么要有这条：说明是**手写**的，新增选项时很容易只写 `zh`/`en` 名字而忘了
+  // 提示 —— 界面上就出现一个没有解释的开关，用户只能猜。实测就是这样漏下四项
+  // （seed / lang / dirSkip / vmModel，全是 guiHide 的命令行与内部项，GUI 里看不见，
+  // 所以更容易忘）。
+  //
+  // 判据是"字段存在且非空"，不判长度：有的说明本来就短（"输出缩进宽度（空格数）"），
+  // 硬凑字数只会注水。
+  const V = optionsMeta.VALUE_OPTIONS;
+  const keys = Object.keys(V);
+  ok(keys.length >= 50, '选项表有条目', '实际 ' + keys.length);
+
+  const missName = [], missHint = [], emptyHint = [];
+  for (const k of keys) {
+    const o = V[k];
+    if (!o.zh || !o.en) missName.push(k);
+    if (!o.hintZh || !o.hintEn) missHint.push(k);
+    // 说明与名称不能是同一个词 —— 那种"说明"等于没说明
+    if (o.hintZh && o.hintZh.trim() === (o.zh || '').trim()) emptyHint.push(k + '(zh)');
+    if (o.hintEn && o.hintEn.trim() === (o.en || '').trim()) emptyHint.push(k + '(en)');
+  }
+  ok(missName.length === 0, keys.length + ' 个选项都有中英文名称',
+    '缺名称: ' + missName.join(','));
+  ok(missHint.length === 0, keys.length + ' 个选项都有中英文说明',
+    '缺说明: ' + missHint.join(','));
+  ok(emptyHint.length === 0, '没有选项拿名称当说明用', emptyHint.join(','));
+
+  // 说明不该是空话：至少要有个最低长度，且不含未替换的模板占位
+  const tooShort = keys.filter((k) => (V[k].hintZh || '').length < 8);
+  ok(tooShort.length === 0, '没有过短的说明（< 8 字符）', tooShort.join(','));
+  const tpl = keys.filter((k) => /\{\{|\}\}|undefined|NaN/.test(V[k].hintZh || ''));
+  ok(tpl.length === 0, '说明里没有未替换的占位符', tpl.join(','));
+}
+
 if (process.argv[1] && process.argv[1].endsWith('minify.js')) {
   const bad = report();
   cleanTmp();
