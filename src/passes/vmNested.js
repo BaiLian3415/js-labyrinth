@@ -389,9 +389,12 @@ function compileExpr(node, emit, locals, budget) {
         return true;
       }
       // 复合赋值（+= -= *= …）：展开成 读槽 → 运算 → 写回。
-      // `+=` 的两侧都必须静态确定为数值，否则 + 可能是字符串拼接。
-      if (!locals.numeric.has(left.name)) return false;
-      if (node.operator === '+=' && !isNumericExpr(node.right, locals, locals.numeric)) return false;
+      //
+      // 闸门用 intOnly 而不是 numeric：ADD 是 (x+y)|0，浮点会被截断。
+      // 原来只判"是数值"，于是 `var s=1.5; s+=2;` 静默算错（3 而不是 3.5）。
+      // 其余复合赋值同样落到 |0 算术上，所以闸门统一，不只给 += 设。
+      if (!intOnly(left, locals)) return false;
+      if (node.operator === '+=' && !intOnly(node.right, locals)) return false;
       const binOp = COMPOUND[node.operator];
       if (!binOp) return false;
       emit.insn(OPCODES.GET, s);
@@ -463,21 +466,29 @@ function compileBinary(node, emit, locals, budget) {
   if (op === '+') {
     const l = node.left, r = node.right;
     if (l.type === 'NumericLiteral' && r.type === 'NumericLiteral') {
+      // 折叠前必须确认两侧都是**整数**。原先只判"是数值字面量"，于是
+      // `1.5 + 2` 被折成 (1.5+2)|0 = 3 —— 原生是 3.5，产物不报错、只是值错了。
+      if (!Number.isInteger(l.value) || !Number.isInteger(r.value)) return false;
       const v = (l.value + r.value) | 0;
       if (v < 0 || v > 255) return false;
       emit.insn(OPCODES.PUSH, v);
       return true;
     }
-    // 统一走"两侧静态确定为数值"这一条。写成 if/else 列举组合会漏：
+    // 统一走"两侧静态确定为**整数**"这一条。写成 if/else 列举组合会漏：
     // `a*b + a + b` 里最外层 + 的左侧是 BinaryExpression 而非 Identifier，
     // 按"字面量 or 标识符"枚举就会把整个表达式退让掉——而它明明是纯数值算式。
-    if (isNumericExpr(l, locals, locals.numeric) && isNumericExpr(r, locals, locals.numeric)) {
+    //
+    // 这里用 intOnly 而不是 isNumericExpr(..., numeric)：ADD 是 (x+y)|0，
+    // 浮点会被截断。numeric 只保证"是数"，不保证"是 32 位整数"，
+    // 两者对 ADD 来说差着一条静默算错的缝（`var s=1.5; return s+2;`）。
+    // 其余算术运算符早就用 intOnly 了，只有 + 漏了。
+    if (intOnly(l, locals) && intOnly(r, locals)) {
       if (!compileExpr(l, emit, locals, budget)) return false;
       if (!compileExpr(r, emit, locals, budget)) return false;
       emit.insn(OPCODES.ADD);
       return true;
     }
-    return false;    // 其余 +（含字符串）交给单层档
+    return false;    // 其余 +（含字符串、含浮点）交给单层档
   }
 
   const cop = CMPOP[op];

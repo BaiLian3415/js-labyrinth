@@ -103,7 +103,27 @@ function bothOutputs(userCode, opts) {
   try {
     out = runNode(obf, 'vn-obf.js');
   } catch (e) {
-    return { native, obf, runError: e.killed ? '超时' : String(e.message).split('\n')[0].slice(0, 70) };
+    // 产物抛错时**报错文案在 stderr 里**，e.message 只有"命令失败 + 命令行"。
+    //
+    // 但 stderr 不能按行取第一条含 "Error" 的行 —— 产物是单行的，node 打出来的
+    // 代码框会把整份产物（可达 170KB）塞进一行，而那行里也有 "Error" 字样
+    // （错误文案就在它后面）。所以这里只认**明确的标记串**，认不出就说认不出，
+    // 不去猜是哪一行 —— 猜出来的"错误原因"会让诊断指向错误的方向。
+    const stderr = e.stderr ? String(e.stderr) : '';
+    let detail;
+    // 抛的是**形参下标**（整数），不是字符串 —— 产物里不留可 grep 的英文标记。
+    //
+    // node 打印未捕获异常时，抛出的是非 Error 值就只显示那个值本身：
+    //     ...\r\n0\r\n(Use `node --trace-uncaught ...` to show where...)
+    // 所以判据锚在紧邻那句提示之前的那个整数，而不是去找 "throw 0" ——
+    // 源码里写着 throw，但 node 打印的是**值**，两者不是一回事。
+    const thrown = /(\d+)\r?\n\(Use `node --trace-uncaught/.exec(stderr);
+    if (thrown) detail = '闸门一（抛 ' + thrown[1] + '）';
+    else {
+      const m = /^(\w*(?:Error|Exception)\w*):[^\n]{0,90}/m.exec(stderr);
+      detail = m ? m[0] : '（stderr 里没找到可识别的错误）';
+    }
+    return { native, obf, runError: e.killed ? '超时' : detail };
   }
   return { native, out, obf };
 }
@@ -191,6 +211,71 @@ section('vmNested：编不了时必须退让（不能产出半成品）');
   ];
   bulk('个内层编不了的函数正确退让给外层档（壳开）', CASES, REAL);
   bulk('个内层编不了的函数正确退让给外层档（壳关）', CASES, { ...REAL, shell: false });
+}
+
+section('vmNested：int32 边界不得静默算错');
+{
+  // 这一节锁的是**两道闸门**。它们都是在实测发现"产物能跑、值是错的"之后补的，
+  // 而且失败方式极其隐蔽 —— 所以必须各有断言钉住，否则早晚被当成冗余删掉。
+  //
+  // 闸门一：**形参非 int32 → 内核抛错**（vmcore.js 的 argi）。
+  //   放开前：f(1.5,2) 原生 3.5 内层给 3；f("x","y") 原生 xy 内层给 0；
+  //           f(3e9) 原生 6000000000 内层给 1705032704。全部不报错。
+  // 闸门二：**浮点字面量与含除法的算式 → 编译器拒绝**，整函数退回外层档。
+  //   `f(){return 1.5+2;}` 原生 3.5，曾被折成 (1.5+2)|0 = 3。
+  //
+  // 判据：要么与原生一致，要么**明确抛出可识别的错**。绝不允许"跑通了但值不同"。
+
+  /** 跑一次，返回判定与细节 */
+  const verdict = (src) => {
+    const native = runNode(src, 'vn-native.js').trim();
+    const r = bothOutputs(src, { ...REAL, shell: false });
+    if (r.buildError) return { kind: '构建失败', detail: r.buildError, native };
+    if (r.runError) {
+      return { kind: /^闸门一/.test(r.runError) ? '闸门一' : '其他错误', detail: r.runError, native };
+    }
+    return { kind: r.out === r.native ? '一致' : '静默算错', detail: r.out, native };
+  };
+
+  // 闸门一：形参
+  const PARAM_CASES = [
+    ['浮点形参', 'function f(a,b){return a+b;}console.log("R="+f(1.5,2));'],
+    ['字符串形参', 'function f(a,b){return a+b;}console.log("R="+f("x","y"));'],
+    ['超出 int32', 'function f(a){return a*2;}console.log("R="+f(3e9));'],
+    ['布尔形参', 'function f(a){return a+1;}console.log("R="+f(true));'],
+    ['整数形参（必须正常）', 'function f(a,b){return a+b;}console.log("R="+f(3,5));'],
+  ];
+  const badParam = [];
+  for (const [name, src] of PARAM_CASES) {
+    const v = verdict(src);
+    const allowed = name.startsWith('整数') ? '一致' : '闸门一';
+    if (v.kind !== allowed) {
+      badParam.push(name + ': 得到「' + v.kind + '」' + JSON.stringify(v.detail)
+        + '（原生 ' + JSON.stringify(v.native) + '，期望 ' + allowed + '）');
+    }
+  }
+  ok(badParam.length === 0,
+    '5 个形参用例：整数正常，非 int32 一律抛错而非静默算错', badParam.slice(0, 3).join(' | '));
+
+  // 闸门二：字面量与除法（应退回外层档 → 与原生一致）
+  const FLOAT_CASES = [
+    ['浮点字面量相加', 'function f(){return 1.5+2;}console.log("R="+f());'],
+    ['浮点字面量相乘', 'function f(){return 1.5*2;}console.log("R="+f());'],
+    ['浮点槽参与相加', 'function f(){var s=1.5;s=s+2;return s;}console.log("R="+f());'],
+    ['浮点槽复合赋值', 'function f(){var s=1.5;s+=2;return s;}console.log("R="+f());'],
+    ['除法', 'function f(){return 7/2;}console.log("R="+f());'],
+    ['整数字面量（必须走内层）', 'function f(){return 2+3;}console.log("R="+f());'],
+  ];
+  const badFloat = [];
+  for (const [name, src] of FLOAT_CASES) {
+    const v = verdict(src);
+    if (v.kind !== '一致') {
+      badFloat.push(name + ': 「' + v.kind + '」' + JSON.stringify(v.detail)
+        + '（原生 ' + JSON.stringify(v.native) + '）');
+    }
+  }
+  ok(badFloat.length === 0,
+    '6 个浮点/除法用例：全部退回外层档、结果与原生一致', badFloat.slice(0, 3).join(' | '));
 }
 
 section('vmNested：关闭时行为不变');

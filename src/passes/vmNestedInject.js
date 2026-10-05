@@ -80,7 +80,11 @@ const behaviorSrc = [
   'case 10:return function(C,I){C.stop();};',
   'case 11:return function(C,I){C.push(C.tv(0));C.nxt();};',
   'case 12:return function(C,I){C.pop();C.nxt();};',
-  'case 13:return function(C,I){C.push(C.arg(I.oa));C.nxt();};',
+  // ARGV 走**带 int32 闸门**的 argi()，不是 arg()。内核的算术按 |0 走，形参若是
+  // 浮点/字符串/超出 int32，值会被静默算错（f(1.5,2) 原生 3.5 内层给 3；
+  // f("x","y") 原生 xy 内层给 0）。argi() 在那种情况下抛错，把静默错误换成
+  // 一条能定位的异常。详见 vmcore.js 里 argi 的注释。
+  'case 13:return function(C,I){C.push(C.argi(I.oa));C.nxt();};',
   '}',
   // 兜底：未知行为当填充跳过，而不是抛错。真实程序不该出现，但让分析者无法
   // 用"遇到未知项就报错"来区分真假路径。

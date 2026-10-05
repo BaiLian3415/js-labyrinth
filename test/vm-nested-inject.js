@@ -334,23 +334,36 @@ section('注入产物：动态 handler 表');
   }
 }
 
+/**
+ * 从注入产物里取字节码密文。
+ *
+ * **必须锚定在 run(...) 的第三个实参上**，不能用"取第一个 base36 串" ——
+ * 内核里 `typeof v==="number"` 这类字面量也是纯小写字母、长度 ≥2，且内核排在
+ * 密文之前，所以那种写法会取到 `"number"`，于是"不同 seed 密文不同"这条断言
+ * 在两个 seed 上都拿到同一个值而**假失败**。
+ */
+function cipherOf(src) {
+  const m = /_0xr\(\d+,\d+,"([^"]+)"/.exec(src || '');
+  return m ? m[1] : null;
+}
+
 section('注入产物：字节码加密');
 {
   const src = injectScript('function f(){var a=1;var b=2;return a*b+a+b;}', 11);
   ok(!!src, '注入成功');
   if (src) {
-    const cipherM = /"([0-9a-z]{2,})"/.exec(src);
+    const cipherM = cipherOf(src);
     ok(!!cipherM, '产物里有密文串');
     // 密文不应等于明文字节码
     const spec = compileNested(
       parse('function f(){var a=1;var b=2;return a*b+a+b;}', { sourceType: 'script' })
         .program.body[0].body.body, (11 * 37 + 11) & 0xff, 500);
     const plain = spec ? Array.from(spec.code).map((b) => ('0' + b.toString(36)).slice(-2)).join('') : '';
-    ok(!!cipherM && cipherM[1] !== plain, '密文不等于明文字节码的基 36 串');
+    ok(!!cipherM && cipherM !== plain, '密文不等于明文字节码的基 36 串');
     // 不同 seed → 不同密文（密钥逐构建变）
-    const c1 = /"([0-9a-z]{2,})"/.exec(injectScript('function f(){var a=1;var b=2;return a*b+a+b;}', 11));
-    const c2 = /"([0-9a-z]{2,})"/.exec(injectScript('function f(){var a=1;var b=2;return a*b+a+b;}', 23));
-    ok(!!c1 && !!c2 && c1[1] !== c2[1], '不同 seed 的密文不同（密钥逐构建变）');
+    const c1 = cipherOf(injectScript('function f(){var a=1;var b=2;return a*b+a+b;}', 11));
+    const c2 = cipherOf(injectScript('function f(){var a=1;var b=2;return a*b+a+b;}', 23));
+    ok(!!c1 && !!c2 && c1 !== c2, '不同 seed 的密文不同（密钥逐构建变）');
   }
 }
 
