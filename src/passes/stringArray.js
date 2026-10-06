@@ -382,7 +382,12 @@ export default function stringArray(ast, options, ctx) {
     const maxRot = Math.min(13, Math.max(0, shuffled.length - 1));
     const rotation = options.stringArrayRotate === false ? 0 : randInt(0, maxRot);
     const mask = useIndexMask ? randInt(0x100, 0xffffff) : 0;
-    const checksum = options.selfDefending ? hashItems(encodedItems) : null;
+    // 校验哈希参数逐组随机（见 hashItems 的说明），期望值用同一组参数计算，
+    // 装配期与访问期自洽；不同组互相算不出对方的期望值。不开自防御时不占随机数，
+    // 产物与改动前逐字节一致。
+    const hashInit = options.selfDefending ? randInt(0, 0xffffffff) : 0x811c9dc5;
+    const hashPrime = options.selfDefending ? randInt(0x1000000, 0x7fffffff) | 1 : 0x01000193;
+    const checksum = options.selfDefending ? hashItems(encodedItems, hashInit, hashPrime) : null;
     // 访问期校验和必须按旋转后的顺序算：装配期的校验跑在旋转之前，而访问
     // 期看到的池已经左旋过 R 位，FNV 与顺序相关，直接拿旋转前的期望值比对会
     // 每一组都失配，把正常产物自己毒掉
@@ -390,7 +395,7 @@ export default function stringArray(ast, options, ctx) {
     const rotatedItems = rotation > 0
       ? encodedItems.slice(rotation).concat(encodedItems.slice(0, rotation))
       : encodedItems;
-    const checksumRot = options.selfDefending ? hashItems(rotatedItems) : null;
+    const checksumRot = options.selfDefending ? hashItems(rotatedItems, hashInit, hashPrime) : null;
     // 访问器名和池数组名：短随机名并豁免 mangle，调用点每次都会引用访问器名
     const accessorName = shortName();
     const listVar = shortName();
@@ -438,6 +443,7 @@ export default function stringArray(ast, options, ctx) {
     const iifeSource = buildIifeSource({
       listVar, encodedItems, encoding: groupEnc, key, rotation, mask,
       selfDefending: !!options.selfDefending, checksum, checksumRot, poisonKeys,
+      hashInit, hashPrime,
       rt: ctx.rt, cache: options.stringArrayCache !== false,
       evolveMask: evolveFixed !== null ? evolveFixed : randInt(1, 3),
       nm, arrExpr,
@@ -613,18 +619,25 @@ function returnedFn(stmt) {
   return null;
 }
 
-function hashItems(items) {
-  let h = 0x811c9dc5;
+/**
+ * 池内容校验和。算法骨架是 FNV-1a（xor + 乘），但基数与乘数逐组随机，
+ * 不再是公开的 0x811c9dc5 / 0x01000193：扫 FNV 常数定位校验逻辑、再按公开
+ * 算法算出期望哈希去 patch 的写法落空——期望值只有用本组参数才能复算，
+ * 而参数只以字面量形式躺在各自的 accessor 闭包里，不跨组复用。
+ * 乘数取奇数即可（校验和不需要素性，只需要奇数保证低位可逆扩散）。
+ */
+function hashItems(items, init, prime) {
+  let h = init >>> 0;
   for (const s of items) {
     for (let i = 0; i < s.length; i++) {
       h ^= s.charCodeAt(i);
-      h = (h * 0x01000193) >>> 0;
+      h = (h * prime) >>> 0;
     }
   }
   return h >>> 0;
 }
 
-function buildIifeSource({ listVar, encodedItems, encoding, key, rotation, mask, selfDefending, checksum, checksumRot, poisonKeys, rt, cache, evolveMask, nm, arrExpr, couple }) {
+function buildIifeSource({ listVar, encodedItems, encoding, key, rotation, mask, selfDefending, checksum, checksumRot, hashInit, hashPrime, poisonKeys, rt, cache, evolveMask, nm, arrExpr, couple }) {
   const arrLit = "[" + encodedItems.map((s) => JSON.stringify(s)).join(",") + "]";
   // 碎片化时调用方给出「多载体拼回」表达式；默认仍是单个数组字面量
   const arrArg = arrExpr || arrLit;
@@ -717,15 +730,16 @@ function buildIifeSource({ listVar, encodedItems, encoding, key, rotation, mask,
   } else {
     lines.push("var " + nm.dec + "=" + dec + ";");
   }
-  // 全池 FNV 校验和的源码模板。装配期跑一次（失配即抛，fail-closed），
-  // 访问期另起一组临时名按抽样门再跑（失配改为损坏输出，流程不崩）。
-  // 两组临时名不同，避免同名的 var 在同一作用域里互相覆盖。
+  // 全池校验和的源码模板，哈希参数用本组的随机基数/乘数（见 hashItems）。
+  // 装配期跑一次（失配即抛，fail-closed），访问期另起一组临时名按抽样门再跑
+  // （失配改为损坏输出，流程不崩）。两组临时名不同，避免同名的 var 在同一
+  // 作用域里互相覆盖。
   const poolHashLoop = (hVar, zVar, qVar, uVar) =>
-    "var " + hVar + "=0x811c9dc5;" +
+    "var " + hVar + "=0x" + (hashInit >>> 0).toString(16) + ";" +
     "for(var " + zVar + "=0;" + zVar + "<" + listVar + ".length;" + zVar + "++){" +
     "var " + qVar + "=" + listVar + "[" + zVar + "];" +
     "for(var " + uVar + "=0;" + uVar + "<" + qVar + ".length;" + uVar + "++){" +
-    hVar + "^=" + cco(qVar, uVar) + ";" + hVar + "=(" + hVar + "*0x01000193)>>>0;" +
+    hVar + "^=" + cco(qVar, uVar) + ";" + hVar + "=(" + hVar + "*0x" + (hashPrime >>> 0).toString(16) + ")>>>0;" +
     "}" +
     "}";
   if (selfDefending && checksum !== null && checksum !== undefined) {
