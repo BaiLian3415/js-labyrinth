@@ -311,6 +311,19 @@ function doFlatten(path, stmts, rng, loopFlatten, rolling) {
     const rhs = rolling
       ? t.binaryExpression('^', stateExpr(enc(s)), t.identifier(kName))
       : stateExpr(enc(s));
+    // 去确定性：30% 概率把状态写入包一层恒真条件 `typeof state==='number'?A:A`。
+    // state 恒为数值（allocState/enc/滚动 K 全是 int32 路径），条件恒真但证明它
+    // 需要类型推导 + 变量追踪：纯常量折叠消不掉，符号执行每处多一个分叉，trace
+    // 重建 CFG 时状态赋值不再是单一数值表达式。两分支共用同一 rhs 克隆，运行时
+    // 只求值一次选中的分支，语义与不包裹逐位一致。
+    if (randInt(0, 9) < 3) {
+      const cond = t.binaryExpression('===',
+        t.unaryExpression('typeof', t.identifier(stateName.name), true),
+        t.stringLiteral('number'));
+      return t.expressionStatement(t.assignmentExpression('=',
+        t.identifier(stateName.name),
+        t.conditionalExpression(cond, rhs, t.cloneNode(rhs, true))));
+    }
     return t.expressionStatement(t.assignmentExpression('=', t.identifier(stateName.name), rhs));
   };
 

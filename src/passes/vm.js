@@ -967,16 +967,22 @@ function compileFunction(fn, ctx) {
   const fccCall = (x) => (ctx.rt && ctx.rt.fcc)
     ? t.callExpression(t.identifier(ctx.rt.fcc), [x])
     : t.callExpression(t.memberExpression(t.identifier('String'), t.identifier('fromCharCode'), false), [x]);
-  // 位置散列：base 是项序号经 STR_P 预混后的常数分量，j 是项内下标
-  const strPosExpr = (baseNode, jNode) => t.binaryExpression('^',
-    t.binaryExpression('^',
-      t.binaryExpression('>>>',
-        rtlib.mulCall(ctx,
-          t.binaryExpression('+', baseNode, jNode),
-          t.numericLiteral(STR_K1)),
-        t.numericLiteral(8)),
-      t.numericLiteral(STR_K2)),
-    t.numericLiteral(STR_M0));
+  // 位置散列：base 是项序号经 STR_P 预混后的常数分量，j 是项内下标。
+  // 异或结合律多态：三种括号形态逐调用随机，语义是同一位向量恒等（位异或满足
+  // 结合律/交换律，int32 逐位相等），但取指表达式的 AST 形态各不相同。静态提取
+  // 「还原公式」不能再靠单一模板匹配 strPosExpr，必须做语义归一。
+  const strPosExpr = (baseNode, jNode) => {
+    const h = t.binaryExpression('>>>',
+      rtlib.mulCall(ctx,
+        t.binaryExpression('+', baseNode, jNode),
+        t.numericLiteral(STR_K1)),
+      t.numericLiteral(8));
+    const k2 = t.numericLiteral(STR_K2), m0 = t.numericLiteral(STR_M0);
+    const f = randInt(0, 2);
+    if (f === 0) return t.binaryExpression('^', t.binaryExpression('^', h, k2), m0);
+    if (f === 1) return t.binaryExpression('^', h, t.binaryExpression('^', k2, m0));
+    return t.binaryExpression('^', t.binaryExpression('^', h, m0), k2);
+  };
   const strBaseConst = (si) => Math.imul(si + 1, STR_P) | 0;
 
   // 片段闭包里的字符串字面量不能走解释器的 MKS 指令（片段是真实 JS 闭包），

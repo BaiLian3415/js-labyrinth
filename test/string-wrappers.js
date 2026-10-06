@@ -198,6 +198,23 @@ section('stringArrayWrappers*');
     ok(String(runNode(r.code, 'w-zero-nonchain.js')).trim() === WANT, '0 层 + 非链式语义正确',
       String(runNode(r.code, 'w-zero-nonchainb.js')).trim());
   }
+  // ⑭ accessor 解码/返回形态多态：跨 seed 必须出现 ≥2 种返回形态，
+  // 且语义全部正确。单钩 `return o` 即收全池的写法至多命中一部分 accessor。
+  {
+    const seen = new Set();
+    let semBad = 0, firstSem = '';
+    for (let seed = 1; seed <= 6; seed++) {
+      const r = obfuscate(SRC, base({ seed }));
+      if (/\.join\(""\)/.test(r.code)) seen.add('join');
+      if (/typeof [A-Za-z_$][\w$]*==="string"\?/.test(r.code)) seen.add('typeof');
+      if (/return [A-Za-z_$][\w$]*;/.test(r.code)) seen.add('plain');
+      const got = String(runNode(r.code, 'w-morph-' + seed + '.js')).trim();
+      if (got !== WANT) { semBad++; if (!firstSem) firstSem = 'seed=' + seed + ' → ' + got.slice(0, 40); }
+    }
+    ok(semBad === 0, '形态多态下 6 seed 语义全部正确', firstSem);
+    ok(seen.size >= 2, '跨 seed 覆盖 ≥2 种返回形态（观察值：' + [...seen].join('/') + '）',
+      'seen=' + [...seen].join('/'));
+  }
 }
 
 if (process.argv[1] && process.argv[1].endsWith('string-wrappers.js')) {

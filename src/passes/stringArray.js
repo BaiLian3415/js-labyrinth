@@ -659,6 +659,23 @@ function buildIifeSource({ listVar, encodedItems, encoding, key, rotation, mask,
   // 做一次减法，成本可忽略；好处是横幅的偏移、各校验点累加的偏移在任何时刻
   // 到达都能立刻生效，不存在"先解出的明文留着好数据"的窗口。
   const dkDecl = couple ? "var " + nm.dk + "=((" + cRef + "|0)-" + OK_LIT + ");" : "";
+  // 解码累加形态多态：三种写法语义全等（字符串拼接），但 AST/文本各不相同。
+  // 批量还原脚本若按 `o+=fcc(...)` 硬编码模式提取解码循环，换个形态即失效；
+  // 要通吃必须做语义级匹配，成本从正则提到数据流分析。
+  const accAdd = (o, rhs) => {
+    const f = randInt(0, 2);
+    if (f === 0) return o + '+=' + rhs + ';';
+    if (f === 1) return o + '=' + o + '+' + rhs + ';';
+    return o + '=[' + o + ',' + rhs + '].join("");';
+  };
+  // 返回形态多态：三者都恒等于解出的明文字符串，但返回点的 AST 形态不同。
+  // 单钩 `return o` 即收全池明文的写法，至多命中三分之一的 accessor。
+  const accRet = (o) => {
+    const f = randInt(0, 2);
+    if (f === 0) return 'return ' + o + ';';
+    if (f === 1) return 'return (typeof ' + o + '==="string"?' + o + ':' + o + ');';
+    return 'return [' + o + '].join("");';
+  };
   // 非 xor 组的密钥不以整数形式参与，改在解码结果上做一次恒等扰动：把首码元异或
   // 一个由 dk 折叠出的掩码。折叠走按位或——只有 dk 每一位都是 0 才得到 0，不存在
   // 「dk 非零但掩码为零」的白名单情形；dk === 0 时整式恒等于原字符串（逐位可
@@ -746,7 +763,7 @@ function buildIifeSource({ listVar, encodedItems, encoding, key, rotation, mask,
     lines.push(cacheOpen);
     // 首段的 O=""; 让 cache=false 时的 var O= 拼接成合法的链式赋值
     lines.push(nm.o + '="";var ' + nm.c + "=[];for(var " + nm.j + "=0," + nm.kp + "=" + nm.cc + "[" + nm.i + "]%" + nm.kl + ";" + nm.j + "<" + nm.s + ".length;" + nm.j + "++){");
-    lines.push("var " + nm.cu + "=" + cco(nm.s, nm.j) + "^" + nm.ka + "[" + nm.kp + "]" + (couple ? "^" + nm.dk : "") + ";" + nm.c + "[" + nm.c + ".length]=" + nm.cu + ";" + nm.o + "+=" + fcc(nm.cu) + ";");
+    lines.push("var " + nm.cu + "=" + cco(nm.s, nm.j) + "^" + nm.ka + "[" + nm.kp + "]" + (couple ? "^" + nm.dk : "") + ";" + nm.c + "[" + nm.c + ".length]=" + nm.cu + ";" + accAdd(nm.o, fcc(nm.cu)));
     lines.push(nm.kp + "++;if(" + nm.kp + ">=" + nm.kl + "){" + nm.kp + "=0;}}");
     lines.push(cacheClose);
     // 重加密的码元源：缓存开启时取明文码元表，stringArrayCache=false 时从刚
@@ -760,7 +777,7 @@ function buildIifeSource({ listVar, encodedItems, encoding, key, rotation, mask,
     lines.push("var " + nm.n2 + "=" + nm.cc + "[" + nm.i + "]+1+(((" + nm.i + "^" + nm.e + ")+(" + nm.i + "&" + nm.e + "))&0xff);");
     lines.push('var ' + nm.r + '="";');
     lines.push("for(var " + nm.j2 + "=0," + nm.kp2 + "=" + nm.n2 + "%" + nm.kl + ";" + nm.j2 + "<" + nm.c2 + ".length;" + nm.j2 + "++){");
-    lines.push("var " + nm.cu2 + "=" + nm.c2 + "[" + nm.j2 + "]^" + nm.ka + "[" + nm.kp2 + "]" + (couple ? "^" + nm.dk : "") + ";" + nm.r + "+=" + fcc(nm.cu2) + ";");
+    lines.push("var " + nm.cu2 + "=" + nm.c2 + "[" + nm.j2 + "]^" + nm.ka + "[" + nm.kp2 + "]" + (couple ? "^" + nm.dk : "") + ";" + accAdd(nm.r, fcc(nm.cu2)));
     lines.push(nm.kp2 + "++;if(" + nm.kp2 + ">=" + nm.kl + "){" + nm.kp2 + "=0;}}");
     lines.push(listVar + "[" + nm.i + "]=" + nm.r + ";");
     lines.push(nm.cc + "[" + nm.i + "]=" + nm.n2 + ";}");
@@ -772,7 +789,7 @@ function buildIifeSource({ listVar, encodedItems, encoding, key, rotation, mask,
       lines.push("if(" + nm.o + ".length!==" + nm.s + ".length){" + nm.o + "=" + corrupt + ";}");
     }
     lines.push("if(" + poisonTest + "){" + nm.o + "=" + corrupt + ";}");
-    lines.push("return " + nm.o + ";");
+    lines.push(accRet(nm.o));
   } else {
     lines.push(cache ? "var " + nm.o + "=" + nm.m + "[" + nm.i + "];if(" + nm.o + "===undefined){" + nm.o + "=" + nm.dec + "(" + nm.s + ");"
       + (couple ? dkMutate : "") + nm.m + "[" + nm.i + "]=" + nm.o + ";}"
@@ -791,7 +808,7 @@ function buildIifeSource({ listVar, encodedItems, encoding, key, rotation, mask,
         "if(" + nm.h2 + "!==0x" + checksumRot.toString(16) + "){" + nm.o + "=" + corrupt + ";}}");
     }
     lines.push("if(" + poisonTest + "){" + nm.o + "=" + corrupt + ";}");
-    lines.push("return " + nm.o + ";");
+    lines.push(accRet(nm.o));
   }
   lines.push("};");
   lines.push("})(" + arrArg + "," + "0x" + rotation.toString(16) + ")");

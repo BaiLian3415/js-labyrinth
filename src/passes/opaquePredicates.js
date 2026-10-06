@@ -162,19 +162,36 @@ export default function opaquePredicates(ast, options, ctx) {
       const guard = uniqueName(used, '_0x');
       let ins = 0;
       while (ins < bodyPath.node.body.length && bodyPath.node.body[ins].type === 'Directive') ins++;
-      // guard 初值取自运行期熵，即时间戳低 31 位。写成构建期字面量时，折叠器
-      // 传播该常量后 guard 族谓词一步化简为 true/false，静态阻力归零；初值在
-      // 运行期取值未知时，判真要先求出 guard，纯常量传播失效。
+      // guard 初值取自运行期多源熵：Date.now 低 31 位为主，混入 performance.now
+      // 的毫秒小数部分（*1000|0，无 performance 时降级为 0）。只 mock 其中一个
+      // 时钟，guard 仍随另一个变化——要让谓词行为确定，必须同时冻结两个时钟并
+      // 让它们的相对关系自洽，mock 成本从单点提到多点互锁。写成构建期字面量时，
+      // 折叠器传播该常量后 guard 族谓词一步化简为 true/false，静态阻力归零；
+      // 初值在运行期取值未知时，判真要先求出 guard，纯常量传播失效。
       // 取低 31 位而不是 |0：(g>>>0)===g 这类谓词要求 g 非负，带符号的时间戳
       // 会让谓词为假，被包裹的真实语句不执行。
       bodyPath.node.body.splice(
         ins, 0,
         t.variableDeclaration('var', [t.variableDeclarator(t.identifier(guard),
           t.binaryExpression('&',
-            t.binaryExpression('|',
-              t.callExpression(
-                t.memberExpression(t.identifier('Date'), t.identifier('now'), false), []),
-              t.numericLiteral(0)),
+            t.binaryExpression('^',
+              t.binaryExpression('|',
+                t.callExpression(
+                  t.memberExpression(t.identifier('Date'), t.identifier('now'), false), []),
+                t.numericLiteral(0)),
+              t.binaryExpression('|',
+                t.conditionalExpression(
+                  t.binaryExpression('&&',
+                    t.binaryExpression('!==',
+                      t.unaryExpression('typeof', t.identifier('performance'), true),
+                      t.stringLiteral('undefined')),
+                    t.memberExpression(t.identifier('performance'), t.identifier('now'), false)),
+                  t.binaryExpression('*',
+                    t.callExpression(
+                      t.memberExpression(t.identifier('performance'), t.identifier('now'), false), []),
+                    t.numericLiteral(1000)),
+                  t.numericLiteral(0)),
+                t.numericLiteral(0))),
             t.numericLiteral(0x7fffffff)))])
       );
 
