@@ -22,6 +22,11 @@
  * 形态限制成内联形态 A/C。寄存器式虚拟机（vmRegisterVM）则把同一份 AST 编译到另一套
  * 指令集：操作数是显式寄存器号，运行期读写寄存器文件，没有隐式栈顶。
  *
+ * 执行护栏（原嵌套内层档可信内核的能力，已并入本解释器，栈机/寄存器后端共用）：
+ * 指令步数上限（vmStepLimit，0 关闭）与操作数栈深度上限，超限抛错而不是静默挂死。
+ * 内层档撤销的原因与边界：只认 int32 子集（任意 JS 值会静默算错）、手写第二份内核
+ * 维护成本高、性价比实测不成立——同一批特性以「解释器内闸门」形态保留，regress 不退。
+ *
  * 本 pass 最先执行。已编译函数经 isVMCompiled() 登记，controlFlow 据此跳过，解释器
  * 不宜再被状态机包裹；B/K 内的数字与字符串随后仍由 stringArray 正常混淆。
  */
@@ -29,8 +34,6 @@ import t from '../ast/types.js';
 import parser from '../ast/parser.js';
 const { parse } = parser;
 import rtlib from './rtlib.js';
-import { compileNested } from './vmNested.js';
-import { buildInjection } from './vmNestedInject.js';
 import rand from '../utils/rand.js';
 const { shuffle, uniqueName, randInt } = rand;
 import i18n from '../i18n.js';
@@ -737,86 +740,6 @@ function opWordWidth(e) {
 
 // 编译器
 
-/**
- * 嵌套档注入：拿内层编译器的 spec 产物，构造解密/建表/run 产物并塞进函数体。
- *
- * 由 tryNested 在外层体替换**之前**调用：此时 fn.body.body 仍是用户写的原始
- * 语句，是内层编译器唯一能正确看待的形态。成功后整段 body 被替换；失败则由
- * 调用方回退到单层档。
- *
- * @returns {boolean} 是否真的套上了
- */
-function applyNested(fn, opts, ctx, spec) {
-  // spec 由 tryNested 提前用 compileNested(fn.body.body, …paramNames) 算好。
-  // applyNested 只负责拿 spec 构建注入产物、把声明与入口塞进函数体。
-  if (!spec) return false;
-  const names = {
-    dec: uniqueName(ctx.usedNames, '_0x'),
-    tab: uniqueName(ctx.usedNames, '_0x'),
-    run: uniqueName(ctx.usedNames, '_0x'),
-  };
-  const inj = buildInjection(spec, names, {
-    decoyOps: opts.vmNestedDecoys,
-    limit: opts.vmNestedLimit,
-  });
-  if (!inj) return false;
-  // 机制声明进**本函数体**，不走 rtlib.insertHead。
-  //
-  // 为什么不用 insertHead：那条路径要往 Program 头部插，而头部已经被 rtlib /
-  // integrityCheck / banner 占着，插入顺序错了会让掩码赋值晚于校验器执行，
-  // 触发假失配投毒（vm.js 里那段注释记的就是这个坑）。就地放在函数体开头
-  // 既避开顺序纠缠，也保证这些声明在被替换掉的 handler 循环之前就绪。
-  let decls;
-  try {
-    decls = parse(inj.src, { sourceType: 'script' }).program.body;
-  } catch (e) {
-    return false;   // 注入源码自研解析器都解析不了：放弃这一份，不产出半成品
-  }
-  let call;
-  try {
-    call = parse(inj.call, { sourceType: 'script' }).program.body[0];
-  } catch (e) {
-    return false;
-  }
-  if (!decls.length || !call) return false;
-  fn.body = t.blockStatement([...decls, call]);
-  return true;
-}
-
-/**
- * 内层档入口：在外层 VM 体替换之前，试着把函数交给手写内核保护。
- *
- * 此时 fn.body.body 仍是用户写的原始语句（还没被替换成 handler 循环），
- * 是内层编译器唯一能正确看待的形态。成功后整段 body 被替换成解密/建表/run
- * 的产物；失败（语法超出内核能力范围）则返回 false，调用方照常走外层单层档。
- *
- * @returns {boolean} 成功替换为 true
- */
-function tryNested(fn, opts, ctx) {
-  try {
-    // 形参名单必须原样传给编译器：Locals 的槽只有 var 声明会现场分配，
-    // 参数本身声明不占任何槽 —— 少传一个就编不少带参数的函数。
-    const paramNames = fn.params && Array.isArray(fn.params)
-      ? fn.params.filter((p) => p.type === 'Identifier').map((p) => p.name)
-      : [];
-    const spec = compileNested(
-      fn.body.body,
-      randInt(0, 255),
-      opts.vmNestedBudget,
-      paramNames,
-    );
-    if (!spec) return false;
-    const nested = applyNested(fn, opts, ctx, spec);
-    if (!nested) return false;
-    ctx.__vmNestedApplied = (ctx.__vmNestedApplied || 0) + 1;
-    return true;
-  } catch (e) {
-    // 嵌套档是可选增强，出错就退让。绝不能因为它让整个构建失败。
-    ctx.__vmNestedFailed = (ctx.__vmNestedFailed || 0) + 1;
-    return false;
-  }
-}
-
 function compileFunction(fn, ctx) {
   const opts = ctx.options;
   const threshold = opts.vmThreshold !== undefined ? opts.vmThreshold : 3;
@@ -844,6 +767,16 @@ function compileFunction(fn, ctx) {
   // 注意这一段不占任何随机名字（uniqueName 会推进名字流），关闭时产物与改动前
   // 逐字节一致；开启时才分配寄存器文件等名字。
   const registerVM = !!opts.vmRegisterVM && !ctx.__vmWasmShared;
+
+  // 执行护栏（原嵌套内层档的可信内核特性，现并入本解释器，两种后端共用）：
+  //   · 指令步数上限：单次调用里解释器最多执行多少条字节码指令，超了抛错。
+  //     0 = 关闭检查。默认给得很大，只在真正失控（死循环）时触发，
+  //     正常业务负载不会撞到这条线。
+  //   · 操作数栈深度上限（固定常数）：病态深嵌套的表达式不允许无界撑爆 S。
+  const stepLimit = (opts.vmStepLimit === undefined || opts.vmStepLimit === null)
+    ? 100000000
+    : (opts.vmStepLimit > 0 ? opts.vmStepLimit | 0 : 0);
+  const stackDepthCap = 4096;
 
   // 编译期密钥（vmCompileKey）。给了密钥时，本函数的密钥材料不再取自 randInt，
   // 而由「密钥 + 本函数序号」哈希派生出的确定性流给出：
@@ -998,11 +931,13 @@ function compileFunction(fn, ctx) {
   const nS = uniqueName(ctx.usedNames, '_0x');
   const npc = uniqueName(ctx.usedNames, '_0x');
   const nM = uniqueName(ctx.usedNames, '_0x');
+  const nSTEP = uniqueName(ctx.usedNames, '_0x');
   const V = t.identifier(nV), G = t.identifier(nG), H = t.identifier(nH);
   const K = t.identifier(nK), B = t.identifier(nB), S = t.identifier(nS);
   const J = t.identifier(nJ); // 字符串码元表，MKS 指令在运行期解密还原成 string
   const PC = t.identifier(npc);
   const MASK = t.identifier(nM);
+  const STEP = t.identifier(nSTEP);   // 指令步数计数器（执行护栏，见 interpBody）
   // 寄存器后端的寄存器文件。只在寄存器后端分配名字（uniqueName 推进随机名字流，
   // 白占名会让关闭时的产物与改动前不再逐字节一致）。
   const RID = registerVM ? t.identifier(uniqueName(ctx.usedNames, '_0x')) : null;
@@ -3525,6 +3460,25 @@ function compileFunction(fn, ctx) {
   // 指纹之一，这两种形态与 dispatchForm 的四种分发正交组合出 8 种骨架，针对单一骨架
   // 模板写的还原规则无法跨构建复用。
   const interpBody = t.blockStatement([
+    // 步数闸门（执行护栏，原 vmNestedLimit 的平移，栈机/寄存器后端共用）：
+    // 每执行一条字节码指令就 ++STEP，超过 vmStepLimit 直接抛错。
+    // 死循环/失控执行不再只能靠宿主挂死兜底，而是有条可定位的失败路径。
+    // vmStepLimit=0 时不生成这道闸门（产物逐字节仍只差这一项）。
+    ...(stepLimit > 0 ? [t.ifStatement(
+      t.binaryExpression('>',
+        t.updateExpression('++', STEP, true),
+        t.numericLiteral(stepLimit)),
+      t.blockStatement([t.throwStatement(t.newExpression(
+        t.identifier('Error'), [t.stringLiteral(msg('vmOverrun'))]))]))] : []),
+    // 操作数栈深度护栏：正常编译产物的栈深由编译期就可推出上界，
+    // 远低于该值；撞到这条说明字节码/解释器状态已损坏，显式抛错优于
+    // 静默继续显式地浪费栈空间（寄存器后端不碰 S，恒不触发）。
+    t.ifStatement(
+      t.binaryExpression('>',
+        t.memberExpression(S, t.identifier('length'), false),
+        t.numericLiteral(stackDepthCap)),
+      t.blockStatement([t.throwStatement(t.newExpression(
+        t.identifier('Error'), [t.stringLiteral(msg('vmOverrun'))]))])),
     // 越界守卫，只在开启运行期密钥（useRtKey）时生成：取回的密钥不对时所有分发
     // 条目都落空，取指游标会一直越界读下去变成死循环，把浏览器主线程挂死。这里改成
     // 明确抛出，失败模式从"卡死"变成"立刻报错"。密钥正确时 END 一定会先 return，
@@ -3605,6 +3559,9 @@ function compileFunction(fn, ctx) {
     // P4 模型 M2 的地址栈。仅在 M2 下声明；M0/M1 下 SA 为 null，声明里不出现。
     ...(SA ? [t.variableDeclarator(SA, t.arrayExpression([]))] : []),
     t.variableDeclarator(PC, t.numericLiteral(0)),
+    // 步数计数器（执行护栏）。无条件声明：即使 vmStepLimit=0 关掉闸门，
+    // 该变量仍在（未被闸门引用），保证关闸时的产物只差闸门本身不变其它。
+    t.variableDeclarator(t.identifier(nSTEP), t.numericLiteral(0)),
     t.variableDeclarator(MASK, kLit(MASK_M0, rt && rt.M0)),
     t.variableDeclarator(t.identifier(nCHAIN), kLit(CHAIN_SEED, rt && rt.CS)), // 链值状态
     t.variableDeclarator(t.identifier(nCHN), t.numericLiteral(0)),           // 取指暂存
@@ -3749,25 +3706,19 @@ function compileFunction(fn, ctx) {
     );
     return stmts;
   };
-  // ------------------------------------------------------------ 嵌套档
+  // ------------------------------------------------------------ 执行护栏
   //
-  // 把函数体交给手写的可信内核（src/rt/vmcore.js）保护：编译器扫描的是**用户
-  // 的原始 AST**（此时 body 还没被替换成 handler 循环），成功后整段 body 被
-  // 替换成解密 → 建表 → 交给内核执行的产物。
-  //
-  // 语义变换为："小函数跳过外层 VM，直接由内层核心保护"。判定时机是 compileFunction
-  // 刚进来、还没开始构造 handler 循环之前：那时 fn.body.body 仍是用户写的原语，
-  // 内核才能看见它。成功替换后就不再走外层体替换（否则会把嵌入码砸了）。
-  // 编译不了（包含调用/成员/try-catch 等）就原样退让，让外层单层档接手。
-  const vmNestedApplied = opts.vmNested ? tryNested(fn, opts, ctx) : false;
-  // tryNested 已经在成功时累加 __vmNestedApplied / 失败时累加 __vmNestedFailed，
-  // 这里只读返回值决定是否跳过外层体替换。
-
-  if (vmNestedApplied) {
-    // 内层档已替换 fn.body，外层体替换（handler 循环 + 解释器）不用做
-    fn.body.body.unshift(...dirStmts);
-    if (fn.type === 'ArrowFunctionExpression') fn.expression = false;
-  } else {
+  // 原嵌套内层档的「可信内核」特性已并入本解释器，栈机与寄存器后端共用，不再
+  // 存在第二份手写内核：
+  //   · 指令步数上限（vmStepLimit）——原 vmNestedLimit 的平移，见 runtimeDecl 里
+  //     的 STEP 计数与 interpBody 的闸门；
+  //   · 操作数栈深度上限——原内核的「帧深上限」平行物，语义域为本解释器的 S；
+  //   · 逐构建随机化的分发/干扰/掩码布局（原 buildCore 的同维特性）早已在本
+  //     解释器里（dispatchForm、junk 声明、uniqueName、masked words），本次不改。
+  // 内层档的 int32 参数闸门与帧式调用**不**移植：本解释器的栈与槽位装任意 JS 值
+  // （而非 int32），调用走 G/H 闭包透传、this/arguments 语义靠闭包链保持——同一
+  // 套机制硬搬会把「语义域不同」变成新的静默算错。
+  {
     fn.body = t.blockStatement([
       // 运行期密钥派生必须排在 runtimeDecl 之前：MASK 与链种子的初始化要读它算出的值
       ...rtKeyStmts(),

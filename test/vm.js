@@ -403,6 +403,35 @@ section('P4：多态寄存器模型与字节码分块自解密');
   }
 }
 
+// 执行护栏（vmStepLimit）：原嵌套内层档 vmNestedLimit 平移后的有界失败路径。
+// while(true) + 极小步数 → 必须按 vmOverrun 抛错而非挂死；正常循环 + 大步数 → 语义正确。
+section('执行护栏：vmStepLimit（栈机与寄存器后端共用）');
+{
+  const infSrc = 'function f(){var i=0;while(true){i++;}return i;}\n'
+    + 'try { f(); process.stdout.write("no-throw\\n"); } catch (e) { process.stdout.write("thrown:" + e.message.split("\\n")[0].slice(0, 20) + "\\n"); }';
+  const okSrc = 'function f(){var s=0;for(var i=0;i<10;i++)s+=i;return s;}\n'
+    + 'process.stdout.write(f() + "\\n");';
+  let infBad = 0, okBad = 0, firstInf = '', firstOk = '';
+  for (const reg of [false, true]) {
+    // 小步数：两种后端都应抛出带策文的 Error（message 含 "vm: 解释器执行超限"）
+    const code1 = obfuscate(infSrc, {
+      preset: 'high', seed: 7, shell: false, integrityCheck: false,
+      wasm: false, wasmInterpreter: false, vmStepLimit: 2000, vmRegisterVM: reg,
+    }).code;
+    const out1 = runNode(code1, 'guard-inf-' + reg + '.js').trim();
+    if (!out1.startsWith('thrown:')) { infBad++; if (!firstInf) firstInf = 'reg=' + reg + ': ' + out1.slice(0, 80); }
+    // 大步数：正常跑完
+    const code2 = obfuscate(okSrc, {
+      preset: 'high', seed: 7, shell: false, integrityCheck: false,
+      wasm: false, wasmInterpreter: false, vmRegisterVM: reg,
+    }).code;
+    const out2 = runNode(code2, 'guard-ok-' + reg + '.js').trim();
+    if (out2 !== '45') { okBad++; if (!firstOk) firstOk = 'reg=' + reg + ': ' + out2.slice(0, 80); }
+  }
+  ok(infBad === 0, 'vmStepLimit 生效：栈机与寄存器后端的死循环都抛错', firstInf);
+  ok(okBad === 0, 'vmStepLimit 默认足够大：正常循环两后端都得 45', firstOk);
+}
+
 if (process.argv[1] && process.argv[1].endsWith('vm.js')) {
   const bad = report();
   cleanTmp();

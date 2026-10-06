@@ -148,6 +148,7 @@ const STRINGS = {
     vmRuntimeKeyNeedsCompileKey: 'vm: 运行时密钥取值（vmRuntimeKeyGetter）必须与编译期密钥（vmCompileKey）同时设置——没有编译期密钥就没有要比对的目标值，门禁不成立',
     vmRuntimeKeyGetterParseFailed: 'vm: 运行时密钥取值表达式解析失败: {msg}',
     vmKeyMismatch: 'vm: 字节码校验失败（运行期取到的密钥与编译期密钥不一致）',
+    vmOverrun: 'vm: 解释器执行超限（指令步数或操作数栈深度）',
     jsfuckTooBig: 'JSFuck 壳形式的核心表达式超限：实际 {n} KB，上限 {max} KB'
       + '（核心源码 {bytes} 字符，约 {rate} 字符/字节）——请缩小 JSFUCK_CORE 或调高 JSFUCK_MAX_CHARS',
     vmUnknownOpcode: 'vm: 未知操作码 {kind}',
@@ -483,6 +484,7 @@ const STRINGS = {
     vmRuntimeKeyNeedsCompileKey: 'vm: vmRuntimeKeyGetter requires vmCompileKey — without a compile-time key there is no reference value to compare against, so the gate cannot hold',
     vmRuntimeKeyGetterParseFailed: 'vm: failed to parse the vmRuntimeKeyGetter expression: {msg}',
     vmKeyMismatch: 'vm: bytecode validation failed (the runtime key does not match the compile-time key)',
+    vmOverrun: 'vm: interpreter execution bound exceeded (step limit or operand stack depth)',
     jsfuckTooBig: 'JSFuck shell core expression too large: got {n} KB, limit {max} KB'
       + ' (core source {bytes} chars, ≈{rate} chars/byte) — shrink JSFUCK_CORE or raise JSFUCK_MAX_CHARS',
     vmUnknownOpcode: 'vm: unknown opcode {kind}',
