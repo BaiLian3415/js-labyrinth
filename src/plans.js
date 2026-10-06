@@ -118,8 +118,7 @@ export default {
         "rc4",
         "affine",
         "add",
-        "xorrev",
-        "b64xor"
+        "xorrev"
       ],
       "stringArrayThreshold": 1,
       "stringSplitProbability": 1,

@@ -4,7 +4,7 @@ const { parse } = parser;
 import rand from '../utils/rand.js';
 const { randInt, shuffle, randAlpha, randHex } = rand;
 import encode from '../utils/encode.js';
-const { xorEncode, b64Encode, rc4ToB64, utf8Encode, affineEncode, addEncode, xorRevEncode, b64xorEncode, decoderSource, buildKeyExpr } = encode;
+const { xorEncode, b64Encode, rc4ToB64, utf8Encode, affineEncode, addEncode, xorRevEncode, decoderSource, buildKeyExpr } = encode;
 import rtlib from './rtlib.js';
 import i18n from '../i18n.js';
 const { t: msg } = i18n;
@@ -321,6 +321,12 @@ export default function stringArray(ast, options, ctx) {
     // 密钥耦合偏移（P0）：首次访问时从健康载体读出的解密密钥偏移量。
     // 未启用耦合时这个绑定不会出现在产物里
     "dk",
+    // xor 字节域演化 codec 的中间量（base64 线格式 → 字节 → 文本三段式）：
+    // d unb64 输出的字节串；x/y 位缓冲与计数；qq/cv 取码临量；
+    // j3/uu CESU 还原循环；w CESU 编码临量；r2 重加密字节串；
+    // j4/b1/b2/b3 base64 编码循环。xor 是默认编码且恒占一组，
+    // 无条件分配（不像自防御那样按开关取舍）。
+    "d", "x", "y", "qq", "cv", "j3", "uu", "w", "r2", "j4", "b1", "b2", "b3", "v",
   ]) shortName(slot);
   // 访问期自检用的计数器与重算临时量，见 buildIifeSource 里的抽样校验。
   // 只在自检开启时分配：短名分配会消耗 PRNG，低档预设关了自检，多分配五个
@@ -344,8 +350,9 @@ export default function stringArray(ast, options, ctx) {
   for (const st of sharedStatements) markMachinery(st);
 
   // 每组独立的算法池，不同组用不同算法，破坏统一还原器。xor、base64、rc4、
-  // affine、add、xorrev、b64xor 的结构各不相同，反混淆器要分别还原。
-  const ALGO_POOL = ["xor", "base64", "rc4", "affine", "add", "xorrev", "b64xor"];
+  // affine、add、xorrev 的结构各不相同，反混淆器要分别还原。xor 本体是
+  // base64 线格式（异或后自动 base64），各组天然不同构。
+  const ALGO_POOL = ["xor", "base64", "rc4", "affine", "add", "xorrev"];
   // 恒有至少一组走 xor 动态密钥，其余组按 mixedEncoding 决定混编还是统一算法
   const forcedXorGroup = randInt(0, groupCount - 1);
   const groupAlgos = [];
@@ -378,7 +385,6 @@ export default function stringArray(ast, options, ctx) {
         case "affine": return affineEncode(s, key);
         case "add": return addEncode(s, key);
         case "xorrev": return xorRevEncode(s, key);
-        case "b64xor": return b64xorEncode(s, key);
         default: throw new Error("unknown encoding: " + groupEnc);
       }
     });
@@ -724,10 +730,10 @@ function buildIifeSource({ listVar, encodedItems, encoding, key, rotation, mask,
     if (cache) lines.push("var " + nm.mc + "=[];");
     lines.push("var " + nm.k + "=" + keyExpr + ";");
     // 密钥码表在装配期展开一次，热路径不再逐字符对密钥串取码，密钥游标用
-    // 自增回绕替代每字符取模。原始码元密文下，解码和重加密每码元各一次
+    // 自增回绕替代每字符取模。字节域下，解码和重加密每字节各一次
     // CCO 或 XOR 加 FCC。密文演化序列、槽位内容和访问语义都不变。
     // 密钥耦合的偏移不在这里并入（会固化成装配期的值），改在解码/重加密的
-    // 每码元 XOR 里各带一次，见下面的 cu、cu2。
+    // 每字节 XOR 里各带一次，见下面的 cu、cu2。
     lines.push("var " + nm.kl + "=" + nm.k + ".length;var " + nm.ka + "=[];" +
       "for(var " + nm.zk + "=0;" + nm.zk + "<" + nm.kl + ";" + nm.zk + "++)" + nm.ka + "[" + nm.zk + "]=" + cco(nm.k, nm.zk) + ";");
     lines.push("var " + nm.cc + "=[];for(var " + nm.zi + "=0;" + nm.zi + "<" + listVar + ".length;" + nm.zi + "++)" + nm.cc + "[" + nm.zi + "]=0;");
@@ -773,39 +779,99 @@ function buildIifeSource({ listVar, encodedItems, encoding, key, rotation, mask,
     lines.push("if(" + listVar + ".length!==0x" + encodedItems.length.toString(16) + '){throw new Error("bad");}');
   }
   if (dynamicXor) {
-    // 冷访问：原始密文逐码元与密钥码表异或后再用 FCC 重组，明文和明文码元表
-    // 都缓存，每码元一次 CCO，hex 半字节解码链整体去掉。
+    // 冷访问：槽位base64文本 → 算术 unb64 还原字节 → 逐字节异或密钥码表 →
+    // CESU-8 还原文本。明文的字节表与文本各缓存一份；密钥游标按字节计数。
     // 热访问：直接返回明文缓存，O(1)。只有演化门 ((槽计数 ^ 会话熵) & 演化掩码)
-    // 为 0 时才推进计数并从码元表原位重加密，每码元一次 XOR 加 FCC。
+    // 为 0 时才推进计数并重加密写回槽位（文本 → CESU 字节 → 异或 → base64）。
     // 掩码为 0 时每次访问都演化。计数与密文同步推进，解码自洽。
+    // 注意与旧形态的差异：旧 xor 的槽位是裸码元串，明文与槽位等长，
+    // 有一条 o.length===s.length 的自洽校验；base64 线格式下两者长度天然不同，
+    // 那条不变量不再成立，已删。槽位篡改仍会被 couple/poison 链与演化自洽性
+    // 捕获（改掉任一槽位字节，后续解码即乱码），只是不再有一条 O(1) 的
+    // 等长断言。代价是冷访问多两趟线性变换（unb64 + CESU），热访问不变。
     lines.push(cacheOpen);
     // 首段的 O=""; 让 cache=false 时的 var O= 拼接成合法的链式赋值
-    lines.push(nm.o + '="";var ' + nm.c + "=[];for(var " + nm.j + "=0," + nm.kp + "=" + nm.cc + "[" + nm.i + "]%" + nm.kl + ";" + nm.j + "<" + nm.s + ".length;" + nm.j + "++){");
-    lines.push("var " + nm.cu + "=" + cco(nm.s, nm.j) + "^" + nm.ka + "[" + nm.kp + "]" + (couple ? "^" + nm.dk : "") + ";" + nm.c + "[" + nm.c + ".length]=" + nm.cu + ";" + accAdd(nm.o, fcc(nm.cu)));
-    lines.push(nm.kp + "++;if(" + nm.kp + ">=" + nm.kl + "){" + nm.kp + "=0;}}");
+    lines.push(nm.o + '="";var ' + nm.d + "='';var " + nm.x + "=0;var " + nm.y + "=0;"
+      + "var " + nm.c + "=[];"
+      + "for(var " + nm.j + "=0," + nm.kp + "=" + nm.cc + "[" + nm.i + "]%" + nm.kl + ";" + nm.j + "<" + nm.s + ".length;" + nm.j + "++){"
+      + "var " + nm.qq + "=" + cco(nm.s, nm.j) + ";"
+      + "if(" + nm.qq + "===61)break;"
+      + "var " + nm.cv + "=" + nm.qq + ">96?" + nm.qq + "-71:(" + nm.qq + ">64?" + nm.qq + "-65:(" + nm.qq + ">47?" + nm.qq + "+4:(" + nm.qq + "===43?62:(" + nm.qq + "===47?63:-1))));"
+      + "if(" + nm.cv + "<0)continue;"
+      + nm.x + "=(" + nm.x + "<<6)|" + nm.cv + ";" + nm.y + "+=6;"
+      + "if(" + nm.y + ">=8){" + nm.y + "-=8;"
+      + "var " + nm.cu + "=((" + nm.x + ">>" + nm.y + ")&0xff)^" + nm.ka + "[" + nm.kp + "]" + (couple ? "^" + nm.dk : "") + ";"
+      + nm.c + "[" + nm.c + ".length]=" + nm.cu + ";" + nm.d + "+=" + fcc(nm.cu) + ";"
+      + nm.kp + "++;if(" + nm.kp + ">=" + nm.kl + "){" + nm.kp + "=0;}}}");
+    // CESU-8 还原：字节串 D → 文本 O（1/2/3 字节形态，与构建期 cesuEncode 对偶）。
+    // 参数串先拼成 builder 变量再套 fcc/accAdd：直接在 push 里写三层嵌套引用
+    // 极易多写/少写一个括号还看不出来（已踩过一次，产物直接语法错误）。
+    // c2/c3 的括号可逐段验证：每段都是 ((X)<<k) 或 ((CCO)&0x3F) 的闭合形态。
+    const cesu2 = "((" + nm.uu + "&0x1F)<<6)|((" + cco(nm.d, nm.j3 + "+1") + "&0x3F))";
+    const cesu3 = "((" + nm.uu + "&0x0F)<<12)|((" + cco(nm.d, nm.j3 + "+1") + "&0x3F)<<6)|((" + cco(nm.d, nm.j3 + "+2") + "&0x3F))";
+    lines.push(nm.o + "='';"
+      + "for(var " + nm.j3 + "=0;" + nm.j3 + "<" + nm.d + ".length;){"
+      + "var " + nm.uu + "=" + cco(nm.d, nm.j3) + ";"
+      + "if(" + nm.uu + "<0x80){" + accAdd(nm.o, fcc(nm.uu)) + nm.j3 + "++;}"
+      + "else if(" + nm.uu + "<0xE0){" + accAdd(nm.o, fcc(cesu2)) + nm.j3 + "+=2;}"
+      + "else{" + accAdd(nm.o, fcc(cesu3)) + nm.j3 + "+=3;}"
+      + "}");
     lines.push(cacheClose);
-    // 重加密的码元源：缓存开启时取明文码元表，stringArrayCache=false 时从刚
-    // 解码出的明文即时重建，每码元一次 CCO，只有演化命中的访问才付出这个成本
+    // 重加密的字节源：缓存开启时取明文字节表，stringArrayCache=false 时从刚
+    // 解出的明文即时做 CESU-8 编码（与构建期 cesuEncode 对偶），每字节一次 CCO，
+    // 只有演化命中的访问才付出这个成本。注意这里产出的是字节（<256），不是码元。
     lines.push(cache
       ? "var " + nm.c2 + "=" + nm.mc + "[" + nm.i + "];"
-      : "var " + nm.c2 + "=[];for(var " + nm.zc + "=0;" + nm.zc + "<" + nm.o + ".length;" + nm.zc + "++)" + nm.c2 + "[" + nm.zc + "]=" + cco(nm.o, nm.zc) + ";");
+      : "var " + nm.c2 + "=[];"
+      + "for(var " + nm.zc + "=0;" + nm.zc + "<" + nm.o + ".length;" + nm.zc + "++){"
+      + "var " + nm.w + "=" + cco(nm.o, nm.zc) + ";"
+      + "if(" + nm.w + "<0x80){" + nm.c2 + "[" + nm.c2 + ".length]=" + nm.w + ";}"
+      + "else if(" + nm.w + "<0x800){"
+      + nm.c2 + "[" + nm.c2 + ".length]=0xC0|(" + nm.w + ">>6);"
+      + nm.c2 + "[" + nm.c2 + ".length]=0x80|(" + nm.w + "&0x3F);}"
+      + "else{"
+      + nm.c2 + "[" + nm.c2 + ".length]=0xE0|(" + nm.w + ">>12);"
+      + nm.c2 + "[" + nm.c2 + ".length]=0x80|((" + nm.w + ">>6)&0x3F);"
+      + nm.c2 + "[" + nm.c2 + ".length]=0x80|(" + nm.w + "&0x3F);}"
+      + "}");
     lines.push("if(((" + nm.cc + "[" + nm.i + "]^" + nm.e + ")&0x" + evolveMask.toString(16) + ")===0){");
     // 新计数偏移由访问序数加会话熵混合项得到，重加密和计数器写入共用同一
     // 偏移，保证下次访问时解密自洽
     lines.push("var " + nm.n2 + "=" + nm.cc + "[" + nm.i + "]+1+(((" + nm.i + "^" + nm.e + ")+(" + nm.i + "&" + nm.e + "))&0xff);");
-    lines.push('var ' + nm.r + '="";');
+    // 异或字节流（与冷访问同一密钥推进规则），先收进字节串，再 base64 进槽位
+    lines.push('var ' + nm.r2 + "='';");
     lines.push("for(var " + nm.j2 + "=0," + nm.kp2 + "=" + nm.n2 + "%" + nm.kl + ";" + nm.j2 + "<" + nm.c2 + ".length;" + nm.j2 + "++){");
-    lines.push("var " + nm.cu2 + "=" + nm.c2 + "[" + nm.j2 + "]^" + nm.ka + "[" + nm.kp2 + "]" + (couple ? "^" + nm.dk : "") + ";" + accAdd(nm.r, fcc(nm.cu2)));
+    lines.push("var " + nm.cu2 + "=" + nm.c2 + "[" + nm.j2 + "]^" + nm.ka + "[" + nm.kp2 + "]" + (couple ? "^" + nm.dk : "") + ";" + nm.r2 + "+=" + fcc(nm.cu2) + ";");
     lines.push(nm.kp2 + "++;if(" + nm.kp2 + ">=" + nm.kl + "){" + nm.kp2 + "=0;}}");
+    // base64 编码：6 位值→字符走算术映射（无字母表明文），短组按填充语义补 61（即等号）。
+    // 与构建期 b64Encode 逐位一致，否则 unb64 侧对不上。
+    // 映射经 b64chr helper 拼成单表达式，四处复用；helper 输出已用机器验过
+    // 括号平衡与 64 个取值的正确性，不手写四份嵌套三元。
+    const b64chr = (v) => "((" + v + "<26)?(" + v + "+65):((" + v + "<52)?(" + v + "+71):((" + v + "<62)?(" + v + "-4):((" + v + "===62)?43:47))))";
+    lines.push("var " + nm.r + "='';");
+    lines.push("for(var " + nm.j4 + "=0;" + nm.j4 + "<" + nm.r2 + ".length;" + nm.j4 + "+=3){"
+      + "var " + nm.b1 + "=" + cco(nm.r2, nm.j4) + ";"
+      + "var " + nm.b2 + "=(" + nm.j4 + "+1<" + nm.r2 + ".length)?" + cco(nm.r2, nm.j4 + "+1") + ":-1;"
+      + "var " + nm.b3 + "=(" + nm.j4 + "+2<" + nm.r2 + ".length)?" + cco(nm.r2, nm.j4 + "+2") + ":-1;"
+      + "var " + nm.v + "=" + nm.b1 + ">>2;"
+      + nm.r + "+=" + fcc(b64chr(nm.v)) + ";"
+      + nm.v + "=((" + nm.b1 + "&3)<<4)|(" + nm.b2 + "<0?0:" + nm.b2 + ">>4);"
+      + nm.r + "+=" + fcc(b64chr(nm.v)) + ";"
+      + "if(" + nm.b2 + "<0){" + nm.r + "+=" + fcc(61) + ";}else{"
+      + nm.v + "=((" + nm.b2 + "&15)<<2)|(" + nm.b3 + "<0?0:" + nm.b3 + ">>6);"
+      + nm.r + "+=" + fcc(b64chr(nm.v)) + ";}"
+      + "if(" + nm.b3 + "<0){" + nm.r + "+=" + fcc(61) + ";}else{"
+      + nm.v + "=" + nm.b3 + "&63;"
+      + nm.r + "+=" + fcc(b64chr(nm.v)) + ";}"
+      + "}");
     lines.push(listVar + "[" + nm.i + "]=" + nm.r + ";");
     lines.push(nm.cc + "[" + nm.i + "]=" + nm.n2 + ";}");
     const corrupt = (rt && rt.cor) ? rt.cor + "(" + nm.o + ")"
       : nm.o + ".slice(0,1)+" + fcc("0xfffd") + "+" + nm.o + ".slice(2)";
-    // 自洽校验：异或密文与明文等长，改动池里任一槽位的长度即当场损坏输出。
-    // 演化只是原位重加密，长度不变，所以这条不变量全程成立，代价 O(1)。
-    if (selfDefending) {
-      lines.push("if(" + nm.o + ".length!==" + nm.s + ".length){" + nm.o + "=" + corrupt + ";}");
-    }
+    // 注意这里没有等长自洽校验：base64 线格式下槽位密文恒长于明文，
+    // o.length===s.length 恒不成立。旧裸码元形态才有那条不变量。
+    // 槽位篡改的兜底是 couple（dk 偏移）与 poison（损坏输出）链，
+    // 以及演化自洽性（改掉任一槽位字节，后续解码即乱码）。
     lines.push("if(" + poisonTest + "){" + nm.o + "=" + corrupt + ";}");
     lines.push(accRet(nm.o));
   } else {
@@ -816,7 +882,8 @@ function buildIifeSource({ listVar, encodedItems, encoding, key, rotation, mask,
       : nm.o + ".slice(0,1)+" + fcc("0xfffd") + "+" + nm.o + ".slice(2)";
     // 访问期全池校验和重算。静态组的池内容不再变化，装配期算出的校验和全程
     // 有效，于是可以在访问期按抽样门重算；动态 xor 组的槽位每次演化都原位重
-    // 加密，校验和必然漂移，不能这么查，改走上面的等长不变量。
+    // 加密，校验和必然漂移，不能这么查，改走 couple/poison 链与演化自洽性兜底
+    // （base64 线格式下也没有等长不变量可用）。
     // 抽样门逐组随机取 15~255，把重算成本摊到 1/N 的访问上，热路径不退化。
     // 命中即损坏本次输出而不是抛出：与毒化响应同一口径，数据坏而流程不崩。
     if (selfDefending && checksumRot !== null && checksumRot !== undefined) {

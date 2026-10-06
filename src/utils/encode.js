@@ -4,23 +4,74 @@
  * 所以必须能在浏览器里无依赖运行。
  */
 
-// XOR 是默认编码，密钥逐码元参与，强度高于 hex 传输层。密文按原始码元
-// 字符串存储，每码元等于明文码元 XOR 密钥码元，外面不再套 4 字符 hex。
-// hex 只是传输编码，去掉它不影响密钥参与强度，构建期字面量却从每码元 4
-// 字符降到约 1 字符，ASCII 主体大致如此，运行时解码与重加密每码元也从 4
-// 次 HEXN 降到 1 次 CCO。构建期加密与运行时解码器必须同构。
+// XOR 是默认编码。线格式为 base64 文本：明文先按 CESU-8 逐码元展成字节
+// （1/2/3 字节，代理项各自 3 字节——孤立代理项也能往返，不丢信息），字节再与
+// 密钥逐字节异或，最后走标准 base64。池里看不到任何裸二进制码元，静态按
+// "首部对齐"剥密钥流的写法/API（如 atob 直解）拿到的只是异或后的字节。
+// 注意与 base64/rc4 的区别：那两族走标准 UTF-8（孤立代理项会走样），xor 族
+// 用 CESU-8 逐码元，任意 16 位序列都精确往返。构建期加密与运行时解码器
+// （decoderSource 的内联演化 codec 与独立解码器）必须同构。
 function xorEncode(str, key) {
+  const raw = cesuEncode(str);
+  let xored = '';
+  for (let i = 0; i < raw.length; i++) {
+    xored += String.fromCharCode(raw.charCodeAt(i) ^ key.charCodeAt(i % key.length));
+  }
+  return b64Encode(xored);
+}
+
+function xorDecode(data, key) {
+  const xored = b64Decode(data);
+  let raw = '';
+  for (let i = 0; i < xored.length; i++) {
+    raw += String.fromCharCode(xored.charCodeAt(i) ^ key.charCodeAt(i % key.length));
+  }
+  return cesuDecode(raw);
+}
+
+// CESU-8 风格的逐码元字节化：每个 16 位码元独立编成 1/2/3 字节，
+// 不合并代理对（与标准 UTF-8 的唯一区别）。任意码元序列精确往返，
+// 是 xor 线格式能吃下孤立代理项的原因。base64/rc4 族仍走标准 UTF-8。
+function cesuEncode(str) {
   let out = '';
   for (let i = 0; i < str.length; i++) {
-    out += String.fromCharCode(str.charCodeAt(i) ^ key.charCodeAt(i % key.length));
+    const c = str.charCodeAt(i);
+    if (c < 0x80) {
+      out += String.fromCharCode(c);
+    } else if (c < 0x800) {
+      out += String.fromCharCode(0xC0 | (c >> 6), 0x80 | (c & 0x3F));
+    } else {
+      out += String.fromCharCode(0xE0 | (c >> 12), 0x80 | ((c >> 6) & 0x3F), 0x80 | (c & 0x3F));
+    }
   }
   return out;
 }
 
-function xorDecode(data, key) {
+function cesuDecode(bytes) {
   let out = '';
-  for (let i = 0; i < data.length; i++) {
-    out += String.fromCharCode(data.charCodeAt(i) ^ key.charCodeAt(i % key.length));
+  let i = 0;
+  while (i < bytes.length) {
+    const b = bytes.charCodeAt(i);
+    if (b < 0x80) {
+      out += String.fromCharCode(b);
+      i++;
+    } else if (b < 0xE0) {
+      out += String.fromCharCode(((b & 0x1F) << 6) | (bytes.charCodeAt(i + 1) & 0x3F));
+      i += 2;
+    } else {
+      out += String.fromCharCode(((b & 0x0F) << 12) | ((bytes.charCodeAt(i + 1) & 0x3F) << 6) | (bytes.charCodeAt(i + 2) & 0x3F));
+      i += 3;
+    }
+  }
+  return out;
+}
+
+// 裸码元异或（xorrev 专用）：与 xor 主线无关。xorrev 自成一档（倒序+裸异或），
+// 它的解码器也是裸码元形态，两侧保持对称，不跟随 xor 主线的 base64 化。
+function xorUnitsEncode(str, key) {
+  let out = '';
+  for (let i = 0; i < str.length; i++) {
+    out += String.fromCharCode(str.charCodeAt(i) ^ key.charCodeAt(i % key.length));
   }
   return out;
 }
@@ -175,24 +226,15 @@ function addEncode(str, key) {
   return out;
 }
 
-// 倒序异或：先 xor 再整体倒序。密文布局与 xor 完全不同（首码元不再对应首明文），
+// 倒序异或：先裸码元异或再整体倒序。密文布局与 xor 完全不同（首码元不再对应首明文），
  // 按"首部对齐"剥密钥流的写法错位；运行时解码循环是倒序累加，形态也不同。
+// 注意：这里刻意用裸码元异或（xorUnitsEncode），不跟随 xor 主线的 base64 化——
+// xorrev 自成一档，构建与解码两侧对称即可。
 function xorRevEncode(str, key) {
-  const x = xorEncode(str, key);
+  const x = xorUnitsEncode(str, key);
   let out = '';
   for (let i = x.length - 1; i >= 0; i--) out += x[i];
   return out;
-}
-
-// 字节异或 + base64：UTF-8 字节先与密钥异或，再走标准 base64。解码管线是
-// base64 与 rc4 的交叉形状（unb64 → xor → utf8），但没有 RC4 的 KSA/PRGA 状态机。
-function b64xorEncode(str, key) {
-  const raw = utf8Encode(str);
-  let xored = '';
-  for (let i = 0; i < raw.length; i++) {
-    xored += String.fromCharCode(raw.charCodeAt(i) ^ key.charCodeAt(i % key.length));
-  }
-  return b64Encode(xored);
 }
 
 /**
@@ -227,7 +269,7 @@ function buildKeyExpr(key, randInt, tbl) {
 /**
  * 生成运行时解码器的源码，结果会被包进字符串数组 IIFE。
  * 生成的函数只有一个参数 _0xs，是编码后的字符串，key 已内嵌其中。
- * encoding 取 'none' | 'xor' | 'base64' | 'rc4' | 'affine' | 'add' | 'xorrev' | 'b64xor'。
+ * encoding 取 'none' | 'xor' | 'base64' | 'rc4' | 'affine' | 'add' | 'xorrev'。
  * 传入 rt 后所有原语改走自研内核 FCC、CCO、HEXN、TOH，产物中不再出现
  * parseInt、String.fromCharCode、indexOf、substr 调用点。
  * @param {string} encoding 编码方式
@@ -246,16 +288,31 @@ function decoderSource(encoding, key, randInt, rt) {
     return 'function(_0xs){return _0xs;}';
   }
   if (encoding === 'xor') {
-    // 输入是原始码元密文，每码元等于明文码元 ^ 密钥码元，逐码元 CCO 后 XOR
+    // 默认编码的运行时解码：base64 文本 → 算术 unb64 还原字节 → 逐字节异或密钥 →
+    // CESU-8 还原文本。密钥游标按输出字节计数（与构建期的字节序一致）。
     return [
       'function(_0xs){',
-      'var _0xo=\'\';',
       'var _0k=' + keyExpr + ';',
-      'for(var _0xk=0;_0xk<_0xs.length;_0xk++){',
-      'var _0c=' + cco + '(_0xs,_0xk)^' + cco + '(_0k,_0xk%_0k.length);',
-      '_0xo+=' + fcc + '(_0c);',
+      'var _0d=\'\';var _0bb=0;var _0bt=0;var _0kp=0;',
+      'for(var _0h=0;_0h<_0xs.length;_0h++){',
+      'var _0q=' + cco + '(_0xs,_0h);',
+      'if(_0q===61)break;',
+      'var _0v=_0q>96?_0q-71:(_0q>64?_0q-65:(_0q>47?_0q+4:(_0q===43?62:(_0q===47?63:-1))));',
+      'if(_0v<0)continue;',
+      '_0bb=(_0bb<<6)|_0v;_0bt+=6;',
+      'if(_0bt>=8){_0bt-=8;var _0by=((_0bb>>_0bt)&0xff)^' + cco + '(_0k,_0kp%_0k.length);_0kp++;_0d+=' + fcc + '(_0by);}',
       '}',
-      'return _0xo;',
+      'var _0r=\'\';var _0p=0;',
+      'while(_0p<_0d.length){',
+      'var _0b=' + cco + '(_0d,_0p);',
+      'if(_0b<0x80){_0r+=' + fcc + '(_0b);_0p++;}',
+      'else if(_0b<0xE0){',
+      '_0r+=' + fcc + '(((_0b&0x1F)<<6)|(' + cco + '(_0d,_0p+1)&0x3F));_0p+=2;',
+      '}else{',
+      '_0r+=' + fcc + '(((_0b&0x0F)<<12)|((' + cco + '(_0d,_0p+1)&0x3F)<<6)|(' + cco + '(_0d,_0p+2)&0x3F));_0p+=3;',
+      '}',
+      '}',
+      'return _0r;',
       '}'
     ].join('');
   }
@@ -382,39 +439,6 @@ function decoderSource(encoding, key, randInt, rt) {
       '}'
     ].join('');
   }
-  if (encoding === 'b64xor') {
-    // 先算术 unb64，再逐字节异或密钥，最后 UTF-8 还原。管线是 base64 与 rc4 的
-    // 交叉形状，但没有 KSA/PRGA 状态机；密钥游标按输出字节计数。
-    return [
-      'function(_0xs){',
-      'var _0k=' + keyExpr + ';',
-      'var _0xo=\'\';var _0b=0;var _0t=0;var _0kp=0;',
-      'for(var _0k2=0;_0k2<_0xs.length;_0k2++){',
-      'var _0q=' + cco + '(_0xs,_0k2);',
-      'if(_0q===61)break;',
-      'var _0c=_0q>96?_0q-71:(_0q>64?_0q-65:(_0q>47?_0q+4:(_0q===43?62:(_0q===47?63:-1))));',
-      'if(_0c<0)continue;',
-      '_0b=(_0b<<6)|_0c;_0t+=6;',
-      'if(_0t>=8){_0t-=8;var _0by=((_0b>>_0t)&0xff)^' + cco + '(_0k,_0kp%_0k.length);_0kp++;_0xo+=' + fcc + '(_0by);}',
-      '}',
-      'var _0r=\'\';var _0p=0;',
-      'while(_0p<_0xo.length){',
-      'var _0d=' + cco + '(_0xo,_0p);',
-      'if(_0d<0x80){_0r+=' + fcc + '(_0d);_0p++;}',
-      'else if(_0d<0xE0){',
-      '_0r+=' + fcc + '(((_0d&0x1F)<<6)|(' + cco + '(_0xo,_0p+1)&0x3F));_0p+=2;',
-      '}else if(_0d<0xF0){',
-      '_0r+=' + fcc + '(((_0d&0x0F)<<12)|((' + cco + '(_0xo,_0p+1)&0x3F)<<6)|(' + cco + '(_0xo,_0p+2)&0x3F));_0p+=3;',
-      '}else{',
-      'var _0e=((_0d&0x07)<<18)|((' + cco + '(_0xo,_0p+1)&0x3F)<<12)|((' + cco + '(_0xo,_0p+2)&0x3F)<<6)|(' + cco + '(_0xo,_0p+3)&0x3F);',
-      'var _0f=_0e-0x10000;',
-      '_0r+=' + fcc + '(0xD800|(_0f>>10))+' + fcc + '(0xDC00|(_0f&0x3FF));_0p+=4;',
-      '}',
-      '}',
-      'return _0r;',
-      '}'
-    ].join('');
-  }
   throw new Error('unknown encoding: ' + encoding);
 }
 
@@ -425,15 +449,29 @@ function legacyDecoderSource(encoding, key, randInt) {
     return 'function(_0xs){return _0xs;}';
   }
   if (encoding === 'xor') {
+    // 默认编码的原生降级解码：indexOf 版 unb64 → 逐字节异或 → CESU-8 还原。
     return [
       'function(_0xs){',
-      'var _0xo=\'\';',
       'var _0k=' + keyExpr + ';',
-      'for(var _0xk=0;_0xk<_0xs.length;_0xk++){',
-      'var _0c=_0xs.charCodeAt(_0xk)^_0k.charCodeAt(_0xk%_0k.length);',
-      '_0xo+=String.fromCharCode(_0c);',
+      'var _0xo=\'\';var _0b=0;var _0t=0;var _0kp=0;',
+      'var _0a=\'' + B64 + '\';',
+      'for(var _0h=0;_0h<_0xs.length;_0h++){',
+      'var _0c=_0a.indexOf(_0xs[_0h]);',
+      'if(_0c<0)continue;',
+      '_0b=(_0b<<6)|_0c;_0t+=6;',
+      'if(_0t>=8){_0t-=8;var _0by=((_0b>>_0t)&0xff)^_0k.charCodeAt(_0kp%_0k.length);_0kp++;_0xo+=String.fromCharCode(_0by);}',
       '}',
-      'return _0xo;',
+      'var _0r=\'\';var _0p=0;',
+      'while(_0p<_0xo.length){',
+      'var _0d=_0xo.charCodeAt(_0p);',
+      'if(_0d<0x80){_0r+=String.fromCharCode(_0d);_0p++;}',
+      'else if(_0d<0xE0){',
+      '_0r+=String.fromCharCode(((_0d&0x1F)<<6)|(_0xo.charCodeAt(_0p+1)&0x3F));_0p+=2;',
+      '}else{',
+      '_0r+=String.fromCharCode(((_0d&0x0F)<<12)|((_0xo.charCodeAt(_0p+1)&0x3F)<<6)|(_0xo.charCodeAt(_0p+2)&0x3F));_0p+=3;',
+      '}',
+      '}',
+      'return _0r;',
       '}'
     ].join('');
   }
@@ -549,36 +587,6 @@ function legacyDecoderSource(encoding, key, randInt) {
       '}'
     ].join('');
   }
-  if (encoding === 'b64xor') {
-    return [
-      'function(_0xs){',
-      'var _0k=' + keyExpr + ';',
-      'var _0xo=\'\';var _0b=0;var _0t=0;var _0kp=0;',
-      'var _0a=\'' + B64 + '\';',
-      'for(var _0h=0;_0h<_0xs.length;_0h++){',
-      'var _0c=_0a.indexOf(_0xs[_0h]);',
-      'if(_0c<0)continue;',
-      '_0b=(_0b<<6)|_0c;_0t+=6;',
-      'if(_0t>=8){_0t-=8;var _0by=((_0b>>_0t)&0xff)^_0k.charCodeAt(_0kp%_0k.length);_0kp++;_0xo+=String.fromCharCode(_0by);}',
-      '}',
-      'var _0r=\'\';var _0p=0;',
-      'while(_0p<_0xo.length){',
-      'var _0d=_0xo.charCodeAt(_0p);',
-      'if(_0d<0x80){_0r+=String.fromCharCode(_0d);_0p++;}',
-      'else if(_0d<0xE0){',
-      '_0r+=String.fromCharCode(((_0d&0x1F)<<6)|(_0xo.charCodeAt(_0p+1)&0x3F));_0p+=2;',
-      '}else if(_0d<0xF0){',
-      '_0r+=String.fromCharCode(((_0d&0x0F)<<12)|((_0xo.charCodeAt(_0p+1)&0x3F)<<6)|(_0xo.charCodeAt(_0p+2)&0x3F));_0p+=3;',
-      '}else{',
-      'var _0e=((_0d&0x07)<<18)|((_0xo.charCodeAt(_0p+1)&0x3F)<<12)|((_0xo.charCodeAt(_0p+2)&0x3F)<<6)|(_0xo.charCodeAt(_0p+3)&0x3F);',
-      'var _0f=_0e-0x10000;',
-      '_0r+=String.fromCharCode(0xD800|(_0f>>10),0xDC00|(_0f&0x3FF));_0p+=4;',
-      '}',
-      '}',
-      'return _0r;',
-      '}'
-    ].join('');
-  }
 }
 
-export default { xorEncode, xorDecode, b64Encode, b64Decode, rc4Crypt, rc4ToB64, utf8Encode, utf8Decode, affineEncode, affineParams, addEncode, xorRevEncode, b64xorEncode, decoderSource, buildKeyExpr, B64 };
+export default { xorEncode, xorDecode, b64Encode, b64Decode, rc4Crypt, rc4ToB64, utf8Encode, utf8Decode, cesuEncode, cesuDecode, affineEncode, affineParams, addEncode, xorRevEncode, decoderSource, buildKeyExpr, B64 };
