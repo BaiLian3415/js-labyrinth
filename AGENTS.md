@@ -54,6 +54,18 @@ npm run build:web:cloud  # 云端执行形态（核心不进产物，Vercel 部�
 - 多层 VM（`vmLayers`，默认 1）：`2` 把解释器循环本身作为函数体再编译一次，
   外层字节码的解释动作由第二份字节码执行；`3` 再套一层。内外层各自带独立的
   G/H/K/S 表、掩码与字节码加密材料；stats 报 `layers`（实际嵌套层数）。
+  wasm 档下要嵌套的函数改走 JS 路径（桥接里无解释器可套），最内层仍以桥接进
+  模块；stats 报 `nestedJs`（让路数）。嵌套失败回退单层，不影响语义。
+- 字符串去集中化：池校验哈希基数/乘数逐组随机（`stringArray.js hashItems`，
+  FNV 字面量只剩 banner 引导哈希）；accessor 解码累加与返回点各 3 形态；
+  VM 位置散列（`strPosExpr`）异或结合律 3 形态。
+- 控制流去确定性：`controlFlow.js assignState` 30% 包恒真条件
+ （`typeof state==='number'`，两分支同一 rhs 克隆）；不透明谓词 guard 熵为
+  `Date.now() ^ performance.now()*1000` 双时钟互锁。
+- WASM 宿主导入多路复用：按栈元数合并为 u1/u2/v2/bin/un 五入口
+ （`wasmvm.js IMPORT_DEFS` + `makeSubCodes`，经 spec 传 `rtgen.js` 分发链），
+  子码逐构建稀疏随机；stats 报 `imports`（恒为 5，加回逐语义导入即拦截）。
+  改宿主语义时同步改三处：IMPORT_DEFS、codegen 调用点、rtgen 分支体。
 - 执行护栏（原嵌套内层档 `vmNestedLimit` 平移而来）：
   `vmStepLimit` 指令步数上限 + 操作数栈深度上限，超限抛 `vmOverrun`。
   `vmStepLimit: 0` 关闭步数闸门。

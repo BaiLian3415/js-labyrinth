@@ -913,12 +913,12 @@ Web 标准代码。构建只复制 `src/` 与 `web/`，所以不需要任何排�
 行为等价是硬要求：`low`/`medium`/`high`/`max` 四个预设在固定 seed 下的产物与改动前**逐字节相同**
 （用同一份输入、同一个 seed 对比过），目录模式、HTML 模式、套餐闸门与配额语义也都保持原样。
 
-> **例外（2026-09-26）**：WASM 相关档位已整体移除——`wasm`、`wasmInterpreter`、
-> `wasmThreshold`、`rtDepth` 四个选项，以及 `src/passes/wasm.js`、
-> `src/passes/wasmvm.js`、`src/passes/rtgen.js`、`src/ast/wasm.js` 四个模块。
-> `medium`/`high`/`max` 此前默认开着 `wasm` 档，产物字节因此改变（少一层 WASM 化
-> 与配套运行时）；`low` 此前本就关闭该档，产物不变。同类"删功能"改动请一并跑一遍
-> 多 seed 的 medium/high 产物执行比对。
+> **例外（2026-09-26，WASM 档移除；后于 2026-10-01 前后按"阶段一恢复"接回）**：当时
+> `wasm`、`wasmInterpreter`、`wasmThreshold`、`rtDepth` 四个选项，以及 `src/passes/wasm.js`、
+> `src/passes/wasmvm.js`、`src/passes/rtgen.js`、`src/ast/wasm.js` 四个模块被整体移除。
+> 后续恢复：`wasm`（旧档）与 `wasmInterpreter`（解释器内核档）均已接回，
+> `medium`/`high` 默认走旧档、`max` 默认走内核档，`test/shell-wasm.js` 为准。
+> 同类"删功能"改动请一并跑一遍多 seed 的 medium/high 产物执行比对。
 
 > **例外（2026-10-01，VMP 增强）**：`medium`/`high`/`max` 三档的产物**有意改变**，
 > 逐字节等价不成立。三处改动：
@@ -949,6 +949,18 @@ Web 标准代码。构建只复制 `src/` 与 `web/`，所以不需要任何排�
 > 会把 `console` 各方法置空，所以 `max` 产物的 `console.log` 在运行期不产生输出。
 > 这是 `debugProtection` 的既定行为，不是 VMP 的问题；验证产物语义时要用
 > `process.stdout.write`，或在该次运行里关掉 `consoleStub`。
+>
+> **例外（2026-10-06，多轮加固汇总）**：以下改动均有意改变产物，无逐字节等价：
+>   · 寄存器式后端与多态模型整体移除（`vmRegisterVM` / `vmPolymorph` / `vmModel`，
+>     M0/M1/M2/M3），只保留纯栈式核心 VM；新增 `vmLayers`（默认 1，最大 3），
+>     `=2` 把解释器循环本身再编译一次。wasm 档下要嵌套的函数改走 JS 路径
+>     （`stats.nestedJs` 计数），最内层仍以桥接进模块。
+>   · `stats` 新增 `layers`（实际嵌套层数）、`nestedJs`（wasm 下让路数）、
+>     `imports`（宿主导入数，恒为 5）。
+>   · 字符串池校验哈希基数/乘数逐组随机（FNV 字面量只剩 banner 引导哈希，那是
+>     正确性约束）；accessor 解码累加与返回点各 3 形态多态；VM 位置散列异或
+>     结合律 3 形态；控制流状态写入 30% 包恒真条件；不透明谓词熵改为双时钟互锁。
+>   · WASM 宿主导入按栈元数合并为 u1/u2/v2/bin/un 五入口，子码逐构建随机。
 
 为了跨环境，以下几点必须改动：
 
@@ -989,7 +1001,7 @@ npm run build:web && npm run verify:enc  # 加密层端到端校验（对 dist�
 npm run verify                           # 发布验证：打线上域名核对接口、资源与门控
 ```
 
-`npm test` 是入口，它按顺序加载 `test/` 下 14 个用例文件。想只跑其中一部分时给
+`npm test` 是入口，它按顺序加载 `test/` 下 22 个用例文件。想只跑其中一部分时给
 `selftest.js` 传一个子串（匹配文件名）：
 
 ```bash
