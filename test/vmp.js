@@ -141,6 +141,32 @@ section('VMP 增强（覆盖率 / 深度 / stats 口径）');
       ok(String(runNode(v.r.code)).trim() === runOf(SMALL), p + ' 档语义一致');
     }
   }
+
+  // --- comment 模式：起止标记圈住谁就编译谁 ---
+  {
+    const S = '/*<jslabyrinth-vmp-start>*/';
+    const E = '/*<jslabyrinth-vmp-end>*/';
+    const src = S + '\nfunction a(n){var s=0;for(var i=0;i<n;i++)s+=i;return s;}\n' + E + '\n'
+      + 'function b(x){if(x<0)return -x;return x*2+1;}\n'
+      + 'process.stdout.write(a(9)+","+b(4)+"\\n");';
+    const want = runOf(src);
+    const c = vmRun(src, { preset: 'high', vmMode: 'comment' });
+    ok(c.st && c.st.mode === 'comment', 'comment 模式 stats 标记 mode=comment');
+    ok(c.st && c.st.compiled === 1, '起止标记圈住 1 个函数就只编译 1 个',
+      'compiled=' + (c.st && c.st.compiled));
+    ok(String(runNode(c.r.code)).trim() === want, 'comment 模式语义一致');
+    // 无标记时一个都不编译（也不报错）
+    const bare = 'function a(n){var s=0;for(var i=0;i<n;i++)s+=i;return s;}\n'
+      + 'process.stdout.write(a(9)+"\\n");';
+    const n = vmRun(bare, { preset: 'high', vmMode: 'comment' });
+    ok(n.st && n.st.compiled === 0, '无标记时 comment 模式零编译', 'compiled=' + (n.st && n.st.compiled));
+    ok(String(runNode(n.r.code)).trim() === runOf(bare), '零编译产物语义一致');
+    // 旧 only-string 取值不再是合法模式，按 global 处理（不静默丢函数）
+    const legacy = vmRun(bare, { preset: 'high', vmMode: 'only-string' });
+    ok(legacy.st && legacy.st.mode === 'global' && legacy.st.compiled > 0,
+      '旧 only-string 取值回退到 global（仍编译）',
+      'mode=' + (legacy.st && legacy.st.mode));
+  }
 }
 
 if (process.argv[1] && process.argv[1].endsWith('vmp.js')) {

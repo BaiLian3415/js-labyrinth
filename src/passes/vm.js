@@ -3079,15 +3079,20 @@ function compileFunction(fn, ctx) {
   };
 }
 
-// 目标筛选，由 vmMode 决定，取值 global、comment 或 only-string
+// 目标筛选，由 vmMode 决定，取值 global 或 comment（其他值一律按 global 处理）
 
 /**
- * comment 模式下只处理被 -jsvmp- 注释标记的函数，命中位置有两类：
- * 一是注释落在函数体内某条语句的区间上，即体内任意语句的 srcIdx 落在注释区间内；
- * 二是注释紧贴函数声明之前，此时本函数是注释结束后下标最小的那个声明头。
- * 注释区间来自 parse() 的 lexer.comments，在构建期收集。
+ * comment 模式的起止标记。标记必须成对出现、包住目标函数：
+ *
+ *   / *<jslabyrinth-vmp-start>* /  function f() { ... }  / *<jslabyrinth-vmp-end>* /
+ *
+ * 之所以不用单个词做标记（如旧的 -jsvmp-）：单个词没有作用域，误触（注释里
+ * 提到它、别处复制粘贴带过来）会让不相关的函数被编译；而起止一对天然形成
+ * 区间，标记的作用域就是两标记之间。同时它足够长、足够怪，正常注释里不会
+ * 偶然出现。匹配只认注释文本，不认字符串内容。
  */
-const JSVMP_RE = /-jsvmp-/;
+const VMP_MARK_START_RE = /<jslabyrinth-vmp-start>/;
+const VMP_MARK_END_RE = /<jslabyrinth-vmp-end>/;
 
 /** 收集函数体内全部语句的 srcIdx，嵌套块内的也收。 */
 function collectStmtIdx(node, out) {
@@ -3104,50 +3109,48 @@ function fnHeadIdx(fn) {
 }
 
 /**
- * 判断函数是否被任一 -jsvmp- 注释标记。
- * @param fn - 函数节点，body 已确认为 BlockStatement
- * @param vmpComments - 全部 -jsvmp- 注释区间
- * @param allHeads - 全部候选函数的头下标，含自身，用于最近声明判定
- * @returns {boolean} 被标记时为 true
+ * 由起止标记注释算出标记区间 [start, end]。注释按下标排序后顺序配对：
+ * 起标记打开一个区间，终标记闭合它；没有终标记的起标记一直延伸到文件末尾；
+ * 没有起标记的终标记直接忽略。区间端点用注释的 token 下标衡量，与函数头
+ * 与语句的 srcIdx 同一坐标系。
+ * @returns {Array<[number, number]>} 闭区间列表
  */
-function isMarkedFn(fn, vmpComments, allHeads) {
-  if (!vmpComments || !vmpComments.length) return false;
-  const head = fnHeadIdx(fn);
-  const idxs = [];
-  collectStmtIdx(fn.body, idxs);
-  for (const c of vmpComments) {
-    // 命中方式一，注释区间盖住了体内某条语句
-    for (const ix of idxs) {
-      if (ix >= c.start && ix <= c.end) return true;
-    }
-    // 命中方式二，本函数头是该注释之后最近的声明头
-    if (head !== Infinity && head >= c.end) {
-      let nearest = Infinity;
-      for (const h of allHeads) {
-        if (h >= c.end && h < nearest) nearest = h;
-      }
-      if (nearest === head) return true;
+function markIntervals(comments) {
+  const cs = (comments || []).slice().sort((a, b) => a.start - b.start);
+  const out = [];
+  let open = -1;
+  for (const c of cs) {
+    const t = c.text || '';
+    if (VMP_MARK_START_RE.test(t)) {
+      // 起标记嵌套/重复：直接以后一个为准，前一个区间丢弃——标记是人写的，
+      // 嵌套必然是笔误，静默取内层比报错中断构建更合适（可选增强本就不该炸构建）。
+      open = c.start;
+    } else if (VMP_MARK_END_RE.test(t)) {
+      if (open >= 0) { out.push([open, c.end]); open = -1; }
     }
   }
-  return false;
+  if (open >= 0) out.push([open, Infinity]);
+  return out;
 }
 
-/** only-string 模式用，判断函数体内是否含字符串字面量或模板串。 */
-function hasStringLiteral(root) {
-  let found = false;
-  (function walk(node) {
-    if (found || !node || typeof node !== 'object') return;
-    if (Array.isArray(node)) { node.forEach(walk); return; }
-    if (typeof node.type !== 'string') return;
-    if (node.type === 'StringLiteral') { found = true; return; }
-    if (node.type === 'TemplateLiteral') { found = true; return; }
-    // 不深入嵌套函数，内嵌函数是独立候选，它自己的字符串归它自己的判定
-    if (node.type === 'FunctionExpression' || node.type === 'ArrowFunctionExpression' ||
-        node.type === 'FunctionDeclaration' || node.type === 'ClassMethod' ||
-        node.type === 'ObjectMethod') return;
-    eachChild(node, walk);
-  })(root);
-  return found;
+/**
+ * 判断函数是否落在任一标记区间内：函数头下标或体内任一条语句下标命中即算。
+ * @param fn - 函数节点，body 已确认为 BlockStatement
+ * @param intervals - markIntervals 的产物
+ * @returns {boolean} 被圈住时为 true
+ */
+function isMarkedFn(fn, intervals) {
+  if (!intervals || !intervals.length) return false;
+  const hit = (ix) => {
+    for (const s of intervals) if (ix >= s[0] && ix <= s[1]) return true;
+    return false;
+  };
+  const head = fnHeadIdx(fn);
+  if (head !== Infinity && hit(head)) return true;
+  const idxs = [];
+  collectStmtIdx(fn.body, idxs);
+  for (const ix of idxs) if (hit(ix)) return true;
+  return false;
 }
 
 // 顶层初始化包装（vmWrapTopLevel）。VMP 原本只覆盖函数体，顶层语句（引导、注册、
@@ -3228,8 +3231,8 @@ function makeTopWrapper(stmts, directives) {
 /**
  * @param {object} ast - 已解析的 AST，就地修改
  * @param {object} options - 选项。vmThreshold 是函数体区域语句数阈值，默认 3；
- *   vmMode 取 global 时处理全部可编译函数，也是默认值，取 comment 时只处理被
- *   -jsvmp- 注释标记的函数，取 only-string 时只处理函数体含字符串字面量的函数
+ *   vmMode 取 global 时处理全部可编译函数，也是默认值；取 comment 时只处理被
+ *   起止标记注释圈住的函数（见上方的标记说明）。其他取值一律按 global 处理。
  * @param {object} ctx - 上下文 { traverse, t, usedNames, options, rng }
  * @returns {{compiled:number, considered:number, failed:number, mode:string}}
  */
@@ -3267,13 +3270,11 @@ function vm(ast, options, ctx) {
   // 异步执行器（vmAsyncExecutor）。WASM 解释器内核档的解释器在模块里、没有 await
   // 能力，该档整体忽略本项（allowAsync 为 false，async 函数照旧不编译）。
   const allowAsync = !!options.vmAsyncExecutor && !ctx.__vmWasmShared;
-  const mode = options.vmMode === 'comment' || options.vmMode === 'only-string'
-    ? options.vmMode
-    : 'global';
-  // comment 模式靠 -jsvmp- 注释挑目标。parse() 把注释挂在 File.comments 上，
+  const mode = options.vmMode === 'comment' ? 'comment' : 'global';
+  // comment 模式靠起止标记注释挑目标。parse() 把注释挂在 File.comments 上，
   // AST 顶层遍历取不到，所以直接从 ast.comments 读
-  const vmpComments = (ast && Array.isArray(ast.comments))
-    ? ast.comments.filter((c) => JSVMP_RE.test(c.text || ''))
+  const markRanges = mode === 'comment'
+    ? markIntervals(ast && Array.isArray(ast.comments) ? ast.comments : [])
     : [];
 
   // 顶层初始化包装：先判定适用性，再把用户顶层语句搬进合成包装体，让下面的候选
@@ -3338,17 +3339,14 @@ function vm(ast, options, ctx) {
   // 分发形态计数（A=0/B=1/C=2/D=3/E=4）。形态 D 的验收用例据此断言「D 真的出现了」，
   // 也用于观察 vmDispatchEnc 与 vmCompactDispatcher 开关下的形态分布。
   const formCount = { A: 0, B: 0, C: 0, D: 0, E: 0 };
-  // comment 模式的最近声明头判定要用到全部候选函数的头下标
-  const allHeads = fns.map((fn) => fnHeadIdx(fn));
   for (const fn of fns) {
     if (compiledSet.has(fn)) continue; // 已被外层编译过程连带处理
     if (rtNames.size && fn.type === 'FunctionDeclaration' && fn.id && rtNames.has(fn.id.name)) continue; // RT 内核是解释器的引导层，编译它会造成循环依赖
     prepareFn(fn);
     if (!canCompile(fn, allowAsync)) continue;
     if (countRegionStmts(fn.body) < threshold) continue;
-    // 模式筛选。comment 只挑被标记的函数，only-string 只挑含字符串的函数
-    if (mode === 'comment' && !isMarkedFn(fn, vmpComments, allHeads)) continue;
-    if (mode === 'only-string' && !hasStringLiteral(fn.body)) continue;
+    // 模式筛选。comment 只处理起止标记圈住的函数
+    if (mode === 'comment' && !isMarkedFn(fn, markRanges)) continue;
     try {
       const r = compileFunction(fn, ctx);
       if (r) {
