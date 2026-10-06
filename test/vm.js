@@ -404,6 +404,32 @@ section('多层 VM：vmLayers=2 嵌套解释器，语义与层数统计');
   ok(layers2 > 0, 'layers=2 统计生效（vmLayers=2 嵌套成功）', 'layers=' + layers2);
 }
 
+// 多层 VM × WASM 解释器内核：要嵌套的函数改走 JS 路径（nestedJs>0），最内层以
+// 桥接形态进模块，layers 统计仍为 2，语义与单层一致。回归防线：此前桥接分支无
+// 条件提前返回，wasm 下嵌套静默失效（layers 恒为 1）。
+section('多层 VM × WASM：嵌套让路 JS 路径，内层进模块');
+{
+  const src = 'function a(n){var s=0;for(var i=0;i<n;i++)s+=i;return s;}\n'
+    + 'function b(x){if(x<0)return -x;return x*2+1;}\n'
+    + 'process.stdout.write(a(9)+","+b(4)+","+b(-3)+"\\n");';
+  const want = runNode(src, 'layers-wasm-want.js').trim();
+  const r = obfuscate(src, {
+    preset: 'high', seed: 7, shell: false, integrityCheck: false,
+    wasmInterpreter: true, wasm: false, vmLayers: 2,
+  });
+  const st = r.stats.find((x) => x.pass === 'vm');
+  const ws = r.stats.find((x) => (x.pass || '').startsWith('wasm'));
+  ok(st && st.result && st.result.layers === 2, 'wasm 下 vmLayers=2 嵌套成功（layers==2）',
+    'layers=' + (st && st.result && st.result.layers));
+  ok(st && st.result && st.result.nestedJs >= 2, 'wasm 下嵌套函数让路走 JS 路径（nestedJs>=2）',
+    'nestedJs=' + (st && st.result && st.result.nestedJs));
+  ok(ws && ws.result && ws.result.smoke === 'ok', '内层桥接进模块且冒烟通过',
+    'smoke=' + (ws && ws.result && ws.result.smoke));
+  let got;
+  try { got = runNode(r.code, 'layers-wasm-2.js').trim(); } catch (e) { got = 'THREW'; }
+  ok(got === want, 'wasm × 嵌套产物语义一致', got.slice(0, 60));
+}
+
 if (process.argv[1] && process.argv[1].endsWith('vm.js')) {
   const bad = report();
   cleanTmp();

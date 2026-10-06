@@ -697,6 +697,20 @@ function compileFunction(fn, ctx) {
   //      与源码的 async 语义逐条对等，不需要任何状态机或续体改造。
   const asyncFn = !!fn.async;
 
+  // 层数（vmLayers）。默认 1 = 当今形态（外层函数体就是 VM 解释器）；
+  // 2 = 「解释器循环本身作为一个新函数体再 VM 编译一次」。判定必须放在 WASM
+  // 桥接分支之前：wasmInterpreter 开启时 bridge 路径会丢弃 JS 解释器（解释循环
+  // 在模块里），没有可嵌套的东西；要嵌套的函数改走 JS 解释器路径（见桥接分支
+  // 的条件），嵌套失败则回退单层 JS 解释器。async 函数不嵌套（await 要求内联
+  // 形态 A/C，而嵌套要求形态 C 且循环体含返回穿透——两者叠加语义不明，保守起见
+  // 整函数走原路径）。
+  // depth 由外层 compileFunction 递归时推进（见文件末尾组装段）。
+  const layersWanted = (() => {
+    const v = opts.vmLayers === undefined || opts.vmLayers === null ? 1 : opts.vmLayers | 0;
+    return v < 1 ? 1 : (v > 3 ? 3 : v);
+  })();
+  const wantNestingHere = (ctx.__vmDepth | 0) + 1 < layersWanted && !asyncFn;
+
   // 执行护栏（原嵌套内层档的可信内核特性，现并入本解释器）：
   //   · 指令步数上限：单次调用里解释器最多执行多少条字节码指令，超了抛错。
   //     0 = 关闭检查。默认给得很大，只在真正失控（死循环）时触发，
@@ -1700,7 +1714,15 @@ function compileFunction(fn, ctx) {
   }
 
   // ---- WASM 解释器内核档：函数体降级成一句桥接调用，解释循环在共享模块内 ----
-  if (ctx.__vmWasmShared) {
+  //
+  // 要嵌套（vmLayers>=2）的函数不走这里：bridge 体里没有 JS 解释器循环，无物可套。
+  // 这类函数改走下面的 JS 解释器路径，嵌套成功后内外层各有独立字节码；嵌套失败则
+  // 回退单层 JS 解释器（仍正确，只是没进模块）。代价是这些函数不享受"桥接瘦身"
+  // 带来的下游 pass 加速——见 wasm-bench 的 pass 耗时分布，这是用户用 vmLayers
+  // 换保护深度的明确 trade-off，不是性能回退。
+  // 嵌套让路计数（stats.nestedJs 用）：wasm 下走 JS 路径的函数数。
+  if (wantNestingHere && ctx.__vmWasmShared) ctx.__vmNestJs = (ctx.__vmNestJs | 0) + 1;
+  if (ctx.__vmWasmShared && !wantNestingHere) {
     if (!ctx.__vmBridgeName) ctx.__vmBridgeName = uniqueName(ctx.usedNames, '_0x');
     const fIdx = (ctx.__vmWasmCount = (ctx.__vmWasmCount || 0) + 1) - 1;
     const paramOrder = [];
@@ -2253,14 +2275,8 @@ function compileFunction(fn, ctx) {
   // B2 的解释器循环必然还是纯 JS——所以层数取决于「把循环整体作为
   // 用户代码喂给同一编译器」能否成功：只要外层 emitter 构造的循环没有 switch、
   // break、标签、label、await，regionOk 就认定可编译。因此要嵌套时 dispatchForm
-  // 必须选 C（嵌套 if，无 switch/无表，且动作体全部内联）。
-  const layersWanted = (() => {
-    const v = opts.vmLayers === undefined || opts.vmLayers === null ? 1 : opts.vmLayers | 0;
-    return v < 1 ? 1 : (v > 3 ? 3 : v);
-  })();
-  // willNest 为 true 时本层的 dispatchForm 必须 forced-C，否则它
-  // 调过一层 regionOk 的审查。
-  const wantNestingHere = (ctx.__vmDepth | 0) + 1 < layersWanted && !asyncFn && !ctx.__vmWasmShared;
+  // 必须选 C（嵌套 if，无 switch/无表，且动作体全部内联）。wantNestingHere 见
+  // compileFunction 入口（WASM 桥接分支之前就算好，桥接是否让路靠它决定）。
   const dispatchForm = wantNestingHere
     ? 2
     : asyncFn
@@ -3237,7 +3253,9 @@ function vm(ast, options, ctx) {
   //
   // 为什么要显式报出来：这些项不是"没配"而是"配了也没用"。模块内的解释器按栈机、
   // 按绝对下标、按既有指令集硬编码，栈机专有的机制（跳转差值编码、栈编码、宏指令、
-  // 动态操作码、异步执行器、分块自解密、运行期密钥取值、VM 嵌套层数）在那里没有对应物。
+  // 动态操作码、异步执行器、分块自解密、运行期密钥取值）在那里没有对应物。
+  // vmLayers 不在此列：要嵌套的函数改走 JS 解释器路径（见桥接分支的条件），嵌套在
+  // wasm 下依然生效，只是这些函数不进模块（stats.nestedJs 可见数量）。
   // 静默失效的代价是实测出来的：max 预设里 vmBlockDecrypt 为 true，但关掉它产物
   // 一个字节都不变——用户以为自己开了分块自解密，实际一直走的是共享分发字。
   const suppressedByWasm = [];
@@ -3315,6 +3333,7 @@ function vm(ast, options, ctx) {
   ctx.__vmAsync = { funcs: 0 };
   ctx.__vmDepth = 0;
   ctx.__vmLayerMax = 0;
+  ctx.__vmNestJs = 0;
   const rtNames = ctx.rtNames || new Set();
   // 分发形态计数（A=0/B=1/C=2/D=3/E=4）。形态 D 的验收用例据此断言「D 真的出现了」，
   // 也用于观察 vmDispatchEnc 与 vmCompactDispatcher 开关下的形态分布。
@@ -3392,6 +3411,9 @@ function vm(ast, options, ctx) {
     // 实际嵌套了几层 VM。默认所有 VM 编译都深度 1（外层解释器就是底层解释器）；
     // vmLayers>=2 成功嵌套的函数每多一层就把这个值往上加一级。失败回退则保持低位值。
     layers: ctx.__vmLayerMax > 0 ? ctx.__vmLayerMax : 1,
+    // wasm 下为嵌套让路、改走 JS 路径的函数数（仍受 WASM 模块保护的是最内层，
+    // 它以桥接形态进模块，见桥接分支的说明）。
+    nestedJs: ctx.__vmNestJs | 0,
     forms: formCount,
     // WASM 内核档屏蔽掉的选项（配了但在本档不生效的）。空数组 = 没有静默失效的项。
     suppressed: suppressedByWasm,
