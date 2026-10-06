@@ -54,7 +54,7 @@ export const VALUE_OPTIONS = {
     hintZh: '目录模式下额外跳过的路径，逗号分隔。用于跳过 node_modules、构建产物等不该混淆的目录。',
     hintEn: 'Extra paths to skip in directory mode, comma-separated. Use it for node_modules, build output, and other directories that should not be obfuscated.' },
   indent: { kind: 'count', group: 'output', def: 2, zh: '缩进宽度', en: 'Indent width', hintZh: '输出缩进宽度（空格数）。', hintEn: 'Output indentation width in spaces.' },
-  stringArrayEncoding: { kind: 'enum', values: ['none', 'xor', 'base64', 'rc4'], group: 'strings', zh: '字符串编码方式', en: 'String encoding', hintZh: '池内字符串的编码方式：none / xor / base64 / rc4。', hintEn: 'Encoding for pooled strings: none / xor / base64 / rc4.' },
+  stringArrayEncoding: { kind: 'enum', values: ['none', 'xor', 'base64', 'rc4', 'affine', 'add', 'xorrev', 'b64xor'], group: 'strings', zh: '字符串编码方式', en: 'String encoding', hintZh: '池内字符串的编码方式：none / xor / base64 / rc4 / affine（仿射） / add（加法） / xorrev（倒序异或） / b64xor（异或+base64）。', hintEn: 'Encoding for pooled strings: none / xor / base64 / rc4 / affine / add / xorrev / b64xor.' },
   stringArrayEvolve: { kind: 'enum', values: ['each', 'sparse'], intRange: [0, 7], group: 'strings', zh: '密文演化策略', en: 'Ciphertext evolution strategy', hintZh: '密文演化：each 每次访问重算，sparse 稀疏演化。', hintEn: 'Ciphertext evolution: each re-derives on every access, sparse evolves occasionally.' },
   stringArrayWrappersCount: { kind: 'int', min: 0, max: 10, group: 'strings', zh: '包装层数', en: 'Wrapper layer count',
     hintZh: '在解码器外面再包若干层单表达式函数，每层把索引再异或一个构建期常量，并带 0~4 个从不使用的 junk 形参。**0 = 不包装**（调用点直连解码器），1~10 = 恰好这么多层。旧选项 stringArrayCallsTransform 仍可用：把它设为 true 且本项保持 0 时，层数逐组随机取 2~5；本项大于 0 时以本项为准。',

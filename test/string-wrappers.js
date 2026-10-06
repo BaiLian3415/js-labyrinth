@@ -215,6 +215,20 @@ section('stringArrayWrappers*');
     ok(seen.size >= 2, '跨 seed 覆盖 ≥2 种返回形态（观察值：' + [...seen].join('/') + '）',
       'seen=' + [...seen].join('/'));
   }
+  // ⑮ 新增编码（affine/add/xorrev/b64xor）：显式指定每种编码，语义全部正确。
+  // 每种编码走不同的解码管线（仿射/加法/倒序/base64交叉），构建期与运行时任一
+  // 侧不匹配都会算出错值，所以必须真跑产物比对，不能只验往返函数。
+  {
+    let encBad = 0, firstEnc = '';
+    for (const enc of ['affine', 'add', 'xorrev', 'b64xor']) {
+      for (const seed of [3, 4]) {
+        const r = obfuscate(SRC, base({ seed, stringArrayEncoding: enc }));
+        const got = String(runNode(r.code, 'w-enc-' + enc + '-' + seed + '.js')).trim();
+        if (got !== WANT) { encBad++; if (!firstEnc) firstEnc = enc + ' seed=' + seed + ' → ' + got.slice(0, 40); }
+      }
+    }
+    ok(encBad === 0, '4 种新编码 × 2 seed 语义全部正确', firstEnc);
+  }
 }
 
 if (process.argv[1] && process.argv[1].endsWith('string-wrappers.js')) {

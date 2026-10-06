@@ -4,7 +4,7 @@ const { parse } = parser;
 import rand from '../utils/rand.js';
 const { randInt, shuffle, randAlpha, randHex } = rand;
 import encode from '../utils/encode.js';
-const { xorEncode, b64Encode, rc4ToB64, utf8Encode, decoderSource, buildKeyExpr } = encode;
+const { xorEncode, b64Encode, rc4ToB64, utf8Encode, affineEncode, addEncode, xorRevEncode, b64xorEncode, decoderSource, buildKeyExpr } = encode;
 import rtlib from './rtlib.js';
 import i18n from '../i18n.js';
 const { t: msg } = i18n;
@@ -343,9 +343,9 @@ export default function stringArray(ast, options, ctx) {
   const sharedStatements = sharedParsed.program.body;
   for (const st of sharedStatements) markMachinery(st);
 
-  // 每组独立的算法池，不同组用不同算法，破坏统一还原器。xor、base64 和 rc4
-  // 的结构各不相同，反混淆器要分别还原。
-  const ALGO_POOL = ["xor", "base64", "rc4"];
+  // 每组独立的算法池，不同组用不同算法，破坏统一还原器。xor、base64、rc4、
+  // affine、add、xorrev、b64xor 的结构各不相同，反混淆器要分别还原。
+  const ALGO_POOL = ["xor", "base64", "rc4", "affine", "add", "xorrev", "b64xor"];
   // 恒有至少一组走 xor 动态密钥，其余组按 mixedEncoding 决定混编还是统一算法
   const forcedXorGroup = randInt(0, groupCount - 1);
   const groupAlgos = [];
@@ -375,6 +375,10 @@ export default function stringArray(ast, options, ctx) {
         case "xor": return xorEncode(s, key);
         case "base64": return b64Encode(utf8Encode(s));
         case "rc4": return rc4ToB64(utf8Encode(s), key);
+        case "affine": return affineEncode(s, key);
+        case "add": return addEncode(s, key);
+        case "xorrev": return xorRevEncode(s, key);
+        case "b64xor": return b64xorEncode(s, key);
         default: throw new Error("unknown encoding: " + groupEnc);
       }
     });

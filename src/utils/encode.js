@@ -141,6 +141,60 @@ function rc4ToB64(input, key) {
   return b64Encode(rc4Crypt(input, key));
 }
 
+// 仿射参数派生：只依赖 key 文本，构建期与运行时用同一套折叠算出同一组 (a, b)。
+// a 取奇数（mod 2^16 可逆的充要条件），b 任意 16 位。运行时解码器里复刻这两段
+// 折叠，再用牛顿迭代现场求 a 的逆（5 轮即收敛到 32 位，取低 16 位就是 mod 2^16
+// 的逆），不额外内嵌任何参数字面量。
+function affineParams(key) {
+  let a = 1;
+  for (let i = 0; i < key.length; i++) a = (Math.imul(a, 31) + key.charCodeAt(i)) | 0;
+  a |= 1;
+  let b = 0;
+  for (let i = key.length - 1; i >= 0; i--) b = (Math.imul(b, 131) + key.charCodeAt(i)) | 0;
+  return { a: a & 0xffff, b: b & 0xffff };
+}
+
+// 仿射码元加密：y = (a*x + b) mod 65536。a*x < 2^32，float64 精确，无需 imul。
+// 定义域覆盖全部 16 位码元（含孤立代理项），与 xor 同域，不同算子。
+function affineEncode(str, key) {
+  const { a, b } = affineParams(key);
+  let out = '';
+  for (let i = 0; i < str.length; i++) {
+    out += String.fromCharCode((a * str.charCodeAt(i) + b) & 0xffff);
+  }
+  return out;
+}
+
+// 加法码元加密：y = (x + k) mod 65536，k 逐码元取自密钥。与 xor 同为逐码元
+// 流加密，但算子是加/减——按 `^` 硬编码提取密钥流的还原器直接失效。
+function addEncode(str, key) {
+  let out = '';
+  for (let i = 0; i < str.length; i++) {
+    out += String.fromCharCode((str.charCodeAt(i) + key.charCodeAt(i % key.length)) & 0xffff);
+  }
+  return out;
+}
+
+// 倒序异或：先 xor 再整体倒序。密文布局与 xor 完全不同（首码元不再对应首明文），
+ // 按"首部对齐"剥密钥流的写法错位；运行时解码循环是倒序累加，形态也不同。
+function xorRevEncode(str, key) {
+  const x = xorEncode(str, key);
+  let out = '';
+  for (let i = x.length - 1; i >= 0; i--) out += x[i];
+  return out;
+}
+
+// 字节异或 + base64：UTF-8 字节先与密钥异或，再走标准 base64。解码管线是
+// base64 与 rc4 的交叉形状（unb64 → xor → utf8），但没有 RC4 的 KSA/PRGA 状态机。
+function b64xorEncode(str, key) {
+  const raw = utf8Encode(str);
+  let xored = '';
+  for (let i = 0; i < raw.length; i++) {
+    xored += String.fromCharCode(raw.charCodeAt(i) ^ key.charCodeAt(i % key.length));
+  }
+  return b64Encode(xored);
+}
+
 /**
  * 生成运行时重建密钥的表达式源码，产物中不再明文内嵌 key。
  * key 的每个 charCode 与随机掩码异或，写成 (0x..^0x..)，运行时以该值
@@ -173,7 +227,7 @@ function buildKeyExpr(key, randInt, tbl) {
 /**
  * 生成运行时解码器的源码，结果会被包进字符串数组 IIFE。
  * 生成的函数只有一个参数 _0xs，是编码后的字符串，key 已内嵌其中。
- * encoding 取 'none' | 'xor' | 'base64' | 'rc4'。
+ * encoding 取 'none' | 'xor' | 'base64' | 'rc4' | 'affine' | 'add' | 'xorrev' | 'b64xor'。
  * 传入 rt 后所有原语改走自研内核 FCC、CCO、HEXN、TOH，产物中不再出现
  * parseInt、String.fromCharCode、indexOf、substr 调用点。
  * @param {string} encoding 编码方式
@@ -282,6 +336,85 @@ function decoderSource(encoding, key, randInt, rt) {
       '}'
     ].join('');
   }
+  if (encoding === 'affine') {
+    // 仿射码元解密：先从 key 现场复刻 (a, b)，牛顿迭代求 a 的逆，再逐码元解。
+    // 牛顿步用 Math.imul 保证 32 位语义；最终掩 0xffff 落回码元域。
+    return [
+      'function(_0xs){',
+      'var _0k=' + keyExpr + ';',
+      'var _0a=1;for(var _0i=0;_0i<_0k.length;_0i++){_0a=(Math.imul(_0a,31)+' + cco + '(_0k,_0i))|0;}_0a|=1;',
+      'var _0b=0;for(var _0j=_0k.length-1;_0j>=0;_0j--){_0b=(Math.imul(_0b,131)+' + cco + '(_0k,_0j))|0;}_0b&=0xffff;',
+      'var _0ai=1;for(var _0n=0;_0n<5;_0n++){_0ai=Math.imul(_0ai,2-Math.imul(_0a&0xffff,_0ai));}_0ai&=0xffff;',
+      'var _0xo=\'\';',
+      'for(var _0xk=0;_0xk<_0xs.length;_0xk++){',
+      'var _0c=' + cco + '(_0xs,_0xk);',
+      '_0xo+=' + fcc + '((_0ai*((_0c-_0b)&0xffff))&0xffff);',
+      '}',
+      'return _0xo;',
+      '}'
+    ].join('');
+  }
+  if (encoding === 'add') {
+    // 加法码元解密：逐码元减密钥。算子是 +/- 而非 ^，按异或提取密钥流失效。
+    return [
+      'function(_0xs){',
+      'var _0k=' + keyExpr + ';',
+      'var _0xo=\'\';',
+      'for(var _0xk=0;_0xk<_0xs.length;_0xk++){',
+      'var _0c=(' + cco + '(_0xs,_0xk)-' + cco + '(_0k,_0xk%_0k.length))&0xffff;',
+      '_0xo+=' + fcc + '(_0c);',
+      '}',
+      'return _0xo;',
+      '}'
+    ].join('');
+  }
+  if (encoding === 'xorrev') {
+    // 倒序异或解密：从尾向头累加，密钥下标按原位置 (len-1-i) 取。
+    return [
+      'function(_0xs){',
+      'var _0k=' + keyExpr + ';',
+      'var _0xo=\'\';',
+      'for(var _0xk=_0xs.length-1;_0xk>=0;_0xk--){',
+      'var _0c=' + cco + '(_0xs,_0xk)^' + cco + '(_0k,(_0xs.length-1-_0xk)%_0k.length);',
+      '_0xo+=' + fcc + '(_0c);',
+      '}',
+      'return _0xo;',
+      '}'
+    ].join('');
+  }
+  if (encoding === 'b64xor') {
+    // 先算术 unb64，再逐字节异或密钥，最后 UTF-8 还原。管线是 base64 与 rc4 的
+    // 交叉形状，但没有 KSA/PRGA 状态机；密钥游标按输出字节计数。
+    return [
+      'function(_0xs){',
+      'var _0k=' + keyExpr + ';',
+      'var _0xo=\'\';var _0b=0;var _0t=0;var _0kp=0;',
+      'for(var _0k2=0;_0k2<_0xs.length;_0k2++){',
+      'var _0q=' + cco + '(_0xs,_0k2);',
+      'if(_0q===61)break;',
+      'var _0c=_0q>96?_0q-71:(_0q>64?_0q-65:(_0q>47?_0q+4:(_0q===43?62:(_0q===47?63:-1))));',
+      'if(_0c<0)continue;',
+      '_0b=(_0b<<6)|_0c;_0t+=6;',
+      'if(_0t>=8){_0t-=8;var _0by=((_0b>>_0t)&0xff)^' + cco + '(_0k,_0kp%_0k.length);_0kp++;_0xo+=' + fcc + '(_0by);}',
+      '}',
+      'var _0r=\'\';var _0p=0;',
+      'while(_0p<_0xo.length){',
+      'var _0d=' + cco + '(_0xo,_0p);',
+      'if(_0d<0x80){_0r+=' + fcc + '(_0d);_0p++;}',
+      'else if(_0d<0xE0){',
+      '_0r+=' + fcc + '(((_0d&0x1F)<<6)|(' + cco + '(_0xo,_0p+1)&0x3F));_0p+=2;',
+      '}else if(_0d<0xF0){',
+      '_0r+=' + fcc + '(((_0d&0x0F)<<12)|((' + cco + '(_0xo,_0p+1)&0x3F)<<6)|(' + cco + '(_0xo,_0p+2)&0x3F));_0p+=3;',
+      '}else{',
+      'var _0e=((_0d&0x07)<<18)|((' + cco + '(_0xo,_0p+1)&0x3F)<<12)|((' + cco + '(_0xo,_0p+2)&0x3F)<<6)|(' + cco + '(_0xo,_0p+3)&0x3F);',
+      'var _0f=_0e-0x10000;',
+      '_0r+=' + fcc + '(0xD800|(_0f>>10))+' + fcc + '(0xDC00|(_0f&0x3FF));_0p+=4;',
+      '}',
+      '}',
+      'return _0r;',
+      '}'
+    ].join('');
+  }
   throw new Error('unknown encoding: ' + encoding);
 }
 
@@ -377,7 +510,75 @@ function legacyDecoderSource(encoding, key, randInt) {
       '}'
     ].join('');
   }
-  throw new Error('unknown encoding: ' + encoding);
+  if (encoding === 'affine') {
+    return [
+      'function(_0xs){',
+      'var _0k=' + keyExpr + ';',
+      'var _0a=1;for(var _0i=0;_0i<_0k.length;_0i++){_0a=(Math.imul(_0a,31)+_0k.charCodeAt(_0i))|0;}_0a|=1;',
+      'var _0b=0;for(var _0j=_0k.length-1;_0j>=0;_0j--){_0b=(Math.imul(_0b,131)+_0k.charCodeAt(_0j))|0;}_0b&=0xffff;',
+      'var _0ai=1;for(var _0n=0;_0n<5;_0n++){_0ai=Math.imul(_0ai,2-Math.imul(_0a&0xffff,_0ai));}_0ai&=0xffff;',
+      'var _0xo=\'\';',
+      'for(var _0xk=0;_0xk<_0xs.length;_0xk++){',
+      '_0xo+=String.fromCharCode((_0ai*((_0xs.charCodeAt(_0xk)-_0b)&0xffff))&0xffff);',
+      '}',
+      'return _0xo;',
+      '}'
+    ].join('');
+  }
+  if (encoding === 'add') {
+    return [
+      'function(_0xs){',
+      'var _0k=' + keyExpr + ';',
+      'var _0xo=\'\';',
+      'for(var _0xk=0;_0xk<_0xs.length;_0xk++){',
+      '_0xo+=String.fromCharCode((_0xs.charCodeAt(_0xk)-_0k.charCodeAt(_0xk%_0k.length))&0xffff);',
+      '}',
+      'return _0xo;',
+      '}'
+    ].join('');
+  }
+  if (encoding === 'xorrev') {
+    return [
+      'function(_0xs){',
+      'var _0k=' + keyExpr + ';',
+      'var _0xo=\'\';',
+      'for(var _0xk=_0xs.length-1;_0xk>=0;_0xk--){',
+      '_0xo+=String.fromCharCode(_0xs.charCodeAt(_0xk)^_0k.charCodeAt((_0xs.length-1-_0xk)%_0k.length));',
+      '}',
+      'return _0xo;',
+      '}'
+    ].join('');
+  }
+  if (encoding === 'b64xor') {
+    return [
+      'function(_0xs){',
+      'var _0k=' + keyExpr + ';',
+      'var _0xo=\'\';var _0b=0;var _0t=0;var _0kp=0;',
+      'var _0a=\'' + B64 + '\';',
+      'for(var _0h=0;_0h<_0xs.length;_0h++){',
+      'var _0c=_0a.indexOf(_0xs[_0h]);',
+      'if(_0c<0)continue;',
+      '_0b=(_0b<<6)|_0c;_0t+=6;',
+      'if(_0t>=8){_0t-=8;var _0by=((_0b>>_0t)&0xff)^_0k.charCodeAt(_0kp%_0k.length);_0kp++;_0xo+=String.fromCharCode(_0by);}',
+      '}',
+      'var _0r=\'\';var _0p=0;',
+      'while(_0p<_0xo.length){',
+      'var _0d=_0xo.charCodeAt(_0p);',
+      'if(_0d<0x80){_0r+=String.fromCharCode(_0d);_0p++;}',
+      'else if(_0d<0xE0){',
+      '_0r+=String.fromCharCode(((_0d&0x1F)<<6)|(_0xo.charCodeAt(_0p+1)&0x3F));_0p+=2;',
+      '}else if(_0d<0xF0){',
+      '_0r+=String.fromCharCode(((_0d&0x0F)<<12)|((_0xo.charCodeAt(_0p+1)&0x3F)<<6)|(_0xo.charCodeAt(_0p+2)&0x3F));_0p+=3;',
+      '}else{',
+      'var _0e=((_0d&0x07)<<18)|((_0xo.charCodeAt(_0p+1)&0x3F)<<12)|((_0xo.charCodeAt(_0p+2)&0x3F)<<6)|(_0xo.charCodeAt(_0p+3)&0x3F);',
+      'var _0f=_0e-0x10000;',
+      '_0r+=String.fromCharCode(0xD800|(_0f>>10),0xDC00|(_0f&0x3FF));_0p+=4;',
+      '}',
+      '}',
+      'return _0r;',
+      '}'
+    ].join('');
+  }
 }
 
-export default { xorEncode, xorDecode, b64Encode, b64Decode, rc4Crypt, rc4ToB64, utf8Encode, utf8Decode, decoderSource, buildKeyExpr, B64 };
+export default { xorEncode, xorDecode, b64Encode, b64Decode, rc4Crypt, rc4ToB64, utf8Encode, utf8Decode, affineEncode, affineParams, addEncode, xorRevEncode, b64xorEncode, decoderSource, buildKeyExpr, B64 };

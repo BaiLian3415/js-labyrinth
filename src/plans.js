@@ -115,7 +115,11 @@ export default {
         "none",
         "xor",
         "base64",
-        "rc4"
+        "rc4",
+        "affine",
+        "add",
+        "xorrev",
+        "b64xor"
       ],
       "stringArrayThreshold": 1,
       "stringSplitProbability": 1,
