@@ -19,10 +19,9 @@
  * 函数声明或 var 解构，这些一律放弃编译，函数体保持原样。
  * async 函数默认同样放弃编译；开启异步执行器（vmAsyncExecutor）后会被纳入，只要它的
  * 每个 await 都落在「编译后仍在 async 函数体内」的位置（判定见 awaitSafe），并把分发
- * 形态限制成内联形态 A/C。寄存器式虚拟机（vmRegisterVM）则把同一份 AST 编译到另一套
- * 指令集：操作数是显式寄存器号，运行期读写寄存器文件，没有隐式栈顶。
+ * 形态限制成内联形态 A/C。
  *
- * 执行护栏（原嵌套内层档可信内核的能力，已并入本解释器，栈机/寄存器后端共用）：
+ * 执行护栏（原嵌套内层档可信内核的能力，已并入本解释器）：
  * 指令步数上限（vmStepLimit，0 关闭）与操作数栈深度上限，超限抛错而不是静默挂死。
  * 内层档撤销的原因与边界：只认 int32 子集（任意 JS 值会静默算错）、手写第二份内核
  * 维护成本高、性价比实测不成立——同一批特性以「解释器内闸门」形态保留，regress 不退。
@@ -648,9 +647,6 @@ function directiveStmts(directives) {
 
 const JUMP_KINDS = new Set([
   'JMP', 'JPF', 'JPT', 'JANDK', 'JORK', 'JNULK',
-  // 寄存器后端的跳转指令。它们与栈机跳转同待遇：尾随一个链值字，操作数 a 记的是
-  // 目标指令下标（宏融合重映射与链值求解都按这个约定走）。
-  'R_JM', 'R_JF', 'R_JT', 'R_JAND', 'R_JOR', 'R_JNUL',
 ]);
 const ARG1_KINDS = new Set(['LDC', 'LOD', 'STR', 'GET', 'SET', 'FRAG', 'EXEC', 'MKS']);
 const ARG2_KINDS = new Set(['JANDK', 'JORK', 'JNULK']);
@@ -666,56 +662,6 @@ const MACRO_MEMBER_KINDS = new Set(['LDC', 'LOD', 'GET', 'FRAG']);
 // 源位编码表，取值即编译期打包字低两位与 caseBody 里 macroSrc() 表的下标。
 const MACRO_SRC_CODE = new Map([['LDC', 0], ['LOD', 1], ['GET', 2], ['FRAG', 3]]);
 
-// 寄存器后端的操作码表（Register-Based VM）。与栈机指令集完全独立：栈机的操作数是
-// 「隐式栈顶 + 位置」，寄存器机的每个操作数都是显式寄存器号，所以指令名、操作数个数
-// 都另起一套（统一 R_ 前缀，与栈机指令名不重叠）。
-//
-// 值取自字节码字流，顺序与发射顺序一致；跳转类第一个操作数是目标指令下标
-// （翻成字下标落流），其后的操作数才是寄存器号。
-//
-// 指令清单（argc 只数寄存器操作数，跳转的目标字另加）：
-//   R_LC dst,k      取常量池 K[k]            R_LD dst,s   取槽位 V[s]
-//   R_GT dst,i      取外层名 G[i]()          R_FR dst,i   取常量池闭包 K[i]()
-//   R_MK dst,si     还原字符串表第 si 项      R_EX i       执行 K[i]()（结果丢弃）
-//   R_ST s,src      写槽位 V[s]=R[src]       R_SE i,src   写外层名 H[i](R[src])
-//   R_MV dst,src    寄存器搬运
-//   R_BI_<op> dst,a,b   二元运算            R_UN_<op> dst,a  一元运算（含 await）
-//   R_GM dst,o,k    取成员 R[dst]=R[o][R[k]]  R_SM o,k,v   存成员 R[o][R[k]]=R[v]
-//   R_C_<n> dst,f,a…     直接调用            R_CM_<n> dst,o,k,a…  成员调用
-//   R_NW_<n> dst,f,a…    构造              R_AR_<n> dst,a…      数组字面量
-//   R_RT src / R_TW src  返回 / 抛出
-//   R_JM t               无条件跳转
-//   R_JF t,a / R_JT t,a  按 R[a] 假/真跳转
-//   R_JAND t,a / R_JOR t,a / R_JNUL t,a   逻辑短路（保留左值，与栈机 JANDK 系同义）
-//   RMPK<n> w…            宏指令：n 个打包的装载（见下面的打包格式）
-const REG_FIXED_ARGC = new Map(Object.entries({
-  R_LC: 2, R_LD: 2, R_GT: 2, R_FR: 2, R_MK: 2, R_EX: 1,
-  R_ST: 2, R_SE: 2, R_MV: 2, R_GM: 3, R_SM: 3,
-  R_RT: 1, R_TW: 1, R_JM: 0, R_JF: 1, R_JT: 1, R_JAND: 1, R_JOR: 1, R_JNUL: 1,
-}));
-const REG_MACRO_RE = /^RMPK([234])$/;
-const REG_CALL_RE = /^R_C_(\d+)$/;
-const REG_CALLM_RE = /^R_CM_(\d+)$/;
-const REG_NEW_RE = /^R_NW_(\d+)$/;
-const REG_ARR_RE = /^R_AR_(\d+)$/;
-const REG_BIN_RE = /^R_BI_/;
-const REG_UN_RE = /^R_UN_/;
-/** 寄存器指令的寄存器操作数个数；不是寄存器指令时返回 undefined。 */
-function regArgc(op) {
-  const f = REG_FIXED_ARGC.get(op);
-  if (f !== undefined) return f;
-  let m;
-  if ((m = REG_MACRO_RE.exec(op))) return +m[1];
-  if ((m = REG_CALL_RE.exec(op))) return +m[1] + 2;
-  if ((m = REG_CALLM_RE.exec(op))) return +m[1] + 3;
-  if ((m = REG_NEW_RE.exec(op))) return +m[1] + 2;
-  if ((m = REG_ARR_RE.exec(op))) return +m[1] + 1;
-  if (REG_BIN_RE.test(op)) return 3;
-  if (REG_UN_RE.test(op)) return 2;
-  return undefined;
-}
-// 可参与寄存器宏融合的装载指令与源位编码（打包字低两位）
-const REG_MACRO_MEMBER_SRC = new Map([['R_LC', 0], ['R_LD', 1], ['R_GT', 2], ['R_FR', 3]]);
 /**
  * 一条字节码条目占多少个字，以及是否尾随一个链值字。
  * args 是操作数字数（跳转类已含目标那一个字），chain 是链值字有无。
@@ -724,9 +670,6 @@ function layoutOf(e) {
   const m = MACRO_KINDS.get(e.op);
   if (m !== undefined) return { args: m, chain: false };
   const isJump = JUMP_KINDS.has(e.op);
-  const rc = regArgc(e.op);
-  // 寄存器指令：rc 个寄存器操作数，跳转类再加目标那一个字
-  if (rc !== undefined) return { args: rc + (isJump ? 1 : 0), chain: isJump };
   if (ARG2_KINDS.has(e.op)) return { args: 2, chain: isJump };
   if (isJump) return { args: 1, chain: true };
   if (ARG1_KINDS.has(e.op)) return { args: 1, chain: false };
@@ -754,21 +697,7 @@ function compileFunction(fn, ctx) {
   //      与源码的 async 语义逐条对等，不需要任何状态机或续体改造。
   const asyncFn = !!fn.async;
 
-  // 寄存器式虚拟机（vmRegisterVM）。开启后本函数换一套代码生成后端：不再发栈机指令，
-  // 改发寄存器机指令（见文件上方 REG_FIXED_ARGC 那一段的指令清单）。下面所有
-  // 「栈机专有」的机制在本函数里自然失效，逐项说明：
-  //   · 操作数栈 S：寄存器后端一次都不 push/pop（S 仍然声明着，因为干扰项处理器会读
-  //     它的长度——那是形态伪装，不是语义）；
-  //   · 栈编码（vmStackEncoding）：没有栈可编码，这里直接关掉，连编解码函数都不生成；
-  //   · 多态寄存器模型（vmPolymorph）：寄存器后端本身就是一种执行结构，模型固定为 M3；
-  //   · WASM 解释器内核（vmInterpreter=wasmInterpreter）：模块内的解释器按栈机硬编码，
-  //     该档下本项不生效（与其它「模块内解释器」受限项同一处理方式）；
-  //   · 宏指令融合（vmMacroOps）：仍然生效，只是打包格式换成寄存器版（带目标寄存器号）。
-  // 注意这一段不占任何随机名字（uniqueName 会推进名字流），关闭时产物与改动前
-  // 逐字节一致；开启时才分配寄存器文件等名字。
-  const registerVM = !!opts.vmRegisterVM && !ctx.__vmWasmShared;
-
-  // 执行护栏（原嵌套内层档的可信内核特性，现并入本解释器，两种后端共用）：
+  // 执行护栏（原嵌套内层档的可信内核特性，现并入本解释器）：
   //   · 指令步数上限：单次调用里解释器最多执行多少条字节码指令，超了抛错。
   //     0 = 关闭检查。默认给得很大，只在真正失控（死循环）时触发，
   //     正常业务负载不会撞到这条线。
@@ -783,7 +712,7 @@ function compileFunction(fn, ctx) {
   //   - 同一密钥每次构建得到同一套密钥材料，产物可复现；
   //   - 没有密钥就复现不出掩码与位置散列，字节码字的解密式也就凑不出来。
   // 没给密钥时 krand 直接转发 randInt，产物与改动前逐字节一致（自测基线不动）。
-  // 注意只切换「密钥材料」这一组取值；干扰字、分发形态、寄存器模型等仍走 randInt，
+  // 注意只切换「密钥材料」这一组取值；干扰字、分发形态等仍走 randInt，
   // 所以形态多态性不受影响。
   const keyText = opts.vmCompileKey ? String(opts.vmCompileKey) : '';
   const keyed = !!keyText;
@@ -835,9 +764,9 @@ function compileFunction(fn, ctx) {
   // 编码函数必须对非数字透明：SE(v) 在 v 是 32 位整数且非 -0 时返回 v ^ K，否则原样
   // 返回。SE 是幂等的（SE∘SE = id），所以编码与解码共用同一个函数。
   // 栈上存的永远是 SE(值)：压栈时编码、出栈时解码；DUP 原样复制已编码值（不能再编一次）、
-  // 条件跳转与 GETMK 取键要解码、M2 的地址栈迁移原样搬运（两张栈同一密钥，值可以直传）。
-  // WASM 内核档的栈在模块里，该档自动关闭本项；寄存器后端没有操作数栈，本项同样关闭。
-  const stackEnc = !registerVM && !!opts.vmStackEncoding && !ctx.__vmWasmShared;
+  // 条件跳转与 GETMK 取键要解码。
+  // WASM 内核档的栈在模块里，该档自动关闭本项。
+  const stackEnc = !!opts.vmStackEncoding && !ctx.__vmWasmShared;
   const nSE = stackEnc ? uniqueName(ctx.usedNames, '_0x') : null; // 编码函数名
   const nSEK = stackEnc ? uniqueName(ctx.usedNames, '_0x') : null; // 逐函数密钥
   const nSEV = stackEnc ? uniqueName(ctx.usedNames, '_0x') : null; // 编码函数的形参名
@@ -858,7 +787,7 @@ function compileFunction(fn, ctx) {
   // 公式算清楚（而公式里的两个常数逐函数随机），不能再拿一张「字 → 语义」表直接读。
   // 与逐调用轮换的关系：掩码与链值在每次调用入口整体重写 B，那层管"字长什么样"；
   // 本项管"字还原成哪个编号"，两者叠在同一条取指路径上，互不依赖。
-  // 为什么用位置而不是段/寄存器状态：动作体按操作码种类生成，一个种类的体要给
+  // 为什么用位置而不是段/状态：动作体按操作码种类生成，一个种类的体要给
   // 该种类全部指令共用，承载不了"按指令"的字面量；而取指游标是每条指令天然自带、
   // 且在任何进入路径（顺序、跳转、回边）上都唯一确定的状态，所以位置轮换不需要额外
   // 指令、不需要入口初始化，也不会在"某处既是跳转目标又是顺序后继"的边界上失配。
@@ -904,22 +833,7 @@ function compileFunction(fn, ctx) {
   // 与改动前逐字节一致
   const kLit = (value, name) => (name ? t.identifier(name) : t.numericLiteral(value));
 
-  // P4 多态寄存器模型：逐函数随机抽一种执行结构不同的模型。
-  //   M0 纯栈式     —— 只有值栈 S，push/pop 直连，产物里没有寄存器变量
-  //   M1 寄存器优先 —— 环形寄存器窗口，值优先落寄存器
-  //   M2 双栈分立   —— 操作数栈 + 地址栈，GETM/SETM/CALLM 走地址栈
-  //   M3 寄存器机   —— 寄存器后端（vmRegisterVM）：指令操作数是显式寄存器号
-  // WASM 解释器内核档对栈模型有硬编码假设，该档强制 M0；vmModel 可显式锁定
-  // （自测用：M0/M1/M2 三档语义必须等价）。M3 由 vmRegisterVM 直接决定，不参与抽取。
-  let vmModel = 'M0';
-  if (registerVM) {
-    vmModel = 'M3';
-  } else if (!ctx.__vmWasmShared) {
-    const forced = opts.vmModel;
-    if (forced === 'M0' || forced === 'M1' || forced === 'M2') vmModel = forced;
-    else vmModel = opts.vmPolymorph ? 'M' + randInt(0, 2) : 'M1';
-  }
-  ctx.vmModel = vmModel;
+  // 栈机是唯一后端。操作数栈始终是唯一的活动栈。
 
   // 运行时名字走 uniqueName，避免与源码标识符冲突
   const nV = uniqueName(ctx.usedNames, '_0x');
@@ -938,10 +852,6 @@ function compileFunction(fn, ctx) {
   const PC = t.identifier(npc);
   const MASK = t.identifier(nM);
   const STEP = t.identifier(nSTEP);   // 指令步数计数器（执行护栏，见 interpBody）
-  // 寄存器后端的寄存器文件。只在寄存器后端分配名字（uniqueName 推进随机名字流，
-  // 白占名会让关闭时的产物与改动前不再逐字节一致）。
-  const RID = registerVM ? t.identifier(uniqueName(ctx.usedNames, '_0x')) : null;
-
   // 字节码加密参数，同时供入口自修改使用。
   // 存储字 = 值 ^ posMask(下标+1) ^ 当前掩码，取指做同一逆运算。
   // posMask 走 Math.imul 位置散列，让每个字的密文依赖自己的位置，整体异或式还原因此失效。
@@ -1195,7 +1105,7 @@ function compileFunction(fn, ctx) {
       return;
     }
     // MemberExpression 目标（赋值流，对象不进地址栈，与 M0 布局一致），模式目标已由片段判定接走
-    emitMemberObject(left.object, false);
+    emitMemberObject(left.object);
     if (left.computed) emitExpr(left.property);
     else emit('MKS', litString(left.property.name));
     if (operator === '=') {
@@ -1252,15 +1162,8 @@ function compileFunction(fn, ctx) {
     go(root, true);
   }
 
-  // 成员目标压栈。M2 下只有「读」流（GETM / CALLM_）把对象搬到地址栈 SA；
-  // 「赋值目标」流（SETM / GETMK 前导）保持对象在操作数栈，与 M0/M1 逐字一致。
-  // 这样 GETMK 的 o,k 不变式、JANDK 系的 splice 计数与 SETM 的三弹栈逻辑
-  // 在三种模型下完全相同，地址栈只负责读路径，语义分叉面最小。
-  // 用编译期搬栈（而不是在 emitExpr 里按模型分流）的好处：emitExpr 保持单一实现，
-  // 三种模型只在「对象最终落在哪张栈」上分叉，字节码操作数布局不变。
-  function emitMemberObject(obj, toSA) {
+  function emitMemberObject(obj) {
     emitExpr(obj);
-    if (vmModel === 'M2' && toSA) emit('STA');
   }
 
   function emitExpr(node) {
@@ -1318,7 +1221,7 @@ function compileFunction(fn, ctx) {
       }
       case 'AssignmentExpression': emitAssignment(node); return;
       case 'MemberExpression':
-        emitMemberObject(node.object, true);
+        emitMemberObject(node.object);
         if (node.computed) emitExpr(node.property);
         else emit('MKS', litString(node.property.name));
         emit('GETM');
@@ -1326,7 +1229,7 @@ function compileFunction(fn, ctx) {
       case 'CallExpression': {
         const callee = node.callee;
         if (callee.type === 'MemberExpression') {
-          emitMemberObject(callee.object, true);
+          emitMemberObject(callee.object);
           if (callee.computed) emitExpr(callee.property);
           else emit('MKS', litString(callee.property.name));
         } else {
@@ -1494,412 +1397,17 @@ function compileFunction(fn, ctx) {
     }
   }
 
-  // ------------------------------------------------------------------
-  // 寄存器后端代码生成（Register-Based VM）
-  // ------------------------------------------------------------------
-  // 与栈机发射器并存，但同一函数只会走其中一条。栈机把「表达式的结果」隐式留在操作数
-  // 栈顶；寄存器机把结果写进一个显式寄存器号，所以每个表达式求值函数都要返回
-  // 「结果在哪个寄存器」。分配策略是 LIFO 复用：求值完立刻把临时寄存器还回池子，
-  // 于是寄存器号很小、复用率高；但编号是显式的且语句之间不复位，所以同一个值
-  // 在它的整个生命周期里一直挂在同一个号上——这正是「寄存器机数据流」与「栈机位置流」
-  // 的分野。跳转分支要汇合时，把结果钉在左值/测试值那个寄存器上（两个分支都写它），
-  // 于是汇合点上寄存器号是稳定的，不需要 phi 之类的额外机制。
-  let regNext = 0;        // 已分配过的最大寄存器号 + 1（高水位）
-  const regPool = [];     // 空闲寄存器栈（LIFO）
-  const allocReg = () => {
-    if (regPool.length) return regPool.pop();
-    const r = regNext++;
-    return r;
-  };
-  const freeReg = (r) => { if (r >= 0) regPool.push(r); };
-  /** 发一条寄存器指令。args 是操作数（寄存器号或字面量），target 只对跳转类有意义。 */
-  const rEmit = (op, args, target) => {
-    usedOps.add(op);
-    code.push({ op, args: args || [], a: target === undefined ? -1 : target });
-    return code.length - 1;
-  };
-  /** 补跳转目标：记的是**指令下标**，与栈机的 JMP 系同一约定（pos[e.a] 取字下标）。 */
-  const rPatch = (j) => { code[j].a = code.length; };
-  const rKey = (name) => { const d = allocReg(); rEmit('R_MK', [d, litString(name)]); return d; };
-  const rLoadIdent = (name) => {
-    const d = allocReg();
-    const s = slotOf.get(name);
-    if (s !== undefined) rEmit('R_LD', [d, s]);
-    else rEmit('R_GT', [d, getThunkIdx(name)]);
-    return d;
-  };
-  const rStoreIdent = (name, r) => {
-    const s = slotOf.get(name);
-    if (s !== undefined) rEmit('R_ST', [s, r]);
-    else rEmit('R_SE', [getSetIdx(name), r]);
-  };
-  /** 成员访问（读）的三元组公共部分：对象、键两个寄存器。 */
-  const rMemberTarget = (node) => [emitExprR(node.object),
-    node.computed ? emitExprR(node.property) : rKey(node.property.name)];
-
-  function emitUpdateR(node) {
-    const name = node.argument.name;
-    const binOp = node.operator === '++' ? '+' : '-';
-    const r0 = rLoadIdent(name);
-    const one = allocReg();
-    rEmit('R_LC', [one, litConst(t.numericLiteral(1))]);
-    const r1 = allocReg();
-    rEmit('R_BI_' + binOp, [r1, r0, one]);
-    freeReg(one);
-    rStoreIdent(name, r1);
-    // 后缀取旧值（r0）、前缀取新值（r1）；另一个寄存器随之释放
-    if (node.prefix) { freeReg(r0); return r1; }
-    freeReg(r1);
-    return r0;
-  }
-
-  function emitAssignmentR(node) {
-    const { operator, left, right } = node;
-    if (left.type === 'Identifier') {
-      const name = left.name;
-      if (operator === '=') {
-        const r = emitExprR(right);
-        rStoreIdent(name, r);
-        return r; // 值仍在该寄存器里，不需要像栈机那样 DUP
-      }
-      if (operator === '&&=' || operator === '||=' || operator === '??=') {
-        const op = operator === '&&=' ? 'R_JAND' : operator === '||=' ? 'R_JOR' : 'R_JNUL';
-        const r0 = rLoadIdent(name);
-        const j = rEmit(op, [r0], -1); // 短路分支：保留左值、跳过写回
-        const r1 = emitExprR(right);
-        rEmit('R_MV', [r0, r1]);
-        freeReg(r1);
-        rStoreIdent(name, r0);
-        rPatch(j);
-        return r0;
-      }
-      // 复合算术与位运算 x OP= v。dst 复用 r0（运算先读后写，语义安全）
-      const r0 = rLoadIdent(name);
-      const r1 = emitExprR(right);
-      rEmit('R_BI_' + operator.slice(0, -1), [r0, r0, r1]);
-      freeReg(r1);
-      rStoreIdent(name, r0);
-      return r0;
-    }
-    // 成员目标：对象、键先算，再算右值（与源码求值顺序一致）
-    const [ro, rk] = rMemberTarget(left);
-    if (operator === '=') {
-      const rv = emitExprR(right);
-      rEmit('R_SM', [ro, rk, rv]);
-      freeReg(ro); freeReg(rk);
-      return rv; // 赋值表达式的值就是右值
-    }
-    const rv = allocReg();
-    rEmit('R_GM', [rv, ro, rk]); // rv 先装旧值
-    if (operator === '&&=' || operator === '||=' || operator === '??=') {
-      const op = operator === '&&=' ? 'R_JAND' : operator === '||=' ? 'R_JOR' : 'R_JNUL';
-      const j = rEmit(op, [rv], -1); // 短路：不写成员，结果就是旧值
-      const r1 = emitExprR(right);
-      rEmit('R_SM', [ro, rk, r1]);
-      rEmit('R_MV', [rv, r1]);
-      freeReg(r1);
-      rPatch(j);
-      freeReg(ro); freeReg(rk);
-      return rv;
-    }
-    const r1 = emitExprR(right);
-    rEmit('R_BI_' + operator.slice(0, -1), [rv, rv, r1]);
-    freeReg(r1);
-    rEmit('R_SM', [ro, rk, rv]);
-    freeReg(ro); freeReg(rk);
-    return rv;
-  }
-
-  function emitExprR(node) {
-    if (!node) { const d = allocReg(); rEmit('R_LC', [d, UNDEF]); return d; }
-    if (isFragmentExpr(node)) {
-      compileInnerFns(node);
-      rewriteFragStrings(node);
-      const d = allocReg();
-      rEmit('R_FR', [d, pushThunk(wrapFrag(node))]);
-      return d;
-    }
-    switch (node.type) {
-      case 'Identifier': return rLoadIdent(node.name);
-      case 'ThisExpression': {
-        const d = allocReg();
-        rEmit('R_GT', [d, getThunkIdx('this')]);
-        return d;
-      }
-      case 'NumericLiteral':
-      case 'BooleanLiteral':
-      case 'NullLiteral': {
-        const d = allocReg();
-        rEmit('R_LC', [d, litConst(node)]);
-        return d;
-      }
-      case 'StringLiteral': {
-        const d = allocReg();
-        rEmit('R_MK', [d, litString(node.value)]);
-        return d;
-      }
-      case 'UnaryExpression': {
-        const a = emitExprR(node.argument);
-        const d = allocReg();
-        // await 也走这条通道：运算符名就是 'await'，动作体生成 `R[d] = await R[a]`
-        rEmit('R_UN_' + node.operator, [d, a]);
-        freeReg(a);
-        return d;
-      }
-      case 'UpdateExpression': return emitUpdateR(node);
-      case 'BinaryExpression': {
-        const a = emitExprR(node.left);
-        const b = emitExprR(node.right);
-        const d = allocReg();
-        rEmit('R_BI_' + node.operator, [d, a, b]);
-        freeReg(a); freeReg(b);
-        return d;
-      }
-      case 'LogicalExpression': {
-        // 结果钉在左值寄存器 a 上：短路分支直接跳（R[a] 就是左值），不短路分支把右值
-        // 搬进 a。两个分支汇合后 R[a] 都是最终值，与栈机 JANDK 系的「保留左值」同义。
-        const a = emitExprR(node.left);
-        const op = node.operator === '&&' ? 'R_JAND' : node.operator === '||' ? 'R_JOR' : 'R_JNUL';
-        const j = rEmit(op, [a], -1);
-        const b = emitExprR(node.right);
-        rEmit('R_MV', [a, b]);
-        freeReg(b);
-        rPatch(j);
-        return a;
-      }
-      case 'ConditionalExpression': {
-        const a = emitExprR(node.test);
-        const jf = rEmit('R_JF', [a], -1);
-        const c = emitExprR(node.consequent);
-        rEmit('R_MV', [a, c]);
-        freeReg(c);
-        const jm = rEmit('R_JM', [], -1);
-        rPatch(jf);
-        const e2 = emitExprR(node.alternate);
-        rEmit('R_MV', [a, e2]);
-        freeReg(e2);
-        rPatch(jm);
-        return a;
-      }
-      case 'SequenceExpression': {
-        const last = node.expressions.length - 1;
-        for (let i = 0; i < last; i++) freeReg(emitExprR(node.expressions[i]));
-        return emitExprR(node.expressions[last]);
-      }
-      case 'AssignmentExpression': return emitAssignmentR(node);
-      case 'MemberExpression': {
-        const [ro, rk] = rMemberTarget(node);
-        const d = allocReg();
-        rEmit('R_GM', [d, ro, rk]);
-        freeReg(ro); freeReg(rk);
-        return d;
-      }
-      case 'CallExpression': {
-        const callee = node.callee;
-        let f, o = -1, k = -1;
-        if (callee.type === 'MemberExpression') {
-          [o, k] = rMemberTarget(callee);
-        } else {
-          f = emitExprR(callee);
-        }
-        const args = node.arguments.map(emitExprR);
-        const d = allocReg();
-        if (callee.type === 'MemberExpression') rEmit('R_CM_' + args.length, [d, o, k, ...args]);
-        else rEmit('R_C_' + args.length, [d, f, ...args]);
-        if (o >= 0) { freeReg(o); freeReg(k); } else freeReg(f);
-        for (const r of args) freeReg(r);
-        return d;
-      }
-      case 'NewExpression': {
-        const f = emitExprR(node.callee);
-        const args = node.arguments.map(emitExprR);
-        const d = allocReg();
-        rEmit('R_NW_' + args.length, [d, f, ...args]);
-        freeReg(f);
-        for (const r of args) freeReg(r);
-        return d;
-      }
-      case 'ArrayExpression': {
-        const els = node.elements.map((el) => (el ? emitExprR(el) : (() => {
-          // 数组洞按 undefined 处理，与栈机一致
-          const d = allocReg();
-          rEmit('R_LC', [d, UNDEF]);
-          return d;
-        })()));
-        const d = allocReg();
-        rEmit('R_AR_' + els.length, [d, ...els]);
-        for (const r of els) freeReg(r);
-        return d;
-      }
-      default:
-        // 片段判定之外的未知表达式，兜底走片段以保住语义
-        compileInnerFns(node);
-        rewriteFragStrings(node);
-        {
-          const d = allocReg();
-          rEmit('R_FR', [d, pushThunk(wrapFrag(node))]);
-          return d;
-        }
-    }
-  }
-
-  function emitVarDeclR(node) {
-    for (const d of node.declarations) {
-      if (d.id.type === 'Identifier') {
-        if (!d.init) continue;
-        const r = emitExprR(d.init);
-        rStoreIdent(d.id.name, r);
-        freeReg(r);
-      } else {
-        // 解构声明转 EXEC 片段，与栈机同源
-        if (!d.init) continue;
-        compileInnerFns(d.init);
-        rewriteFragStrings(d.id);
-        rewriteFragStrings(d.init);
-        const thunk = t.arrowFunctionExpression([], t.blockStatement([
-          t.expressionStatement(t.assignmentExpression('=', d.id, d.init)),
-        ]));
-        rEmit('R_EX', [pushThunk(thunk)]);
-      }
-    }
-  }
-
-  function emitStmtR(s) {
-    if (!s) return;
-    switch (s.type) {
-      case 'ExpressionStatement': freeReg(emitExprR(s.expression)); return;
-      case 'VariableDeclaration': emitVarDeclR(s); return;
-      case 'ReturnStatement':
-        if (s.argument) rEmit('R_RT', [emitExprR(s.argument)]);
-        else rEmit('RETU'); // 无值返回与栈机共用动作体（都只是 return）
-        return;
-      case 'ThrowStatement': rEmit('R_TW', [emitExprR(s.argument)]); return;
-      case 'IfStatement': {
-        const a = emitExprR(s.test);
-        const jf = rEmit('R_JF', [a], -1);
-        freeReg(a);
-        emitStmtR(s.consequent);
-        const jm = rEmit('R_JM', [], -1);
-        rPatch(jf);
-        emitStmtR(s.alternate);
-        rPatch(jm);
-        return;
-      }
-      case 'WhileStatement': {
-        const top = code.length;
-        const a = emitExprR(s.test);
-        const jf = rEmit('R_JF', [a], -1);
-        freeReg(a);
-        const loop = pushLoop();
-        emitStmtR(s.body);
-        loop.contAt = top;
-        const jb = rEmit('R_JM', []);
-        code[jb].a = top;
-        loop.brkAt = code.length;
-        popLoop();
-        rPatch(jf);
-        return;
-      }
-      case 'DoWhileStatement': {
-        const top = code.length;
-        const loop = pushLoop();
-        emitStmtR(s.body);
-        loop.contAt = code.length; // continue 回到测试条件
-        const a = emitExprR(s.test);
-        rEmit('R_JT', [a], top);
-        freeReg(a);
-        loop.brkAt = code.length;
-        popLoop();
-        return;
-      }
-      case 'ForStatement': {
-        if (s.init) {
-          if (s.init.type === 'VariableDeclaration') emitVarDeclR(s.init);
-          else freeReg(emitExprR(s.init));
-        }
-        const top = code.length;
-        let jTest = -1;
-        if (s.test) {
-          const a = emitExprR(s.test);
-          jTest = rEmit('R_JF', [a], -1);
-          freeReg(a);
-        }
-        const loop = pushLoop();
-        emitStmtR(s.body);
-        const contAt = code.length;
-        if (s.update) freeReg(emitExprR(s.update));
-        const j = rEmit('R_JM', []);
-        code[j].a = top;
-        loop.contAt = contAt;
-        loop.brkAt = code.length;
-        popLoop();
-        if (jTest >= 0) rPatch(jTest);
-        return;
-      }
-      case 'BlockStatement': for (const st of s.body) emitStmtR(st); return;
-      case 'BreakStatement': {
-        const l = loopStack[loopStack.length - 1];
-        if (!l) throw new Error(msg('vmBreakOutsideLoop'));
-        l.brkFix.push(rEmit('R_JM', []));
-        return;
-      }
-      case 'ContinueStatement': {
-        const l = loopStack[loopStack.length - 1];
-        if (!l) throw new Error(msg('vmContinueOutsideLoop'));
-        l.contFix.push(rEmit('R_JM', []));
-        return;
-      }
-      case 'FunctionDeclaration': {
-        compileInnerFns(s);
-        const fe = toFunctionExpression(s);
-        rewriteFragStrings(fe);
-        const d = allocReg();
-        rEmit('R_FR', [d, pushThunk(wrapFrag(fe))]);
-        rStoreIdent(s.id.name, d);
-        freeReg(d);
-        return;
-      }
-      case 'ForInStatement':
-      case 'ForOfStatement': {
-        const L = s.left;
-        if (L.type === 'VariableDeclaration') s.left = L.declarations[0].id;
-        stripVars(s.body);
-        compileInnerFns(s.right);
-        compileInnerFns(s.body);
-        rewriteFragStrings(s.right);
-        rewriteFragStrings(s.body);
-        const thunk = t.arrowFunctionExpression([], t.blockStatement([s]));
-        rEmit('R_EX', [pushThunk(thunk)]);
-        return;
-      }
-      case 'EmptyStatement':
-      case 'DebuggerStatement': return;
-      default:
-        throw new Error(msg('vmUnsupportedStatement', { type: s.type }));
-    }
-  }
-
   // 发射顺序：先提升序言函数声明，再发其余语句，最后 END。
-  // 两种后端的收尾指令都让解释器直接 return（栈机 END、寄存器 RETU 缺省落到 END）。
+  // 栈机解释器的收尾指令 END 让解释器直接 return。
   const origStmts = fn.body.body;
   const origDirectives = fn.body.directives;
-  if (registerVM) {
-    for (const s of origStmts) {
-      if (s.type === 'FunctionDeclaration') emitStmtR(s);
-    }
-    for (const s of origStmts) {
-      if (s.type !== 'FunctionDeclaration') emitStmtR(s);
-    }
-    rEmit('RETU');
-  } else {
-    for (const s of origStmts) {
-      if (s.type === 'FunctionDeclaration') emitStmt(s);
-    }
-    for (const s of origStmts) {
-      if (s.type !== 'FunctionDeclaration') emitStmt(s);
-    }
-    emit('END');
+  for (const s of origStmts) {
+    if (s.type === 'FunctionDeclaration') emitStmt(s);
   }
+  for (const s of origStmts) {
+    if (s.type !== 'FunctionDeclaration') emitStmt(s);
+  }
+  emit('END');
 
   // 宏指令融合（vmMacroOps）。在整条指令流发完之后做，因为「跳转目标落在哪」要
   // 等所有跳转回填完才知道：跳转靠指令下标定位（pos[e.a]、targetChainOf 用
@@ -1911,23 +1419,12 @@ function compileFunction(fn, ctx) {
   let macroFused = 0;  // 本函数生成的宏指令条数（统计用）
   let macroSaved = 0;  // 因融合而减少的指令条数（统计用）
   if (macroOps) {
-    // 可融合的成员与打包函数。
-    //   栈后端：LDC / LOD / GET / FRAG，操作数只有「下标」，打包字 = (下标 << 2) | 源位；
-    //     段长 2..4 时字流长度正好 1 + n，与 opWordWidth 一致。
-    //   寄存器后端：同样的四条装载指令，但每条还带一个目标寄存器号，所以打包字要多
-    //     一个字段：(下标 << 10) | (目标寄存器 << 2) | 源位。字段宽度取 8 位（寄存器号
-    //     0..255）、22 位（下标 0..2^21-1），留出的高位保证打包字恒为非负 int32，
-    //     运行期用 >> 才不会做符号扩展。放不下时这段不融合（见 memberPack 返回 null）。
-    const regFuse = registerVM;
-    const memberSet = regFuse ? REG_MACRO_MEMBER_SRC : MACRO_SRC_CODE;
+    // 可融合的成员与打包函数：LDC / LOD / GET / FRAG，操作数只有「下标」，
+    // 打包字 = (下标 << 2) | 源位；段长 2..4 时字流长度正好 1 + n，与 opWordWidth 一致。
+    const memberSet = MACRO_SRC_CODE;
     const memberOk = (e) => memberSet.has(e.op);
-    const memberPack = (e) => {
-      if (!regFuse) return (e.a << 2) | memberSet.get(e.op);
-      const idx = e.args[1], dst = e.args[0];
-      if (idx > 0x1fffff || dst > 0xff) return null;
-      return (idx << 10) | (dst << 2) | memberSet.get(e.op);
-    };
-    const macroName = (n) => (regFuse ? 'RMPK' + n : 'MPK' + n);
+    const memberPack = (e) => (e.a << 2) | memberSet.get(e.op);
+    const macroName = (n) => 'MPK' + n;
     const targets = new Set();
     for (const e of code) if (JUMP_KINDS.has(e.op)) targets.add(e.a);
     const fused = [];
@@ -1944,9 +1441,8 @@ function compileFunction(fn, ctx) {
       let at = i;
       while (at <= j) {
         // 每段最多 4 条：再长的收益递减，而打包字要保持小整数便于逐字加密。
-        // 打包字段放不下的成员（只可能出现在寄存器后端）就地落单，段就此断开。
         let n = 0;
-        while (n < 4 && at + n <= j && memberPack(code[at + n]) !== null) n++;
+        while (n < 4 && at + n <= j) n++;
         if (n < 2) { remap[at] = fused.length; fused.push(code[at]); at++; continue; }
         const args = [];
         for (let k = 0; k < n; k++) args.push(memberPack(code[at + k]));
@@ -2099,16 +1595,6 @@ function compileFunction(fn, ctx) {
       // 宏指令：n 个打包操作数逐字落流。宏的动作体自己按顺序取走它们，
       // 取指顺序与原来逐条执行时完全一致。
       for (const v of e.args) words.push(v);
-    } else if (regArgc(e.op) !== undefined) {
-      // 寄存器指令：操作数逐个落流。跳转类的第一个操作数是目标指令下标，翻成字下标
-      // （开了跳转编码就落相对差值），寄存器操作数跟在后面，最后是链值字。
-      if (isJump) {
-        words.push(jumpEnc ? pos[e.a] - pos[i] : pos[e.a]);
-        for (const v of e.args) words.push(v);
-        words.push(null);
-      } else {
-        for (const v of e.args) words.push(v);
-      }
     } else if (ARG2_KINDS.has(e.op)) {
       words.push(jumpEnc ? pos[e.a] - pos[i] : pos[e.a]); words.push(e.n);
       if (isJump) words.push(null);
@@ -2347,14 +1833,8 @@ function compileFunction(fn, ctx) {
   // 宏指令的操作数暂存名。每个打包字取指一次、解码两次（选源位与下标位），
   // 所以要绑到临时名上；上限 4 与 MACRO_KINDS 的最长段长一致。
   // 关闭本项时不占名：uniqueName 会推进随机名字流，白占四个名会让同种子下的
-  // 其余名字整体错位，产物与改造前不再逐字节一致。寄存器后端不用这套名（它的成员
-  // 装载要落到寄存器号上，只用下面 regMacroNames 那一组）。
-  const macroArgNames = (macroOps && !registerVM)
-    ? Array.from({ length: 4 }, () => uniqueName(ctx.usedNames, '_0x'))
-    : [];
-  // 寄存器宏（RMPKn）每个成员一个暂存名：打包字取指一次后要连着解出「源位、目标
-  // 寄存器号、下标」三个字段。同样只在「融合开 + 寄存器后端」时占名。
-  const regMacroNames = (macroOps && registerVM)
+  // 其余名字整体错位，产物与改造前不再逐字节一致。
+  const macroArgNames = macroOps
     ? Array.from({ length: 4 }, () => uniqueName(ctx.usedNames, '_0x'))
     : [];
   // 宏操作数的取源表达式表，下标即打包字的低两位（见 MACRO_SRC_CODE）：
@@ -2380,26 +1860,6 @@ function compileFunction(fn, ctx) {
     return argNameCache.slice(0, count);
   };
 
-  // 寄存器窗口，形成栈与寄存器混合的数据流。
-  // 一组轮转伪寄存器，每个 case 内的 push/pop 值先落到寄存器再进出栈，静态数据流
-  // 因此必须同时追踪寄存器组与栈两层。轮转槽位由构建期逐 case 随机起点决定，
-  // 跨 case 的寄存器占用图不规则。
-  // 寄存器组大小（M0 纯栈式与 M3 寄存器机都用 0：M0 没有寄存器变量，M3 的寄存器
-  // 是它自己的显式寄存器文件，不用这里的「环形窗口」）
-  const REGN = (ctx.vmModel === 'M0' || ctx.vmModel === 'M3')
-    ? 0 : (ctx.vmModel === 'M1' ? 5 : randInt(3, 5));
-  const REGS = Array.from({ length: REGN }, () => uniqueName(ctx.usedNames, '_0x'));
-  let regSpin = randInt(0, Math.max(0, REGN - 1)); // 起点随机
-  // P3 随机化补强：每个 case 重新随机起点，而不是全函数一条固定的轮转序列。
-  // 跨 case 的寄存器占用图因此不规则，静态按「第 k 次 push 落在哪号寄存器」
-  // 做归纳会失败。
-  const reseedSpin = () => { if (REGN > 0) regSpin = randInt(0, REGN - 1); };
-  // REGN === 0（M0 纯栈式）时 nextReg 不应被调用；真被调用时明确抛错而不是
-  // 静默产出 REGS[NaN] 这种无名 Identifier 节点（会让生成器报"AST 已损坏"）。
-  const nextReg = () => {
-    if (REGN === 0) throw new Error(msg('vmUnknownOpcode', { kind: 'nextReg@M0' }));
-    const r = REGS[regSpin % REGN]; regSpin = (regSpin + 1) % REGN; return r;
-  };
   // 栈编解码。SE 幂等，编解码共用；只在压栈/出栈点各调用一次，
   // 绝不把 S.pop() 这类有副作用的表达式内联展开（展开三次就会弹三次）。
   const seCall = (x) => (stackEnc ? t.callExpression(t.identifier(nSE), [x]) : x);
@@ -2410,45 +1870,15 @@ function compileFunction(fn, ctx) {
   const SPOPRAW = () => t.callExpression(t.memberExpression(S, t.identifier('pop'), false), []);
   const SPOP = () => seCall(SPOPRAW());
 
-  // 压栈经寄存器：R = 值; push(R)。M0 纯栈式模型下没有寄存器，直接落栈。
-  // （P4 多态寄存器模型：M0 纯栈 / M1 寄存器优先 / M2 双栈分立，见 ctx.vmModel）
-  const pushR = (val) => {
-    if (REGN === 0) return [t.expressionStatement(SPUSH(val))];
-    const r = nextReg();
-    return [
-      t.expressionStatement(t.assignmentExpression('=', idn(r), val)),
-      t.expressionStatement(SPUSH(idn(r))),
-    ];
-  };
-  // 出栈经寄存器：R = pop()，表达式值就是 R 的引用。M0 下直接 pop。
-  const popR = () => {
-    if (REGN === 0) return SPOP();
-    const r = nextReg();
-    return t.sequenceExpression([
-      t.assignmentExpression('=', idn(r), SPOP()),
-      idn(r),
-    ]);
-  };
-  // 不经寄存器的原语。部分 case 直连栈，两种形态混用让数据流更不规则
+  // 压栈 / 出栈。
+  const pushR = (val) => [t.expressionStatement(SPUSH(val))];
+  const popR = () => SPOP();
+  // 部分 case 直连栈、部分 case 走通临时暂存，同一指令两种形态按位置决定。
   const pushCall = (x) => t.expressionStatement(SPUSH(x));
   const popCall = () => SPOP();
 
-  // P4 模型 M2：地址栈。成员访问类指令（GETM/SETM/CALLM）的目标对象与键不改从
-  // 操作数栈出，而从第二张栈 SA 出。静态上「一个栈」的模型不再成立：同一条指令
-  // 序列里出现两套 push/pop，且哪套用在哪种指令上不按位置规律。
-  // M0/M1 下 SA 为 null，指令实现与改造前逐字节一致。
-  const SA = vmModel === 'M2' ? t.identifier(uniqueName(ctx.usedNames, '_0x')) : null;
-  const pushA = (x) => t.expressionStatement(t.callExpression(
-    t.memberExpression(SA, t.identifier('push'), false), [x]));
-  // 地址栈与操作数栈同一密钥，值可以直传：入栈原样（不动），出栈才解码。
-  // 因此 STA 必须用 SPOPRAW 搬运，不能走 popCall（那会先解码，再被 popA 解第二次）。
-  const popA = () => seCall(t.callExpression(t.memberExpression(SA, t.identifier('pop'), false), []));
-  // 模型 M2 的成员指令栈序：目标对象走 SA，键留在 S，操作数在 S。
-  // 编译期压栈顺序是 [obj, key, ...args]（与栈机一致），所以出栈顺序是倒序。
-  const popMemberTarget = (kind) => {
-    if (vmModel !== 'M2') return { obj: () => popR(), key: () => popR() };
-    return { obj: () => popA(), key: () => popR() };
-  };
+  // 成员访问的读写对象/键都从操作数栈弹。
+  const popMemberTarget = () => ({ obj: () => popR(), key: () => popR() });
 
   // MKS 的临时名逐函数唯一，避免与 case 体里其它分支的局部名互相遮蔽
   const nSX = uniqueName(ctx.usedNames, '_0x'); // 字符串表下标
@@ -2458,8 +1888,7 @@ function compileFunction(fn, ctx) {
 
   /**
    * 字符串表还原：把第 siNode 项的码元密文表解回 string。
-   * 返回语句序列；还原结果留在变量 nSO 里，调用方自己决定是压栈（栈机）还是落寄存器
-   * （寄存器后端）。两种后端共用同一实现，避免还原公式漂移。
+   * 返回语句序列；还原结果留在变量 nSO 里，调用方把它压栈。
    */
   const mksDecode = (siNode) => [
     declConst(nSX, siNode),
@@ -2483,10 +1912,6 @@ function compileFunction(fn, ctx) {
   ];
 
   function caseBody(kind) {
-    // 寄存器后端（vmRegisterVM）的指令走自己的动作体生成器。寄存器指令与栈机指令在
-    // 同一个分发器里只会出现一套（一个函数只会由一个后端发射），这里按指令名分派即可。
-    if (regArgc(kind) !== undefined) return regCaseBody(kind);
-    reseedSpin(); // P3：每条指令重新随机寄存器轮转起点
     if (kind === 'LDC') return pushR(t.memberExpression(K, bAt(), true));
     if (kind === 'LOD') return pushR(t.memberExpression(V, bAt(), true));
     if (kind === 'STR') return [t.expressionStatement(t.assignmentExpression('=',
@@ -2504,7 +1929,7 @@ function compileFunction(fn, ctx) {
       declConst(N_B, popMemberTarget().key()), declConst(N_A, popMemberTarget().obj()),
       ...pushR(t.memberExpression(idn(N_A), idn(N_B), true)),
     ];
-    // SETM：赋值流的对象从未离开操作数栈（见 emitMemberObject 的 toSA 约定），
+    // SETM：赋值流的对象从未离开操作数栈（见 emitMemberObject）。
     // 三种模型统一从这里弹 3 个值（值、键、对象）。
     if (kind === 'SETM') return [
       declConst(N_C, popR()), declConst(N_B, popR()), declConst(N_A, popR()),
@@ -2513,7 +1938,6 @@ function compileFunction(fn, ctx) {
       ...pushR(idn(N_C)), // 成员存完之后压回，作为赋值表达式的结果
     ];
     // GETMK：把成员目标对象、键与当前值（o[k]）压栈，供 SETM 回写或提前定值弹栈。
-    // 赋值流的对象不进地址栈（toSA=false），所以这里在三种模型下都是同一形态：
     // 复制栈顶两个（o、k）再求 o[k]，S = [..., o, k, o[k]]。
     if (kind === 'GETMK') {
       return [pushCall(t.memberExpression(
@@ -2523,7 +1947,6 @@ function compileFunction(fn, ctx) {
     if (kind === 'DUP') return [t.expressionStatement(SPUSHRAW(topElem()))];
     if (kind === 'POP') return [t.expressionStatement(popCall())];
     // P4 模型 M2：把操作数栈顶搬到地址栈。只在 M2 的成员目标处出现。
-    if (kind === 'STA') return [pushA(SPOPRAW())]; // 原样搬运，见 pushA/popA 的约定
     // 跳转类取目标字与目标链值字，跳转之后 PC 与链状态一起重置。
     // N_A 要用 var 预声明：bAt 的序列式里含 N_A=nCHN 的赋值，若用 const
     // 初始化器会在内部自引用触发 TDZ。
@@ -2603,17 +2026,6 @@ function compileFunction(fn, ctx) {
     }
     if (kind.startsWith('CALLM_')) {
       const args = argNames(+kind.slice(6));
-      if (vmModel === 'M2') {
-        // M2：目标对象走地址栈 SA，键与参数走操作数栈。
-        // 编译期每 c.args 的压栈次序：先 c.obj → SA，再 c.key → S，再实参 → S。
-        // 出栈倒序：先实参，再键，最后对象。
-        return [
-          ...args.slice().reverse().map((nm) => declConst(nm, popR())),
-          declConst(N_K, popMemberTarget().key()),
-          declConst(N_O, popMemberTarget().obj()),
-          ...pushR(t.callExpression(t.memberExpression(idn(N_O), idn(N_K), true), args.map(idn))),
-        ];
-      }
       return [
         ...args.slice().reverse().map((nm) => declConst(nm, popR())),
         declConst(N_K, popR()), declConst(N_O, popR()),
@@ -2638,7 +2050,7 @@ function compileFunction(fn, ctx) {
     // 宏指令 MPKn：把 n 条被合并的装载指令的动作体按原顺序展开。
     // 每个操作数是一个打包字：低两位选源（见 macroSrc 表），高位是下标。
     // 取指与 LDC / LOD / GET / FRAG 走同一条 bAt()，所以链式解密、掩码轮换、位置分量
-    // 全部沿用，字流长度也正好是 1 + n。压栈沿用 pushR，寄存器窗口与栈编码的行为不变。
+    // 全部沿用，字流长度也正好是 1 + n。压栈沿用 pushR，栈编码行为不变。
     // 之所以能直接拼接：被合并的每条指令原本只做「取一个字 → 按源取一个值 → 压栈」，
     // 三者互不依赖，顺序执行与逐条执行恒等；源位在运行期用条件表达式选，等价于原来
     // 由分发字选动作体，少了一次分发。
@@ -2665,174 +2077,10 @@ function compileFunction(fn, ctx) {
     throw new Error(msg('vmUnknownOpcode', { kind }));
   }
 
-  /**
-   * 寄存器后端的动作体生成（Register-Based VM，指令清单见文件上方 REG_FIXED_ARGC）。
-   *
-   * 与栈机动作体的根本差别：没有操作数栈。每个操作数是一个显式寄存器号，取值写值
-   * 都直接作用在寄存器文件 R 上，所以「表达式树怎么配对」这件事在静态面上不存在了——
-   * 要看懂一条指令得先知道每个寄存器号在那一刻装的是哪个表达式的中间结果。
-   *
-   * 两条实现约定：
-   *   ① 每个寄存器号操作数都先绑到一个 const 临时名上再用。bAt() 有副作用（推进取指
-   *      游标、推进链状态），在一个表达式里写两次就会多取一个字、把整条流读错位。
-   *   ② 操作数按发射顺序取，与 words.push 的落流顺序一一对应：跳转类的第一个字是
-   *      目标指令下标（跳转编码开启时是相对差值，用 jumpTarget 还原），后面才是寄存器号，
-   *      最后是链值字（跳转类必须取走它，链状态才自洽）。
-   */
-  function regCaseBody(kind) {
-    const R = RID;
-    // 寄存器文件的读写位置既可能是编译期已知的寄存器号（临时名），也可能是运行期算出来的
-    // （寄存器宏的打包字里解出的目标号），所以下标允许直接给节点——统一在这里区分。
-    // 传给 idn() 的只能是名字字符串，传节点会造出无 name 的 Identifier（生成期直接报错）。
-    const rAt = (n) => t.memberExpression(R, typeof n === 'string' ? idn(n) : n, true);
-    const setR = (d, e) => t.expressionStatement(t.assignmentExpression('=', rAt(d), e));
-    const declJmpA = () => t.variableDeclaration('var', [
-      t.variableDeclarator(idn(N_A)), t.variableDeclarator(idn(N_C))]);
-    // 跳转类的字跨度：op + 目标 + 寄存器操作数 + 链值字。跳转编码用它把取指游标
-    // 退回本条指令的字下标（游标此时已越过本条全部字）。
-    const span = regArgc(kind) + 3;
-
-    // 四条装载指令：dst, idx → R[dst] = 对应源的下标 idx 项
-    if (kind === 'R_LC' || kind === 'R_LD' || kind === 'R_GT' || kind === 'R_FR') {
-      const pick = (i) => (kind === 'R_LC' ? t.memberExpression(K, i, true)
-        : kind === 'R_LD' ? t.memberExpression(V, i, true)
-          : kind === 'R_GT' ? t.callExpression(t.memberExpression(G, i, true), [])
-            : t.callExpression(t.memberExpression(K, i, true), []));
-      return [declConst(N_A, bAt()), declConst(N_B, bAt()), setR(N_A, pick(idn(N_B)))];
-    }
-    // 字符串还原：dst, 项序号
-    if (kind === 'R_MK') {
-      return [declConst(N_A, bAt()), ...mksDecode(bAt()), setR(N_A, idn(nSO))];
-    }
-    // EXEC 片段：结果丢弃，没有寄存器操作数
-    if (kind === 'R_EX') {
-      return [t.expressionStatement(t.callExpression(t.memberExpression(K, bAt(), true), []))];
-    }
-    // 写槽位（V[s] = R[src]）与写外层名（H[i](R[src])）
-    if (kind === 'R_ST') {
-      return [declConst(N_A, bAt()), declConst(N_B, bAt()),
-        t.expressionStatement(t.assignmentExpression('=',
-          t.memberExpression(V, idn(N_A), true), rAt(N_B)))];
-    }
-    if (kind === 'R_SE') {
-      return [declConst(N_A, bAt()), declConst(N_B, bAt()),
-        t.expressionStatement(t.callExpression(
-          t.memberExpression(H, idn(N_A), true), [rAt(N_B)]))];
-    }
-    // 寄存器搬运：R[dst] = R[src]。逻辑短路与条件表达式用它把两个分支的结果归位
-    if (kind === 'R_MV') {
-      return [declConst(N_A, bAt()), declConst(N_B, bAt()), setR(N_A, rAt(N_B))];
-    }
-    // 二元 / 一元（含 await：一元运算符名就是 'await'，生成 `R[d] = await R[a]`，
-    // 因为它写在 async 函数体内，这个 await 会把解释器挂起后再继续，见 vmAsyncExecutor）
-    if (kind.startsWith('R_BI_')) {
-      return [declConst(N_A, bAt()), declConst(N_B, bAt()), declConst(N_C, bAt()),
-        setR(N_A, t.binaryExpression(kind.slice(5), rAt(N_B), rAt(N_C)))];
-    }
-    if (kind.startsWith('R_UN_')) {
-      return [declConst(N_A, bAt()), declConst(N_B, bAt()),
-        setR(N_A, t.unaryExpression(kind.slice(5), rAt(N_B)))];
-    }
-    // 成员读写：取/存都是「对象, 键」两个寄存器
-    if (kind === 'R_GM') {
-      return [declConst(N_A, bAt()), declConst(N_B, bAt()), declConst(N_C, bAt()),
-        setR(N_A, t.memberExpression(rAt(N_B), rAt(N_C), true))];
-    }
-    if (kind === 'R_SM') {
-      return [declConst(N_A, bAt()), declConst(N_B, bAt()), declConst(N_C, bAt()),
-        t.expressionStatement(t.assignmentExpression('=',
-          t.memberExpression(rAt(N_A), rAt(N_B), true), rAt(N_C)))];
-    }
-    // 返回 / 抛出
-    if (kind === 'R_RT') return [declConst(N_A, bAt()), t.returnStatement(rAt(N_A))];
-    if (kind === 'R_TW') return [declConst(N_A, bAt()), t.throwStatement(rAt(N_A))];
-    // 无条件跳转：目标字 + 链值字，没有寄存器操作数
-    if (kind === 'R_JM') {
-      return [declJmpA(),
-        t.expressionStatement(t.assignmentExpression('=', idn(N_A), bAt())),
-        t.expressionStatement(bAt()),
-        assignPC(jumpTarget(idn(N_A), span))];
-    }
-    // 条件跳转与逻辑短路：目标字、条件寄存器、链值字依次取走。
-    // 条件寄存器里的值是直接读寄存器（寄存器机没有栈顶可弹），短路分支只改 PC，
-    // 结果寄存器不动——「保留左值」这个语义因此是天然成立的。
-    if (kind === 'R_JF' || kind === 'R_JT' || kind === 'R_JAND' || kind === 'R_JOR' || kind === 'R_JNUL') {
-      const cond = kind === 'R_JF' ? t.unaryExpression('!', rAt(N_V))
-        : kind === 'R_JT' ? rAt(N_V)
-          : kind === 'R_JAND' ? t.unaryExpression('!', rAt(N_V))
-            : kind === 'R_JOR' ? rAt(N_V)
-              : t.binaryExpression('!=', rAt(N_V), t.nullLiteral());
-      return [declJmpA(),
-        t.expressionStatement(t.assignmentExpression('=', idn(N_A), bAt())),
-        declConst(N_V, bAt()),
-        t.expressionStatement(bAt()),
-        t.ifStatement(cond, t.blockStatement([assignPC(jumpTarget(idn(N_A), span))]))];
-    }
-    // 调用 / 构造 / 数组：操作数个数随元数变化，统一「先取全部操作数再执行」。
-    // 取指顺序必须与发射顺序一致（dst、被调/对象/键、然后实参正序），所以先全部读进
-    // 临时名，再组表达式——这样求值顺序与源码一致，也绝不会重复取指。
-    // 注意 dst 与实参都要经 rAt() 取寄存器内容：临时名装的是寄存器号，不是值。
-    // （这里漏一层反引用会把寄存器号当实参传进去，是寄存器后端最容易踩的一处。）
-    if (kind.startsWith('R_CM_') || kind.startsWith('R_C_') ||
-        kind.startsWith('R_NW_') || kind.startsWith('R_AR_')) {
-      const names = argNames(regArgc(kind));
-      const stmts = names.map((nm) => declConst(nm, bAt()));
-      if (kind.startsWith('R_AR_')) {
-        // 数组字面量：dst, 元素…（没有「被调」那一位，元素从第 2 个操作数开始）
-        stmts.push(setR(names[0], t.arrayExpression(names.slice(1).map((nm) => rAt(nm)))));
-        return stmts;
-      }
-      const rest = names.slice(2).map((nm) => rAt(nm));
-      if (kind.startsWith('R_CM_')) {
-        stmts.push(setR(names[0], t.callExpression(
-          t.memberExpression(rAt(names[1]), rAt(names[2]), true), names.slice(3).map((nm) => rAt(nm)))));
-      } else if (kind.startsWith('R_C_')) {
-        stmts.push(setR(names[0], t.callExpression(rAt(names[1]), rest)));
-      } else {
-        stmts.push(setR(names[0], t.newExpression(rAt(names[1]), rest)));
-      }
-      return stmts;
-    }
-    // 寄存器宏 RMPKn：n 个打包字「(下标 << 10) | (目标寄存器 << 2) | 源位」依次取走，
-    // 每个字一条「按源位选源 → 写目标寄存器」。与栈机宏同理：被合并的每条成员原本只做
-    // 「取一个字 → 按源取一个值 → 落寄存器」，三者互不依赖，顺序执行恒等；差别只是
-    // 目标寄存器也从打包字里解出来（运行期才知道），静态上连「结果落在哪号寄存器」
-    // 都不再是明文。
-    if (kind.startsWith('RMPK')) {
-      const n = +kind.slice(4);
-      const out = [];
-      for (let k = 0; k < n; k++) {
-        const w = regMacroNames[k];
-        out.push(declConst(w, bAt()));
-        const idx = t.binaryExpression('>>', idn(w), t.numericLiteral(10));
-        const src = [
-          t.memberExpression(K, idx, true),
-          t.memberExpression(V, idx, true),
-          t.callExpression(t.memberExpression(G, idx, true), []),
-          t.callExpression(t.memberExpression(K, idx, true), []),
-        ];
-        let val = src[3];
-        for (let s = 2; s >= 0; s--) {
-          val = t.conditionalExpression(
-            t.binaryExpression('===', t.binaryExpression('&', idn(w), t.numericLiteral(3)),
-              t.numericLiteral(s)),
-            src[s], val);
-        }
-        // 目标寄存器号 = (w >> 2) & 255
-        out.push(setR(t.binaryExpression('&',
-          t.binaryExpression('>>', idn(w), t.numericLiteral(2)), t.numericLiteral(255)), val));
-      }
-      return out;
-    }
-    throw new Error(msg('vmUnknownOpcode', { kind }));
-  }
-
   // 干扰项处理器池，每构建随机生成，JN 个箭头函数共享，体量因此可控。
-  // 每个干扰体都是净无副作用的：只读栈长、K、B、PC、MASK，读写寄存器组，
-  // 读写垃圾暂存数组与双暂存，push 与 pop 相互对冲。它绝不触碰 V 槽位内容、
-  // G/H 闭包，也不写 PC、nCHAIN 与掩码。真实 case 里的寄存器一律先写后读，
-  // 不存在跨 case 存活的值，所以干扰体动寄存器是安全的。干扰体的结构与真实
-  // 动作同形，寄存器算术、栈访问、槽位式写都齐备，无法按形态过滤。
+  // 每个干扰体都是净无副作用的：只读栈长、K、B、PC、MASK，读写垃圾暂存数组与双暂存，
+  // push 与 pop 相互对冲。它绝不触碰 V 槽位内容、G/H 闭包，也不写 PC、nCHAIN 与掩码。
+  // 干扰体的结构与真实动作同形，栈访问、槽位式写都齐备，无法按形态过滤。
   const nDV = uniqueName(ctx.usedNames, '_0x'); // 垃圾暂存数组（形似 V 槽位面）
   const nT0 = uniqueName(ctx.usedNames, '_0x');
   const nT1 = uniqueName(ctx.usedNames, '_0x');
@@ -2848,16 +2096,12 @@ function compileFunction(fn, ctx) {
   const junkDecls = [];
   const JN = decoys.length ? Math.min(24, Math.max(10, Math.ceil(decoys.length / 48))) : 0;
   const slenE = () => t.memberExpression(S, t.identifier('length'), false);
-  // M0 纯栈式没有寄存器，干扰体一律改用垃圾数组做寄存器式算术（形态仍与真实
-  // 寄存器窗口一致：读-改-写一个下标面），静态上分辨不出这里与真实寄存器动作。
-  const junkReg = () => (REGN === 0
-    ? t.memberExpression(idn(nDV), t.binaryExpression('%',
-      t.binaryExpression('+', PC, t.numericLiteral(randInt(0, 7))),
-      t.memberExpression(idn(nDV), t.identifier('length'), false)), true)
-    : idn(REGS[randInt(0, REGN - 1)]));
+  const junkReg = () => t.memberExpression(idn(nDV), t.binaryExpression('%',
+    t.binaryExpression('+', PC, t.numericLiteral(randInt(0, 7))),
+    t.memberExpression(idn(nDV), t.identifier('length'), false)), true);
   const junkStmt = () => {
     switch (randInt(0, 6)) {
-      case 0: // 寄存器算术，形态与真实 case 的寄存器窗口一致
+      case 0: // 暂存数组算术，形态与真实的槽位/栈访问一致
         return t.expressionStatement(t.assignmentExpression('=', junkReg(),
           t.binaryExpression('+',
             t.binaryExpression('^', junkReg(), t.numericLiteral(randInt(1, 0xffff))),
@@ -2995,13 +2239,31 @@ function compileFunction(fn, ctx) {
   // 箭头里写 `await` 是语法错误。A 的 switch 体与 C 的嵌套 if 体都直接内联在 async
   // 函数体内，await 合法。代价是 async 函数拿不到密文条目表与直接寻址，换来的是
   // 「能编译」——这一步不做的话产物会直接语法错误，不是"没效果"。
-  const dispatchForm = asyncFn
-    ? (randInt(0, 1) === 0 ? 0 : 2)
-    : (ctx.options.vmCompactDispatcher
-      ? 4
-      : (ctx.options.vmDispatchEnc
-        ? (randInt(0, 3) === 0 ? randInt(0, 2) : 3) // 75% 走 D，25% 仍走 A/B/C（避免形态单一）
-        : randInt(0, 2))); // 0 为 A，1 为 B，2 为 C，3 为 D，4 为 E（紧凑）
+  // 层数（vmLayers）。默认 1 = 当今形态（外层函数体就是 VM 解释器）；
+  // 2 = 「解释器循环本身作为一个新函数体再 VM 编译一次」——外层用户字节码的
+  // 解释动作由 B2 字节码执行，每层的解释器实例之间只共享随机化的解释器结构，
+  // 不共享密钥材料与编号空间。各层命名与操作码表逐层独立，重新随机。
+  //
+  // B2 的解释器循环必然还是纯 JS——所以层数取决于「把循环整体作为
+  // 用户代码喂给同一编译器」能否成功：只要外层 emitter 构造的循环没有 switch、
+  // break、标签、label、await，regionOk 就认定可编译。因此要嵌套时 dispatchForm
+  // 必须选 C（嵌套 if，无 switch/无表，且动作体全部内联）。
+  const layersWanted = (() => {
+    const v = opts.vmLayers === undefined || opts.vmLayers === null ? 1 : opts.vmLayers | 0;
+    return v < 1 ? 1 : (v > 3 ? 3 : v);
+  })();
+  // willNest 为 true 时本层的 dispatchForm 必须 forced-C，否则它
+  // 调过一层 regionOk 的审查。
+  const wantNestingHere = (ctx.__vmDepth | 0) + 1 < layersWanted && !asyncFn && !ctx.__vmWasmShared;
+  const dispatchForm = wantNestingHere
+    ? 2
+    : asyncFn
+      ? (randInt(0, 1) === 0 ? 0 : 2)
+      : (ctx.options.vmCompactDispatcher
+        ? 4
+        : (ctx.options.vmDispatchEnc
+          ? (randInt(0, 3) === 0 ? randInt(0, 2) : 3) // 75% 走 D，25% 仍走 A/B/C（避免形态单一）
+          : randInt(0, 2))); // 0 为 A，1 为 B，2 为 C，3 为 D，4 为 E（紧凑）
   let dispSwitchNode = null;   // 形态 A 的 switch 判别式节点
   // 表驱动形态（B/D/E）共用的动作体转换：return 一律转成 [0, 值] / [0]，由调度层
   // 穿透返回。三种形态共用同一实现，避免各写一份之后漂移。
@@ -3460,7 +2722,7 @@ function compileFunction(fn, ctx) {
   // 指纹之一，这两种形态与 dispatchForm 的四种分发正交组合出 8 种骨架，针对单一骨架
   // 模板写的还原规则无法跨构建复用。
   const interpBody = t.blockStatement([
-    // 步数闸门（执行护栏，原 vmNestedLimit 的平移，栈机/寄存器后端共用）：
+    // 步数闸门（执行护栏，原 vmNestedLimit 的平移）：
     // 每执行一条字节码指令就 ++STEP，超过 vmStepLimit 直接抛错。
     // 死循环/失控执行不再只能靠宿主挂死兜底，而是有条可定位的失败路径。
     // vmStepLimit=0 时不生成这道闸门（产物逐字节仍只差这一项）。
@@ -3471,8 +2733,7 @@ function compileFunction(fn, ctx) {
       t.blockStatement([t.throwStatement(t.newExpression(
         t.identifier('Error'), [t.stringLiteral(msg('vmOverrun'))]))]))] : []),
     // 操作数栈深度护栏：正常编译产物的栈深由编译期就可推出上界，
-    // 远低于该值；撞到这条说明字节码/解释器状态已损坏，显式抛错优于
-    // 静默继续显式地浪费栈空间（寄存器后端不碰 S，恒不触发）。
+    // 远低于该值；撞到这条说明字节码/解释器状态已损坏，显式抛错优于在坏状态下继续。
     t.ifStatement(
       t.binaryExpression('>',
         t.memberExpression(S, t.identifier('length'), false),
@@ -3528,10 +2789,6 @@ function compileFunction(fn, ctx) {
       t.arrayExpression(row.map((n) => t.numericLiteral(n)))))),
     t.variableDeclarator(B, t.arrayExpression(flat.map((n) => t.numericLiteral(n)))),
     t.variableDeclarator(S, t.arrayExpression([])),
-    // 寄存器后端的寄存器文件（vmRegisterVM）。空数组起步、按需增长：寄存器号是显式的
-    // 小整数，运行期看到的是「当前活跃值集合」，而不是按序压入的栈；高水位 regNext
-    // 就是静态面能读到的寄存器数量。非寄存器后端不声明它。
-    ...(registerVM ? [t.variableDeclarator(RID, t.arrayExpression([]))] : []),
     // 栈编码：逐函数密钥 + 幂等的编解码函数。谓词只对 32 位整数成立、且排除 -0
     // （位运算出不了 -0，所以"已编码值"永远不进 -0 分支，谓词在编码侧与解码侧一致）；
     // 浮点、大整数、字符串、对象、NaN/Infinity 一律原样通过。
@@ -3556,8 +2813,6 @@ function compileFunction(fn, ctx) {
           t.binaryExpression('^', t.identifier(nSEV), t.identifier(nSEK)),
           t.identifier(nSEV)))),
     ] : []),
-    // P4 模型 M2 的地址栈。仅在 M2 下声明；M0/M1 下 SA 为 null，声明里不出现。
-    ...(SA ? [t.variableDeclarator(SA, t.arrayExpression([]))] : []),
     t.variableDeclarator(PC, t.numericLiteral(0)),
     // 步数计数器（执行护栏）。无条件声明：即使 vmStepLimit=0 关掉闸门，
     // 该变量仍在（未被闸门引用），保证关闸时的产物只差闸门本身不变其它。
@@ -3565,8 +2820,6 @@ function compileFunction(fn, ctx) {
     t.variableDeclarator(MASK, kLit(MASK_M0, rt && rt.M0)),
     t.variableDeclarator(t.identifier(nCHAIN), kLit(CHAIN_SEED, rt && rt.CS)), // 链值状态
     t.variableDeclarator(t.identifier(nCHN), t.numericLiteral(0)),           // 取指暂存
-    // 寄存器窗口，压栈与出栈都经这里中转
-    ...REGS.map((r) => t.variableDeclarator(idn(r), t.numericLiteral(0))),
     // 干扰项暂存，即垃圾数组与双暂存，结构上并入运行时声明面
     ...scratchDecls,
     // 捕获的局部名保留为真实 var，供 G/H 闭包按词法解析；参数重声明合法
@@ -3708,8 +2961,7 @@ function compileFunction(fn, ctx) {
   };
   // ------------------------------------------------------------ 执行护栏
   //
-  // 原嵌套内层档的「可信内核」特性已并入本解释器，栈机与寄存器后端共用，不再
-  // 存在第二份手写内核：
+  // 原嵌套内层档的「可信内核」特性已并入本解释器，不再存在第二份手写内核：
   //   · 指令步数上限（vmStepLimit）——原 vmNestedLimit 的平移，见 runtimeDecl 里
   //     的 STEP 计数与 interpBody 的闸门；
   //   · 操作数栈深度上限——原内核的「帧深上限」平行物，语义域为本解释器的 S；
@@ -3719,18 +2971,55 @@ function compileFunction(fn, ctx) {
   // （而非 int32），调用走 G/H 闭包透传、this/arguments 语义靠闭包链保持——同一
   // 套机制硬搬会把「语义域不同」变成新的静默算错。
   {
-    fn.body = t.blockStatement([
-      // 运行期密钥派生必须排在 runtimeDecl 之前：MASK 与链种子的初始化要读它算出的值
-      ...rtKeyStmts(),
-      runtimeDecl,
-      // 形态 B 的 handler 表与干扰项共享垃圾体，都是不变量，在循环外构建一次
-      ...preLoopStmts,
-      ...rotStmts,
-      ...paramCopies,
-      interpLoop,
-    ]);
-    fn.body.body.unshift(...dirStmts);
-    if (fn.type === 'ArrowFunctionExpression') fn.expression = false;
+    if (wantNestingHere) {
+      // 嵌套插人：用户函数体不再直接支持解释循环，而是声明内层解释器函数并立刻调用它。
+      // 内层函数的体是 rotStmts+interpLoop（对同一份 B1 字节码的解释执行），
+      // 随后它自己会作为被保护对象被同一编译器再编译一遍，得到 B2——执行时 B2 的
+      // 解释循环（纯 JS）跑 B2，B2 的语义是「跑 B1 的解释循环」。B1/B2 各自拥有
+      // 独立生成的 G/H/K 值池、掩码、编号空间与全集干扰项，互不共享。
+      const innerInterpName = uniqueName(ctx.usedNames, '_0x');
+      const innerInterp = t.functionExpression(null, [], t.blockStatement([...rotStmts, interpLoop]));
+      fn.body = t.blockStatement([
+        ...rtKeyStmts(),
+        runtimeDecl,
+        ...preLoopStmts,
+        ...paramCopies,
+        t.variableDeclaration('var', [t.variableDeclarator(t.identifier(innerInterpName), innerInterp)]),
+        // everything in fn.params has been copied into V1 slots, interp takes no args
+        t.returnStatement(t.callExpression(t.identifier(innerInterpName), [])),
+      ]);
+      fn.body.body.unshift(...dirStmts);
+      if (fn.type === 'ArrowFunctionExpression') fn.expression = false;
+      if (canCompile(innerInterp, false) && countRegionStmts(innerInterp.body) >= threshold) {
+        const savedDepth = ctx.__vmDepth | 0;
+        ctx.__vmDepth = savedDepth + 1;
+        try {
+          compileFunction(innerInterp, ctx);
+          ctx.__vmLayerMax = Math.max(ctx.__vmLayerMax | 0, savedDepth + 2);
+        } catch (e) {
+          // 嵌套失败时回退到单层：innerInterp 保持原状，user fn 的 VM 语义不变
+          if (platform.env('DSH_VM_DEBUG')) console.error('[vm] 嵌套解释器编译失败（回退单层）:', e && e.stack ? e.stack : e);
+        } finally {
+          ctx.__vmDepth = savedDepth;
+        }
+      } else {
+        // 不能编译时内层函数退回原始循环形态（单层语义，仍然正确）
+        if (platform.env('DSH_VM_DEBUG')) console.error('[vm] 嵌套解释器无法通过 regionOk，回退单层');
+      }
+    } else {
+      fn.body = t.blockStatement([
+        // 运行期密钥派生必须排在 runtimeDecl 之前：MASK 与链种子的初始化要读它算出的值
+        ...rtKeyStmts(),
+        runtimeDecl,
+        // 形态 B 的 handler 表与干扰项共享垃圾体，都是不变量，在循环外构建一次
+        ...preLoopStmts,
+        ...rotStmts,
+        ...paramCopies,
+        interpLoop,
+      ]);
+      fn.body.body.unshift(...dirStmts);
+      if (fn.type === 'ArrowFunctionExpression') fn.expression = false;
+    }
   }
 
   // WASM 档元数据，供 wasm pass 读取；不开启 wasm 时没有消费方
@@ -3762,11 +3051,9 @@ function compileFunction(fn, ctx) {
   compiledSet.add(fn);
   // 新后端的计数在这里累加（走到这一行说明整条编译流程没抛错、产物已落到 AST 上）；
   // 片段里嵌套的函数走 compileInnerFns 递归调用，也会各自累加，所以统计不会漏报
-  if (registerVM && ctx.__vmReg) ctx.__vmReg.funcs++;
   if (asyncFn && ctx.__vmAsync) ctx.__vmAsync.funcs++;
   return {
     real: opKinds.length, decoy: decoys.length, total: entries.length, form: dispatchForm,
-    regs: registerVM ? regNext : 0, // 寄存器后端用到的寄存器数量（静态面可见的活跃值宽度）
   };
 }
 
@@ -3944,13 +3231,13 @@ function vm(ast, options, ctx) {
   //
   // 为什么要显式报出来：这些项不是"没配"而是"配了也没用"。模块内的解释器按栈机、
   // 按绝对下标、按既有指令集硬编码，栈机专有的机制（跳转差值编码、栈编码、宏指令、
-  // 动态操作码、寄存器后端、异步执行器、分块自解密、运行期密钥取值）在那里没有对应物。
+  // 动态操作码、异步执行器、分块自解密、运行期密钥取值、VM 嵌套层数）在那里没有对应物。
   // 静默失效的代价是实测出来的：max 预设里 vmBlockDecrypt 为 true，但关掉它产物
   // 一个字节都不变——用户以为自己开了分块自解密，实际一直走的是共享分发字。
   const suppressedByWasm = [];
   if (ctx.__vmWasmShared) {
     const OFF = ['vmJumpsEncoding', 'vmStackEncoding', 'vmMacroOps', 'vmDynOpcodes',
-      'vmRegisterVM', 'vmAsyncExecutor', 'vmBlockDecrypt', 'vmRuntimeKeyGetter'];
+      'vmAsyncExecutor', 'vmBlockDecrypt', 'vmRuntimeKeyGetter'];
     for (const k of OFF) if (options[k]) suppressedByWasm.push(k);
   }
   // 异步执行器（vmAsyncExecutor）。WASM 解释器内核档的解释器在模块里、没有 await
@@ -4014,22 +3301,18 @@ function vm(ast, options, ctx) {
   let failed = 0;
   let opsReal = 0;
   let opsDecoy = 0;
-  let regsMax = 0; // 寄存器后端用到的寄存器数量最大值（静态面可见的活跃值宽度）
   // vmMacroOps 的融合计数。放在 ctx 上共享：片段里嵌套的函数由 compileInnerFns
   // 递归编译，计数从那里并回来才不会漏（见 compileFunction 的融合段）
   ctx.__vmMacro = { fused: 0, saved: 0 };
   // vmDynOpcodes 的计数：同样放 ctx 上，片段里嵌套编译的函数也要算进来
   ctx.__vmDyn = { applied: false, space: 0 };
-  // vmRegisterVM / vmAsyncExecutor 的计数：寄存器后端处理的函数个数、异步执行器
-  // 编译掉的 async 函数个数。都在 compileFunction 入口累加，片段里嵌套编译的也算。
-  ctx.__vmReg = { funcs: 0 };
   ctx.__vmAsync = { funcs: 0 };
+  ctx.__vmDepth = 0;
+  ctx.__vmLayerMax = 0;
   const rtNames = ctx.rtNames || new Set();
   // 分发形态计数（A=0/B=1/C=2/D=3/E=4）。形态 D 的验收用例据此断言「D 真的出现了」，
   // 也用于观察 vmDispatchEnc 与 vmCompactDispatcher 开关下的形态分布。
   const formCount = { A: 0, B: 0, C: 0, D: 0, E: 0 };
-  // 寄存器模型计数（P4 多态验收用；M3 是寄存器后端的固定模型，不参与多态抽取）
-  const modelCount = { M0: 0, M1: 0, M2: 0, M3: 0 };
   // comment 模式的最近声明头判定要用到全部候选函数的头下标
   const allHeads = fns.map((fn) => fnHeadIdx(fn));
   for (const fn of fns) {
@@ -4050,8 +3333,6 @@ function vm(ast, options, ctx) {
         // 三个数统一在循环之后按表重算。
         if (!r.shared) opsDecoy += r.decoy;
         if (r.form !== undefined) formCount['ABCDE'[r.form]]++;
-        if (ctx.vmModel) modelCount[ctx.vmModel]++;
-        if (r.regs > regsMax) regsMax = r.regs;
       }
     } catch (e) {
       failed++; // 保守处理，该函数保持原样
@@ -4100,12 +3381,12 @@ function vm(ast, options, ctx) {
     macros: { fused: ctx.__vmMacro.fused, saved: ctx.__vmMacro.saved },
     // vmDynOpcodes：是否真的生效，以及取整后的字空间大小（0 表示本项没生效）
     dyn: { applied: ctx.__vmDyn.applied, space: ctx.__vmDyn.space },
-    // vmRegisterVM / vmAsyncExecutor：各自实际处理了多少个函数（0 表示本项没生效，
-    // 例如寄存器后端被 WASM 解释器内核档挡下、async 函数的 await 落进闭包被保守放弃）
-    register: { funcs: ctx.__vmReg.funcs, regs: regsMax },
+    // vmAsyncExecutor：被 WASM 解释器内核档挡下或 await 落进闭包被保守放弃时为 0。
     asyncExec: { funcs: ctx.__vmAsync.funcs },
+    // 实际嵌套了几层 VM。默认所有 VM 编译都深度 1（外层解释器就是底层解释器）；
+    // vmLayers>=2 成功嵌套的函数每多一层就把这个值往上加一级。失败回退则保持低位值。
+    layers: ctx.__vmLayerMax > 0 ? ctx.__vmLayerMax : 1,
     forms: formCount,
-    models: modelCount,
     // WASM 内核档屏蔽掉的选项（配了但在本档不生效的）。空数组 = 没有静默失效的项。
     suppressed: suppressedByWasm,
   };

@@ -120,10 +120,10 @@ section('VMP 增强（覆盖率 / 深度 / stats 口径）');
     // 逐项上报：显式配几项，逐项都该被列出来
     const many = vmRun(SMALL, {
       preset: 'max', vmJumpsEncoding: true, vmStackEncoding: true,
-      vmMacroOps: true, vmDynOpcodes: true, vmRegisterVM: true,
+      vmMacroOps: true, vmDynOpcodes: true,
     });
     const sup = many.st ? many.st.suppressed : [];
-    ok(sup.length === 5, 'WASM 内核档逐项报出被屏蔽的 5 项', sup.join(','));
+    ok(sup.length === 4, 'WASM 内核档逐项报出被屏蔽的 4 项', sup.join(','));
     ok(!sup.includes('vmAsyncExecutor'), '未配置的项不进 suppressed（不制造噪声）');
 
     // 屏蔽是"配置无效"而非"降级出错"：产物仍能跑

@@ -141,7 +141,7 @@ export default function integrityCheck(ast, options, ctx) {
 //       T / T  -> 抛错          F / T  -> 正常（wasmInterpreter:false）
 //       T / F  -> 正常          F / F  -> 正常
 //   叠加：vmProtection:false -> 正常；vmThreshold=1e9（无函数搬进 VM）-> 正常；
-//        debugProtection / renameProperties / vmPolymorph / stringScatter /
+//        debugProtection / renameProperties / stringScatter /
 //        stringArrayCallsTransform 都不影响。
 //
 // 机制推断：vm 先跑（obfuscate.js:286）把函数体换成字节码 + 桥接桩，objectKeys

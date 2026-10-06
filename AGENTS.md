@@ -48,9 +48,12 @@ npm run build:web:cloud  # 云端执行形态（核心不进产物，Vercel 部�
 
 ## VM 架构现状（2026-10 重构后）
 
-- `src/passes/vm.js` 是唯一的 VM：AST → 自定义字节码 → 解释器。
-  栈机与寄存器后端（`vmRegisterVM`）共用同一编译器，指令集不同，
-  解释器循环同模板。
+- `src/passes/vm.js` 是唯一的 VM：AST → 自定义栈机字节码 → 解释器。
+  寄存器式后端（`vmRegisterVM`）与多态寄存器模型（`vmPolymorph`/`vmModel`，
+  M0/M1/M2/M3）已整体移除，只保留纯栈式核心 VM。
+- 多层 VM（`vmLayers`，默认 1）：`2` 把解释器循环本身作为函数体再编译一次，
+  外层字节码的解释动作由第二份字节码执行；`3` 再套一层。内外层各自带独立的
+  G/H/K/S 表、掩码与字节码加密材料；stats 报 `layers`（实际嵌套层数）。
 - 执行护栏（原嵌套内层档 `vmNestedLimit` 平移而来）：
   `vmStepLimit` 指令步数上限 + 操作数栈深度上限，超限抛 `vmOverrun`。
   `vmStepLimit: 0` 关闭步数闸门。

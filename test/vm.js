@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * VM 保护：标识符冲突、动态操作码、分发表密文化、多态寄存器模型。
+ * VM 保护：标识符冲突、动态操作码、分发表密文化、分块自解密、执行护栏与多层嵌套。
  *
  *   node test/vm.js
  *
@@ -286,7 +286,7 @@ section('P3：分发表密文化（vmDispatchEnc）');
   ok(maxBad === 0, 'max 预设语义不变（2 seed）');
 }
 
-section('P4：多态寄存器模型与字节码分块自解密');
+section('P4：字节码分块自解密与可复现性');
 {
   // 跳转密集样例：if/else 链、&&、??、循环回边——分块解密的块边界与跳转复位
   // 都在这里被踩到
@@ -303,58 +303,6 @@ section('P4：多态寄存器模型与字节码分块自解密');
     const s = r.stats.find((x) => x.pass === 'vm');
     return s && s.result ? s.result : null;
   };
-
-  // P4-1 多态模型真的出现多种：4 函数样例 × 6 seed
-  const polySrc = 'function f1(n){var s=0;for(var i=0;i<n;i++)s+=i;return s;}'
-    + 'function f2(a,b){return a>b?a-b:a+b;}'
-    + 'function f3(o){return o.k?o.k.length:0;}'
-    + 'function f4(s){return s.split(",").length;}'
-    + 'process.stdout.write([f1(10),f2(3,9),f3({k:"abc"}),f4("a,b,c,d")].join(" ")+"\\n");';
-  const polyWant = runNode(polySrc, 'p4-poly-want.js').trim();
-  let mixedBuilds = 0;
-  const seenModels = new Set();
-  let polySemBad = 0;
-  for (let seed = 1; seed <= 6; seed++) {
-    const r = obfuscate(polySrc, { preset: 'high', shell: false, vmPolymorph: true, integrityCheck: false, seed });
-    const st = vmStatOf(r);
-    if (st && st.compiled >= 3) {
-      const present = Object.keys(st.models).filter((k) => st.models[k] > 0);
-      for (const k of present) seenModels.add(k);
-      if (present.length >= 2) mixedBuilds++;
-    }
-    let got;
-    try { got = runNode(r.code, 'p4-poly-' + seed).trim(); } catch (e) { got = 'THREW'; }
-    if (got !== polyWant) polySemBad++;
-  }
-  ok(polySemBad === 0, 'vmPolymorph 开启下 4 函数样例语义全部正确（6 seed）');
-  ok(mixedBuilds >= 2, '多态构建中多数产物混含 ≥2 种寄存器模型（6 seed 中 ≥2）',
-    'mixed=' + mixedBuilds);
-  ok(seenModels.size >= 2, '跨构建覆盖 ≥2 种模型（观察值：' + [...seenModels].join('/') + '）');
-
-  // P4-2 三种模型强制指定时语义等价
-  let modelBad = 0;
-  let modelFirst = '';
-  for (const model of ['M0', 'M1', 'M2']) {
-    for (let seed = 1; seed <= 2; seed++) {
-      const code = obfuscate(jumpSrc, { preset: 'high', shell: false, vmModel: model, integrityCheck: false, seed }).code;
-      let got;
-      try { got = runNode(code, 'p4-model-' + model + '-' + seed).trim(); } catch (e) { got = 'THREW'; }
-      if (got !== want) { modelBad++; if (!modelFirst) modelFirst = model + ' seed=' + seed + ' → ' + got.slice(0, 40); }
-    }
-  }
-  ok(modelBad === 0, '强制 M0/M1/M2 的输出一致（跳转密集样例 × 2 seed）', modelFirst);
-
-  // P4-3 多态开关开与关输出一致
-  let polyBad = 0;
-  for (let seed = 1; seed <= 2; seed++) {
-    for (const poly of [false, true]) {
-      const code = obfuscate(jumpSrc, { preset: 'high', shell: false, vmPolymorph: poly, seed }).code;
-      let got;
-      try { got = runNode(code, 'p4-sw-' + poly + '-' + seed).trim(); } catch (e) { got = 'THREW'; }
-      if (got !== want) polyBad++;
-    }
-  }
-  ok(polyBad === 0, 'vmPolymorph 开与关的输出一致（2 seed）');
 
   // P4-5/P4-6 分块自解密：开与关，跳转密集样例全部正确
   let blkBad = 0;
@@ -397,7 +345,7 @@ section('P4：多态寄存器模型与字节码分块自解密');
 
   // P4-10 可复现：P3+P4 全开下固定 seed 逐字节一致
   {
-    const opt = { preset: 'high', shell: false, vmPolymorph: true, vmBlockDecrypt: true, seed: 424242 };
+    const opt = { preset: 'high', shell: false, vmBlockDecrypt: true, seed: 424242 };
     ok(obfuscate(jumpSrc, opt).code === obfuscate(jumpSrc, opt).code,
       'P3+P4 全开下固定 seed 可复现');
   }
@@ -405,31 +353,55 @@ section('P4：多态寄存器模型与字节码分块自解密');
 
 // 执行护栏（vmStepLimit）：原嵌套内层档 vmNestedLimit 平移后的有界失败路径。
 // while(true) + 极小步数 → 必须按 vmOverrun 抛错而非挂死；正常循环 + 大步数 → 语义正确。
-section('执行护栏：vmStepLimit（栈机与寄存器后端共用）');
+section('执行护栏：vmStepLimit（栈机后端共用）');
 {
   const infSrc = 'function f(){var i=0;while(true){i++;}return i;}\n'
     + 'try { f(); process.stdout.write("no-throw\\n"); } catch (e) { process.stdout.write("thrown:" + e.message.split("\\n")[0].slice(0, 20) + "\\n"); }';
   const okSrc = 'function f(){var s=0;for(var i=0;i<10;i++)s+=i;return s;}\n'
     + 'process.stdout.write(f() + "\\n");';
   let infBad = 0, okBad = 0, firstInf = '', firstOk = '';
-  for (const reg of [false, true]) {
-    // 小步数：两种后端都应抛出带策文的 Error（message 含 "vm: 解释器执行超限"）
-    const code1 = obfuscate(infSrc, {
+  // 小步数：必须抛出带策文的 Error（message 含 "vm: 解释器执行超限"）
+  const code1 = obfuscate(infSrc, {
+    preset: 'high', seed: 7, shell: false, integrityCheck: false,
+    wasm: false, wasmInterpreter: false, vmStepLimit: 2000,
+  }).code;
+  const out1 = runNode(code1, 'guard-inf.js').trim();
+  if (!out1.startsWith('thrown:')) { infBad++; firstInf = out1.slice(0, 80); }
+  // 大步数：正常跑完
+  const code2 = obfuscate(okSrc, {
+    preset: 'high', seed: 7, shell: false, integrityCheck: false,
+    wasm: false, wasmInterpreter: false,
+  }).code;
+  const out2 = runNode(code2, 'guard-ok.js').trim();
+  if (out2 !== '45') { okBad++; firstOk = out2.slice(0, 80); }
+  ok(infBad === 0, 'vmStepLimit 生效：死循环按 vmOverrun 抛错', firstInf);
+  ok(okBad === 0, 'vmStepLimit 默认足够大：正常循环得 45', firstOk);
+}
+
+// 多层 VM：vmLayers=2 把解释器循环再编译一层。外层 VM 函数体是一段调用内层函数的
+// 桥，内层函数体是第二份 VM 编译过的解释器（它的 body 才是真正的解释循环的 VM 形态）。
+// 语义必须与单层产物逐位一致；layers 统计必须显示 2，证明嵌套确实成功编译。
+section('多层 VM：vmLayers=2 嵌套解释器，语义与层数统计');
+{
+  const src = 'function a(n){var s=0;for(var i=0;i<n;i++)s+=i;return s;}\n'
+    + 'function b(x){if(x<0)return -x;return x*2+1;}\n'
+    + 'process.stdout.write(a(9)+","+b(4)+","+b(-3)+"\\n");';
+  const want = runNode(src, 'layers-want.js').trim();
+  let semBad = 0, firstSem = '', layers2 = 0, layers1 = 0;
+  for (const l of [1, 2]) {
+    const r = obfuscate(src, {
       preset: 'high', seed: 7, shell: false, integrityCheck: false,
-      wasm: false, wasmInterpreter: false, vmStepLimit: 2000, vmRegisterVM: reg,
-    }).code;
-    const out1 = runNode(code1, 'guard-inf-' + reg + '.js').trim();
-    if (!out1.startsWith('thrown:')) { infBad++; if (!firstInf) firstInf = 'reg=' + reg + ': ' + out1.slice(0, 80); }
-    // 大步数：正常跑完
-    const code2 = obfuscate(okSrc, {
-      preset: 'high', seed: 7, shell: false, integrityCheck: false,
-      wasm: false, wasmInterpreter: false, vmRegisterVM: reg,
-    }).code;
-    const out2 = runNode(code2, 'guard-ok-' + reg + '.js').trim();
-    if (out2 !== '45') { okBad++; if (!firstOk) firstOk = 'reg=' + reg + ': ' + out2.slice(0, 80); }
+      wasm: false, wasmInterpreter: false, vmLayers: l,
+    });
+    const st = r.stats.find((x) => x.pass === 'vm');
+    if (st && st.result && st.result.layers === l) { if (l === 2) layers2++; if (l === 1) layers1++; }
+    let got;
+    try { got = runNode(r.code, 'layers-' + l + '.js').trim(); } catch (e) { got = 'THREW'; }
+    if (got !== want) { semBad++; if (!firstSem) firstSem = 'l=' + l + ' → ' + got.slice(0, 60); }
   }
-  ok(infBad === 0, 'vmStepLimit 生效：栈机与寄存器后端的死循环都抛错', firstInf);
-  ok(okBad === 0, 'vmStepLimit 默认足够大：正常循环两后端都得 45', firstOk);
+  ok(semBad === 0, 'vmLayers=1 与 =2 输出一致', firstSem);
+  ok(layers1 > 0, 'layers=1 统计生效（vmLayers=1 时 layers==1）');
+  ok(layers2 > 0, 'layers=2 统计生效（vmLayers=2 嵌套成功）', 'layers=' + layers2);
 }
 
 if (process.argv[1] && process.argv[1].endsWith('vm.js')) {

@@ -941,8 +941,8 @@ Web 标准代码。构建只复制 `src/` 与 `web/`，所以不需要任何排�
 > 配套地，`vm` pass 的 stats 新增 `ops.shared` 与 `suppressed` 两个字段：
 > WASM 内核档的干扰项不再报 0（改报共享槽里未被占用的个数，此前读起来像"整档没有
 > 干扰项"），且配了但被 `wasmInterpreter` 屏蔽的选项逐项列出，不静默失效。
-> 被屏蔽的共 8 项：`vmJumpsEncoding` / `vmStackEncoding` / `vmMacroOps` /
-> `vmDynOpcodes` / `vmRegisterVM` / `vmAsyncExecutor` / `vmBlockDecrypt` /
+> 被屏蔽的共 7 项：`vmJumpsEncoding` / `vmStackEncoding` / `vmMacroOps` /
+> `vmDynOpcodes` / `vmAsyncExecutor` / `vmBlockDecrypt` /
 > `vmRuntimeKeyGetter`。
 >
 > 另有一处**不是本次改动引入**的行为：`max` 预设的 `consoleStub` 为 `true`，

@@ -28,9 +28,7 @@ export default {
     "vmThreshold": 8,
     "vmDecoyOps": 0,
     "vmDispatchEnc": false,
-    "vmPolymorph": false,
     "vmBlockDecrypt": false,
-    "vmModel": "auto",
     "wasm": false,
     "wasmThreshold": 64,
     "objectKeyEncoding": true,
@@ -113,9 +111,7 @@ export default {
     "vmThreshold": 2,
     "vmDecoyOps": 128,
     "vmDispatchEnc": false,
-    "vmPolymorph": false,
     "vmBlockDecrypt": false,
-    "vmModel": "auto",
     "wasm": true,
     "wasmThreshold": 64,
     "objectKeyEncoding": true,
@@ -200,9 +196,7 @@ export default {
     // 2631 KB → 2642 KB（+0.4%），宏指令 0 → 9 条，动态字空间 256，语义 7/7 一致。
     "vmMacroOps": true,
     "vmDynOpcodes": true,
-    "vmPolymorph": false,
     "vmBlockDecrypt": false,
-    "vmModel": "auto",
     "wasm": true,
     "wasmThreshold": 1,
     "objectKeyEncoding": true,
@@ -277,7 +271,6 @@ export default {
     "vmThreshold": 1,
     "vmDecoyOps": 1024,
     "vmDispatchEnc": true,
-    "vmPolymorph": true,
     // 2026-10-01 由 true 改为 false。max 档的 wasmInterpreter 为 true，而分块自解密
     // 在 WASM 解释器内核档没有对应物（模块内的解释器按绝对下标硬编码，块边界不存在），
     // 那一处 vm.js 的 `!!opts.vmBlockDecrypt && !ctx.__vmWasmShared && enc` 会把它整项
@@ -285,7 +278,6 @@ export default {
     // 现在直接关掉，让预设不再声称提供了实际不存在的保护（stats.suppressed 会列出
     // 所有配了但在本档失效的项，见 vm() 的返回值）。
     "vmBlockDecrypt": false,
-    "vmModel": "auto",
     "wasm": true,
     "wasmThreshold": 0,
     "objectKeyEncoding": true,
