@@ -107,6 +107,45 @@ section('JSFuck 壳形式（shellForm）');
 // 出错的表现都是"产物跑出错值"，所以每个预设都要真跑一遍比对。
 
 section('WASM 档位（阶段一恢复）');
+{
+  // 宿主导入多路复用：导入数恒为 5（u1/u2/v2/bin/un），子码逐构建随机。
+  // 按元数硬编码（"唯一的 (3→1) 就是 bin"）的还原写法必须失效：(2→1) 有两家。
+  const WSRC = 'function a(n){var s=0;for(var i=0;i<n;i++)s+=i;return s;}\n'
+    + 'function b(x){if(x<0)return -x;return x*2+1;}\n'
+    + 'function c(o){return o.k?o.k.length:0;}\n'
+    + 'process.stdout.write(a(9)+","+b(4)+","+b(-3)+","+c({k:"abcd"})+"\\n");';
+  const want = runNode(WSRC, 'mux-want.js').trim();
+  const subSetOf = (code) => new Set(
+    [...code.matchAll(/if\s*\([A-Za-z_$][\w$]*===\s*(-?\d+)\)/g)]
+      .map((m) => m[1])
+      .filter((v) => Math.abs(+v) > 1000000));
+  let semBad = 0, firstSem = '';
+  const seen = [];
+  for (const seed of [21, 22]) {
+    const r = obfuscate(WSRC, {
+      preset: 'high', seed, shell: false, integrityCheck: false,
+      wasmInterpreter: true, wasm: false, vmLayers: 1,
+    });
+    const ws = r.stats.find((x) => (x.pass || '').startsWith('wasm'));
+    if (!ws || !ws.result || ws.result.imports !== 5) {
+      semBad++;
+      if (!firstSem) firstSem = 'seed=' + seed + ' imports=' + (ws && ws.result && ws.result.imports);
+      continue;
+    }
+    seen.push(subSetOf(r.code));
+    let got;
+    try { got = runNode(r.code, 'mux-' + seed + '.js').trim(); } catch (e) { got = 'THREW'; }
+    if (got !== want) { semBad++; if (!firstSem) firstSem = 'seed=' + seed + ' → ' + got.slice(0, 60); }
+  }
+  ok(semBad === 0, '复用导入下面向 2 seed 语义正确且导入数为 5', firstSem);
+  if (seen.length === 2) {
+    const a = [...seen[0]].sort().join(','), b = [...seen[1]].sort().join(',');
+    ok(seen[0].size >= 10 && a !== b, '子码逐构建变化（两 seed 无一相同）',
+      'sizes=' + seen[0].size + '/' + seen[1].size);
+  } else {
+    ok(false, '子码集合提取成功（两 seed 产物）', 'seen=' + seen.length);
+  }
+}
 
 if (process.argv[1] && process.argv[1].endsWith('shell-wasm.js')) {
   const bad = report();

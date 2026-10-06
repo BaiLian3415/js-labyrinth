@@ -2,9 +2,9 @@
  * 自定义运行时（RT）生成器：为 WASM 解释器内核档生成逐次不同的宿主运行时。
  *
  * 生成物包含三部分：
- *   1) 值语义层：句柄表（值 ↔ i32 句柄）、空闲句柄表、帧表栈，以及二十个随机
- *      命名的导函数（常量/片段/属性读写/调用/构造/二元与一元运算/字符串密文
- *      还原/心跳）；
+ *   1) 值语义层：句柄表（值 ↔ i32 句柄）、空闲句柄表、帧表栈，以及五个随机
+ *      命名的导入函数（u1/u2 复用值语义入口、v2 复用副作用入口、二元与一元
+ *      运算、字符串密文还原走 mks 子码、心跳走 hb 子码）；
  *   2) 桥接层：每个 VM 化函数体内只剩一句 `BRI(f, G, H, K, J, [参数...])`，
  *      参数在桥接里转成句柄后交给 WASM 解释器，返回值再解回 JS 值；
  *   3) 加载链：WASM 字节以标准 base64 分段存放，逐次随机决定段数、段序、掺入
@@ -94,52 +94,81 @@ function buildLoader(spec) {
   P('function ' + N.rlh + '(h) { if (h >= 4) { ' + N.fre + '.push(h); } }');
   P('function ' + N.cur + '() { return ' + N.fr + '[' + N.fr + '.length - 1]; }');
 
-  // ---- 2) 宿主导函数 ----
+  // ---- 2) 宿主复用入口 ----
+  //
+  // 导入表只有 u1/u2/v2/bin/un 五个入口（见 wasmvm.js IMPORT_DEFS），其中 u1/u2/v2
+  // 是按栈元数合并的多路复用入口：首参是逐构建随机的稀疏子码，决定真实语义分支。
+  // hook 单个导入只能看到（子码, 句柄…），子码→语义映射只存在于下面的分发链，
+  // 且逐构建重排分支顺序、重随机子码。按元数硬编码（"唯一的 (3→1) 就是 bin"）
+  // 的还原写法彻底失效：(2→1) 有 u1/un 两家，(3→1) 有 u2/bin 两家。
+  //
+  // 各语义分支先生成私有函数（uk 随机名，从不导出），分发链只做子码比对转发。
+  // 分支体与此前逐导入函数的实现逐字一致，语义等价是文本级的。
+  const sub = spec.subCodes;
+  if (!sub || !sub.u1 || !sub.u2 || !sub.v2) throw new Error('rtgen: 缺少复用子码表（wasmvm 传入）');
   const I = [];
-  I.push('function ' + impFn.ldc + '(k) { if (' + N.pois + ') { return 0; } '
+  const priv = {};
+  const defPriv = (key, args, body) => { const n = uk(); priv[key] = n; I.push('function ' + n + '(' + args + ') { ' + body + ' }'); };
+  defPriv('ldc', 'k', 'if (' + N.pois + ') { return 0; } '
     + 'var v = ' + N.cur + '().k[k]; '
     + 'if (v === void 0) { return 0; } if (v === null) { return 1; } '
-    + 'if (v === true) { return 2; } if (v === false) { return 3; } return ' + N.mkh + '(v); }');
-  I.push('function ' + impFn.frag + '(k) { if (' + N.pois + ') { return 0; } '
-    + 'return ' + N.mkh + '(' + N.cur + '().k[k]()); }');
-  I.push('function ' + impFn.exec + '(k) { if (' + N.pois + ') { return; } ' + N.cur + '().k[k](); }');
-  I.push('function ' + impFn.get + '(i) { if (' + N.pois + ') { return 0; } '
-    + 'return ' + N.mkh + '(' + N.cur + '().g[i]()); }');
-  I.push('function ' + impFn.set + '(i, h) { ' + N.cur + '().h[i](' + N.tab + '[h]); }');
-  I.push('function ' + impFn.getm + '(a, b) { if (' + N.pois + ') { return 0; } '
-    + 'return ' + N.mkh + '(' + N.tab + '[a][' + N.tab + '[b]]); }');
-  I.push('function ' + impFn.setm + '(a, b, c) { ' + N.tab + '[a][' + N.tab + '[b]] = ' + N.tab + '[c]; }');
-  I.push('function ' + impFn.bool + '(h) { return ' + N.tab + '[h] ? 1 : 0; }');
-  I.push('function ' + impFn.nul + '(h) { return ' + N.tab + '[h] != null ? 1 : 0; }');
-  I.push('function ' + impFn.thr + '(h) { throw ' + N.tab + '[h]; }');
-  I.push('function ' + impFn.rel + '(h) { if (h >= 4) { ' + N.fre + '.push(h); } }');
-  I.push('function ' + impFn.fail + '(c) { ' + (spec.debug ? 'console.error("[rt] mark " + c); return; ' : N.pois + ' = 1; ') + '}');
-  I.push('function ' + impFn.call + '(n, p) { if (' + N.pois + ') { return 0; } '
-    + 'var f = ' + N.tab + '[' + N.mv + '[p]], a = [], i; '
-    + 'for (i = 0; i < n; i++) { a[i] = ' + N.tab + '[' + N.mv + '[p + 1 + i]]; } '
-    + 'return ' + N.mkh + '(f.apply(void 0, a)); }');
-  I.push('function ' + impFn.callm + '(n, p) { if (' + N.pois + ') { return 0; } '
-    + 'var o = ' + N.tab + '[' + N.mv + '[p]], f = o[' + N.tab + '[' + N.mv + '[p + 1]]], a = [], i; '
-    + 'for (i = 0; i < n; i++) { a[i] = ' + N.tab + '[' + N.mv + '[p + 2 + i]]; } '
-    + 'return ' + N.mkh + '(f.apply(o, a)); }');
-  I.push('function ' + impFn.new + '(n, p) { if (' + N.pois + ') { return 0; } '
-    + 'var a = [], i; for (i = 0; i < n; i++) { a[i] = ' + N.tab + '[' + N.mv + '[p + 1 + i]]; } '
-    + 'return ' + N.mkh + '(Reflect.construct(' + N.tab + '[' + N.mv + '[p]], a)); }');
-  I.push('function ' + impFn.arr + '(n, p) { if (' + N.pois + ') { return 0; } '
-    + 'var a = [], i; for (i = 0; i < n; i++) { a[i] = ' + N.tab + '[' + N.mv + '[p + i]]; } '
-    + 'return ' + N.mkh + '(a); }');
-  // 字符串密文行还原：与 vm.js 的 strHash 逐位一致
-  I.push('function ' + impFn.mks + '(si) { if (' + N.pois + ') { return 0; } '
+    + 'if (v === true) { return 2; } if (v === false) { return 3; } return ' + N.mkh + '(v);');
+  defPriv('frag', 'k', 'if (' + N.pois + ') { return 0; } '
+    + 'return ' + N.mkh + '(' + N.cur + '().k[k]());');
+  defPriv('get', 'i', 'if (' + N.pois + ') { return 0; } '
+    + 'return ' + N.mkh + '(' + N.cur + '().g[i]());');
+  defPriv('bool', 'h', 'return ' + N.tab + '[h] ? 1 : 0;');
+  defPriv('nul', 'h', 'return ' + N.tab + '[h] != null ? 1 : 0;');
+  defPriv('mks', 'si', 'if (' + N.pois + ') { return 0; } '
     + 'var F = ' + N.cur + '(), row = F.j[si], Q = F.p, o = "", x, z; '
     + 'for (x = 0; x < row.length; x++) { '
     + 'z = ((' + N.mul + '(' + N.mul + '(si + 1, Q[0]) + x, Q[1]) >>> 8) ^ Q[2] ^ Q[3]) >>> 0; '
     + 'o += ' + N.fcc + '(row[x] ^ z); } '
-    + 'return ' + N.mkh + '(o); }');
-  // 心跳：内建函数原生性抽查（每 16 次心跳抽样一次，避开热路径字符串分配）
-  I.push('function ' + impFn.hb + '() { if (' + N.pois + ') { return; } '
+    + 'return ' + N.mkh + '(o);');
+  defPriv('thr', 'h', 'throw ' + N.tab + '[h];');
+  defPriv('getm', 'a,b', 'if (' + N.pois + ') { return 0; } '
+    + 'return ' + N.mkh + '(' + N.tab + '[a][' + N.tab + '[b]]);');
+  defPriv('call', 'n,p', 'if (' + N.pois + ') { return 0; } '
+    + 'var f = ' + N.tab + '[' + N.mv + '[p]], a = [], i; '
+    + 'for (i = 0; i < n; i++) { a[i] = ' + N.tab + '[' + N.mv + '[p + 1 + i]]; } '
+    + 'return ' + N.mkh + '(f.apply(void 0, a));');
+  defPriv('callm', 'n,p', 'if (' + N.pois + ') { return 0; } '
+    + 'var o = ' + N.tab + '[' + N.mv + '[p]], f = o[' + N.tab + '[' + N.mv + '[p + 1]]], a = [], i; '
+    + 'for (i = 0; i < n; i++) { a[i] = ' + N.tab + '[' + N.mv + '[p + 2 + i]]; } '
+    + 'return ' + N.mkh + '(f.apply(o, a));');
+  defPriv('lnew', 'n,p', 'if (' + N.pois + ') { return 0; } '
+    + 'var a = [], i; for (i = 0; i < n; i++) { a[i] = ' + N.tab + '[' + N.mv + '[p + 1 + i]]; } '
+    + 'return ' + N.mkh + '(Reflect.construct(' + N.tab + '[' + N.mv + '[p]], a));');
+  defPriv('arr', 'n,p', 'if (' + N.pois + ') { return 0; } '
+    + 'var a = [], i; for (i = 0; i < n; i++) { a[i] = ' + N.tab + '[' + N.mv + '[p + i]]; } '
+    + 'return ' + N.mkh + '(a);');
+  defPriv('set', 'i,h', N.cur + '().h[i](' + N.tab + '[h]);');
+  defPriv('setm', 'a,b,c', N.tab + '[a][' + N.tab + '[b]] = ' + N.tab + '[c];');
+  defPriv('exec', 'k', 'if (' + N.pois + ') { return; } ' + N.cur + '().k[k]();');
+  defPriv('rel', 'h', 'if (h >= 4) { ' + N.fre + '.push(h); }');
+  defPriv('fail', 'c', spec.debug === true ? 'console.error("[rt] mark " + c); return; ' : N.pois + ' = 1; ');
+  defPriv('hb', '', 'if (' + N.pois + ') { return; } '
     + N.hbw + '[0]++; if (' + N.hbw + '[0] < 16) { return; } ' + N.hbw + '[0] = 0; '
     + 'if (("" + Function.prototype.toString).indexOf(' + N.nat + ') < 0) { ' + N.pois + ' = 1; } '
-    + 'if (("" + RegExp.prototype.test).indexOf(' + N.nat + ') < 0) { ' + N.pois + ' = 1; } }');
+    + 'if (("" + RegExp.prototype.test).indexOf(' + N.nat + ') < 0) { ' + N.pois + ' = 1; }');
+  // 分发链：分支顺序逐构建打乱，子码字面量只出现在这里。未知子码返回 0/直接返回，
+  // 不抛错——真实执行不到，分析者无法用"未知子码抛错"区分真假路径。
+  const chain = (fn, grp, args, retZero) => {
+    const keys = shuffle(Object.keys(grp));
+    let s = 'function ' + fn + '(' + args + ') { ';
+    for (const k of keys) {
+      const callArgs = { ldc: 'x', frag: 'x', get: 'x', bool: 'x', nul: 'x', mks: 'x', thr: 'x',
+        getm: 'a,b', call: 'a,b', callm: 'a,b', lnew: 'a,b', arr: 'a,b',
+        set: 'a,b', setm: 'a,b,c', exec: 'a', rel: 'a', fail: 'a', hb: '' }[k === 'new' ? 'lnew' : k];
+      const app = priv[k === 'new' ? 'lnew' : k] + '(' + (k === 'hb' ? '' : callArgs) + ')';
+      s += 'if (s===' + (grp[k] | 0) + ') { ' + (retZero ? 'return ' + app + ';' : app + '; return;') + ' } ';
+    }
+    s += retZero ? 'return 0; }' : 'return; }';
+    return s;
+  };
+  I.push(chain(impFn.u1, sub.u1, 's,x', true));
+  I.push(chain(impFn.u2, sub.u2, 's,a,b', true));
+  I.push(chain(impFn.v2, sub.v2, 's,a,b,c', false));
   P(I.join('\n'));
   P('var ' + N.hbw + ' = [0];');
   P('var ' + N.nat + ' = "' + 'native' + '";');

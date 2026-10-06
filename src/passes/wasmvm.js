@@ -33,29 +33,39 @@ import rtgen from './rtgen.js';
 import platform from '../platform.js';
 
 // 宿主导入表（语义键 → 签名）。导入函数索引即本表下标，名字逐构建随机。
+//
+// 反 hook 多路复用：语义操作不各占一个导入，而是按**栈元数**合并为三条复用
+// 入口（u1/u2/v2）+ bin/un（首参本就是不透明分发字）。hook 单个导入只能看到
+// （随机子码, 句柄…），子码→语义的映射逐构建随机且只存在于宿主分发链里。
+// 按元数硬编码模式（"唯一的 (3→1) 就是 bin"）彻底失效：(2→1) 有 u1/un 两家，
+// (3→1) 有 u2/bin 两家，void 侧只有 v2 一家但 6 个子码共用。
 const IMPORT_DEFS = [
-  ['ldc', [T_I32], [T_I32]],                       // K 常量 → 句柄
-  ['frag', [T_I32], [T_I32]],                      // K 片段闭包调用
-  ['exec', [T_I32], []],                           // K 片段闭包调用（弃值）
-  ['get', [T_I32], [T_I32]],                       // G getter
-  ['set', [T_I32, T_I32], []],                     // H setter
-  ['getm', [T_I32, T_I32], [T_I32]],               // 成员读
-  ['setm', [T_I32, T_I32, T_I32], []],             // 成员写
-  ['bin', [T_I32, T_I32, T_I32], [T_I32]],         // 二元（分发字定运算）
-  ['un', [T_I32, T_I32], [T_I32]],                 // 一元
-  ['bool', [T_I32], [T_I32]],                      // ToBoolean
-  ['nul', [T_I32], [T_I32]],                       // != null
-  ['mks', [T_I32], [T_I32]],                       // 字符串密文行还原
-  ['call', [T_I32, T_I32], [T_I32]],               // 调用（argc, 栈指针）
-  ['callm', [T_I32, T_I32], [T_I32]],              // 方法调用
-  ['new', [T_I32, T_I32], [T_I32]],                // 构造
-  ['arr', [T_I32, T_I32], [T_I32]],                // 数组字面量
-  ['thr', [T_I32], [T_I32]],                       // 抛出（恒抛；签名统一为 i32 便于混排）
-  ['hb', [], []],                                  // 心跳自检
-  ['rel', [T_I32], []],                            // 句柄释放
-  ['fail', [T_I32], []],                           // 完整性失败置毒
+  ['u1', [T_I32, T_I32], [T_I32]],               // 复用一元值 op：ldc/frag/get/bool/nul/mks/thr
+  ['u2', [T_I32, T_I32, T_I32], [T_I32]],        // 复用二元值 op：getm/call/callm/new/arr
+  ['v2', [T_I32, T_I32, T_I32, T_I32], []],      // 复用副作用 op：set/setm/exec/rel/fail/hb（多余槽位填 0）
+  ['bin', [T_I32, T_I32, T_I32], [T_I32]],       // 二元（分发字定运算）
+  ['un', [T_I32, T_I32], [T_I32]],               // 一元
 ];
 const IMP = Object.fromEntries(IMPORT_DEFS.map(([k], i) => [k, i]));
+
+/**
+ * 复用入口的子码表（构造器，逐构建调用）。u1/u2/v2 的首个栈参数是子码，决定
+ * 宿主执行哪个语义分支。稀疏随机整数（组内互异）：0..N 的稠密编号会泄露
+ * "第几个分支"，稀疏值则没有序数信息。同一份映射经 spec 传给 rtgen（宿主分发
+ * 链用同一套），两边对不上则冒烟的 anchor/probe 先挂，不会静默产出坏产物。
+ *
+ * 必须是逐构建生成：模块层只跑一次，多次 obfuscate() 会复用同一张表。
+ */
+function makeSubCodes() {
+  const used = new Set();
+  const pick = () => { let v; do { v = randInt(1, 0x7fffffff); } while (used.has(v)); used.add(v); return v; };
+  const grp = (ops) => Object.fromEntries(ops.map((op) => [op, pick()]));
+  return {
+    u1: grp(['ldc', 'frag', 'get', 'bool', 'nul', 'mks', 'thr']),
+    u2: grp(['getm', 'call', 'callm', 'new', 'arr']),
+    v2: grp(['set', 'setm', 'exec', 'rel', 'fail', 'hb']),
+  };
+}
 
 // 每函数参数表布局（PT，8 字/函数）
 const PT_SEG = 0, PT_LEN = 1, PT_NSLOTS = 2, PT_FRAME = 3, PT_CHAIN = 4,
@@ -71,6 +81,9 @@ const PH_RCINC = 100;
 const PH_RCDEC = 101;
 
 /** i32 → LE 字节。 */
+/** 当前构建的复用子码表（buildInterpreter 入口赋值，见上）。 */
+let SUBCODES = null;
+
 function i32le(v) {
   v = v | 0;
   return [v & 0xff, (v >>> 8) & 0xff, (v >>> 16) & 0xff, (v >>> 24) & 0xff];
@@ -134,6 +147,7 @@ WAsm.prototype.brIf = function (name) {
  * @param {number} total 分发字空间大小
  */
 function buildInterpreter(fns, wordOf, total) {
+  SUBCODES = makeSubCodes();
   const MOD_K1 = randInt(0x10001, 0x7ffffffe) | 1;
   const MOD_X = randInt(0x1000, 0xffffff);
   const TK1 = randInt(0x10001, 0x7ffffffe) | 1;   // 表层散列乘数
@@ -267,6 +281,14 @@ function buildInterpreter(fns, wordOf, total) {
     module: modName, name: impNameOf[k], typeIdx: typeOf(params, results),
   }));
   const callImp = (k) => [OP.call, ...uleb(IMP[k])];
+  // 复用入口调用前缀：子码先压栈，再压原操作数。v2 固定 4 槽，不足补 i32 0。
+  // 子码是稀疏随机值（见 makeSubCodes），静态按"第几个 call"数导入行为的写法失效。
+  // SUBCODES 逐构建赋值（buildInterpreter 入口）：构建全程同步单线程，无重入，
+  // 与 ctx.__vmWasmShared 同一生命周期，rtgen 经 spec 拿同一份。
+  const u1sub = (op) => [...i32Const(SUBCODES.u1[op])];
+  const u2sub = (op) => [...i32Const(SUBCODES.u2[op])];
+  const v2head = (op) => [...i32Const(SUBCODES.v2[op])];
+  const v2pad = (n) => Array.from({ length: n }, () => i32Const(0)).flat();
 
   // ---- 引用计数辅助函数 ----
   const rcIncBody = [].concat(
@@ -283,7 +305,7 @@ function buildInterpreter(fns, wordOf, total) {
     localGet(1), i32Load(), i32Const(1), [OP.i32_sub], localSet(2),
     localGet(1), localGet(2), i32Store(),
     localGet(2), [OP.i32_eqz, OP.if, BLOCK_VOID],
-    localGet(0), callImp('rel'),
+    localGet(0), ...v2head('rel'), ...v2pad(2), callImp('v2'),
     [OP.end],
     [OP.end, OP.end],
   ).flat(2);
@@ -327,8 +349,8 @@ function buildInterpreter(fns, wordOf, total) {
   const w = new WAsm();
   // 构建期诊断标记（DSH_WASMVM_DEBUG）：借 fail 导入回传阶段号，最后一条即已到达的阶段
   const TRACE = !!platform.env('DSH_WASMVM_DEBUG');
-  const mark = (n) => { if (TRACE) w.raw([].concat(i32Const(n), callImp('fail')).flat(2)); };
-  const probe = (l) => { if (TRACE) w.raw([].concat(G(l), callImp('fail')).flat(2)); };
+  const mark = (n) => { if (TRACE) w.raw([].concat(i32Const(n), ...v2head('fail'), ...v2pad(2), callImp('v2')).flat(2)); };
+  const probe = (l) => { if (TRACE) w.raw([].concat(G(l), ...v2head('fail'), ...v2pad(2), callImp('v2')).flat(2)); };
 
   // ---- 帧入口 ----
   w.raw([].concat(
@@ -347,7 +369,7 @@ function buildInterpreter(fns, wordOf, total) {
     G(L.fb), G(L.fr), [OP.i32_add], S(L.t),
     G(L.t), [OP.global_set, ...uleb(0)],
     G(L.t), splitConst(FRAMEEND), [OP.i32_gt_u, OP.if, BLOCK_VOID],
-    i32Const(2), callImp('fail'), [OP.unreachable],
+    i32Const(2), ...v2head('fail'), ...v2pad(2), callImp('v2'), [OP.unreachable],
     [OP.end],
     G(L.fb), G(L.fr), [OP.i32_add], G(L.sg), [OP.i32_sub], S(L.cs),
     [OP.global_get, ...uleb(1)], i32Const(1), [OP.i32_add], S(L.t),
@@ -397,12 +419,12 @@ function buildInterpreter(fns, wordOf, total) {
     [OP.global_get, ...uleb(3)], i32Const(1), [OP.i32_add], S(L.t),
     G(L.t), [OP.global_set, ...uleb(3)],
     G(L.t), i32Const(HBK), [OP.i32_and, OP.i32_eqz, OP.if, BLOCK_VOID],
-    callImp('hb'),
+    ...v2head('hb'), ...v2pad(3), callImp('v2'),
     [OP.end],
   ).flat(2));
   probe(L.fb); probe(L.cs); probe(L.base); probe(L.sg); probe(L.fr);
   probe(L.mk); probe(L.ch); probe(L.k1); probe(L.k2);
-  if (TRACE) { w.raw([].concat(G(L.cs), G(L.pc), [OP.i32_add], shl2(), i32Load(), callImp('fail')).flat(2)); }
+  if (TRACE) { w.raw([].concat(G(L.cs), G(L.pc), [OP.i32_add], shl2(), i32Load(), ...v2head('fail'), ...v2pad(2), callImp('v2')).flat(2)); }
   w.raw([].concat(fetch(L.d)).flat(2));
   probe(L.d);
   w.raw([].concat(G(L.d), splitConst(SEMB), [OP.i32_add], shl2(), i32Load(), S(L.sem)).flat(2));
@@ -418,7 +440,7 @@ function buildInterpreter(fns, wordOf, total) {
     [OP.unreachable],
   ).flat(2));
   w.end(); // $dflt 闭合，此处位于 $c{NS-1} 内 → 默认桶体
-  w.raw([].concat(i32Const(3), callImp('fail'), [OP.unreachable]).flat(2));
+  w.raw([].concat(i32Const(3), ...v2head('fail'), ...v2pad(2), callImp('v2'), [OP.unreachable]).flat(2));
   w.br('$next');
 
   // ---- case 体生成器 ----
@@ -427,7 +449,7 @@ function buildInterpreter(fns, wordOf, total) {
   function callSeq(imp, n, head) {
     const pre = [].concat(
       G(L.sp), i32Const(head), [OP.i32_sub], S(L.t),
-      i32Const(n), G(L.t), callImp(imp), S(L.h),
+      ...u2sub(imp), i32Const(n), G(L.t), callImp('u2'), S(L.h),
       i32Const(0), S(L.i),
     );
     const post = [].concat(
@@ -439,7 +461,7 @@ function buildInterpreter(fns, wordOf, total) {
 
   const caseBodyOf = (kind) => {
     if (kind === 'LDC') return [].concat(
-      fetch(L.h), G(L.h), callImp('ldc'), S(L.h), rcInc(L.h), push(L.h));
+      ...u1sub('ldc'), fetch(L.h), G(L.h), callImp('u1'), S(L.h), rcInc(L.h), push(L.h));
     if (kind === 'LOD') return [].concat(
       fetch(L.h),
       G(L.fb), G(L.h), [OP.i32_add], shl2(), i32Load(), S(L.h),
@@ -451,25 +473,25 @@ function buildInterpreter(fns, wordOf, total) {
       rcDec(L.b),
       G(L.fb), G(L.t), [OP.i32_add], shl2(), G(L.h), i32Store());
     if (kind === 'GET') return [].concat(
-      fetch(L.h), G(L.h), callImp('get'), S(L.h), rcInc(L.h), push(L.h));
+      ...u1sub('get'), fetch(L.h), G(L.h), callImp('u1'), S(L.h), rcInc(L.h), push(L.h));
     if (kind === 'SET') return [].concat(
-      fetch(L.t), popMove(L.h), G(L.t), G(L.h), callImp('set'), rcDec(L.h));
+      fetch(L.t), popMove(L.h), ...v2head('set'), G(L.t), G(L.h), ...v2pad(1), callImp('v2'), rcDec(L.h));
     if (kind === 'FRAG') return [].concat(
-      fetch(L.h), G(L.h), callImp('frag'), S(L.h), rcInc(L.h), push(L.h));
-    if (kind === 'EXEC') return [].concat(fetch(L.t), G(L.t), callImp('exec'));
+      ...u1sub('frag'), fetch(L.h), G(L.h), callImp('u1'), S(L.h), rcInc(L.h), push(L.h));
+    if (kind === 'EXEC') return [].concat(fetch(L.t), ...v2head('exec'), G(L.t), ...v2pad(2), callImp('v2'));
     if (kind === 'MKS') return [].concat(
-      fetch(L.h), G(L.h), callImp('mks'), S(L.h), rcInc(L.h), push(L.h));
+      ...u1sub('mks'), fetch(L.h), G(L.h), callImp('u1'), S(L.h), rcInc(L.h), push(L.h));
     if (kind === 'GETM') return [].concat(
       popMove(L.b), popMove(L.a2),
-      G(L.a2), G(L.b), callImp('getm'), S(L.h),
+      ...u2sub('getm'), G(L.a2), G(L.b), callImp('u2'), S(L.h),
       rcDec(L.b), rcDec(L.a2), rcInc(L.h), push(L.h));
     if (kind === 'SETM') return [].concat(
       popMove(L.h), popMove(L.b), popMove(L.a2),
-      G(L.a2), G(L.b), G(L.h), callImp('setm'),
+      ...v2head('setm'), G(L.a2), G(L.b), G(L.h), callImp('v2'),
       rcDec(L.b), rcDec(L.a2), rcInc(L.h), push(L.h));
     if (kind === 'GETMK') return [].concat(
       peek(1, L.a2), peek(0, L.b),
-      G(L.a2), G(L.b), callImp('getm'), S(L.h),
+      ...u2sub('getm'), G(L.a2), G(L.b), callImp('u2'), S(L.h),
       rcInc(L.h), push(L.h));
     if (kind === 'DUP') return [].concat(peek(0, L.h), rcInc(L.h), push(L.h));
     if (kind === 'POP') return [].concat(popMove(L.h), rcDec(L.h));
@@ -480,7 +502,7 @@ function buildInterpreter(fns, wordOf, total) {
       const cond = kind === 'JPF' ? [OP.i32_eqz] : [];
       return [].concat(
         fetch(L.t),
-        popMove(L.h), G(L.h), callImp('bool'), S(L.c), rcDec(L.h),
+        popMove(L.h), ...u1sub('bool'), G(L.h), callImp('u1'), S(L.c), rcDec(L.h),
         fetch(L.b),
         G(L.c), cond, [OP.if, BLOCK_VOID],
         G(L.t), S(L.pc),
@@ -496,7 +518,7 @@ function buildInterpreter(fns, wordOf, total) {
           fetch(L.b),   // 数量 n
           fetch(L.a2),  // 链值字（取走即完成链复位）
           peek(0, L.h), // 栈顶 v（不消费）
-          G(L.h), callImp(imp), S(L.c),
+          ...u1sub(imp), G(L.h), callImp('u1'), S(L.c),
         ),
         cond: jumpWhenTruthy ? [G(L.c)] : [G(L.c), OP.i32_eqz],
         tail: [].concat(
@@ -510,7 +532,7 @@ function buildInterpreter(fns, wordOf, total) {
     if (kind === 'RET') return { ret: true };
     if (kind === 'RETU' || kind === 'END') return { retu: true };
     if (kind === 'THR') return [].concat(
-      popMove(L.h), G(L.h), callImp('thr'), [OP.drop, OP.unreachable]);
+      popMove(L.h), ...u1sub('thr'), G(L.h), callImp('u1'), [OP.drop, OP.unreachable]);
     if (kind.startsWith('BIN_')) return [].concat(
       popMove(L.b), popMove(L.a2),
       G(L.d), G(L.a2), G(L.b), callImp('bin'), S(L.h),
@@ -837,7 +859,7 @@ function buildInterpreter(fns, wordOf, total) {
 
   return {
     mod, expNames, impNameOf, modName, ANCHOR, probeIdx, probeVal,
-    kinds, NS, total, smoke,
+    kinds, NS, total, smoke, subCodes: SUBCODES,
     layout: { CODEBASE, PTB, ASB, SEMB, PRB, TBSTART, TBEND, FRAMEBASE, FRAMEEND, ARGAREA, RCBASE, RCCAP, MAXA },
   };
 }
@@ -882,6 +904,7 @@ export default function wasmvm(ast, options, ctx) {
     impNameOf: built.impNameOf,
     expNames: built.expNames,
     importDefs: IMPORT_DEFS,
+    subCodes: built.subCodes,
     binWords: [...shared.wordOf].filter(([k]) => k.startsWith('BIN_')).map(([k, w]) => [w, k.slice(4)]),
     unWords: [...shared.wordOf].filter(([k]) => k.startsWith('UN_')).map(([k, w]) => [w, k.slice(3)]),
     strParams: fns.map((f) => [f.STR_P, f.STR_K1, f.STR_K2, f.STR_M0]),
@@ -914,5 +937,8 @@ export default function wasmvm(ast, options, ctx) {
     moduleBytes: built.mod.length,
     smoke: built.smoke,
     rtLayers: rt.layers,
+    // 宿主导入数：多路复用后恒为 5（u1/u2/v2/bin/un）。有人加回逐语义导入时
+    // 这里会变，测试据此拦截"导入面悄悄膨胀"。
+    imports: IMPORT_DEFS.length,
   };
 }
