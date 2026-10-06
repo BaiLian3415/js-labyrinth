@@ -799,6 +799,83 @@ function setFiles(items) {
   els.zipBtn.hidden = state.files.length < 2;
   els.zipBtn.textContent = t('guiDownloadZip', { n: state.files.length });
   showResult();
+  syncEmptyHint();
+}
+
+/** 输入区空状态的示例：一键填入输入框。代码保持短小可运行，中英标签随语言切换。 */
+const SAMPLES = [
+  {
+    zh: 'Hello World', en: 'Hello World',
+    code: 'console.log("Hello, world!");',
+  },
+  {
+    zh: '斐波那契', en: 'Fibonacci',
+    code: [
+      'function fib(n) {',
+      '  if (n < 2) return n;',
+      '  return fib(n - 1) + fib(n - 2);',
+      '}',
+      'for (var i = 0; i < 10; i++) console.log(fib(i));',
+    ].join('\n'),
+  },
+  {
+    zh: '数组操作', en: 'Array ops',
+    code: [
+      'var nums = [3, 1, 4, 1, 5, 9, 2, 6];',
+      'var evens = nums.filter(function (x) { return x % 2 === 0; });',
+      'var doubled = evens.map(function (x) { return x * 2; });',
+      'var sum = doubled.reduce(function (a, b) { return a + b; }, 0);',
+      'console.log(doubled.join(","), sum);',
+    ].join('\n'),
+  },
+  {
+    zh: '简易计算器', en: 'Calculator',
+    code: [
+      'function calc(op, a, b) {',
+      '  switch (op) {',
+      '    case "+": return a + b;',
+      '    case "-": return a - b;',
+      '    case "*": return a * b;',
+      '    case "/": return b === 0 ? NaN : a / b;',
+      '    default: throw new Error("unknown op");',
+      '  }',
+      '}',
+      'console.log(calc("+", 2, 3), calc("*", 4, 5));',
+    ].join('\n'),
+  },
+  {
+    zh: '字符串工具', en: 'String utils',
+    code: [
+      'function reverse(s) { return s.split("").reverse().join(""); }',
+      'function capitalize(s) { return s.charAt(0).toUpperCase() + s.slice(1); }',
+      'console.log(reverse("hello"), capitalize("world"));',
+    ].join('\n'),
+  },
+];
+
+/** 渲染示例链接（语言切换时重渲染）。 */
+function renderSamples() {
+  const host = $('sampleLinks');
+  if (!host) return;
+  host.textContent = '';
+  for (const s of SAMPLES) {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.textContent = state.lang === 'en' ? s.en : s.zh;
+    b.addEventListener('click', () => {
+      els.input.value = s.code;
+      els.input.focus();
+      syncEmptyHint();
+    });
+    host.appendChild(b);
+  }
+}
+
+/** 输入区为空且未禁用时显示空状态层，否则隐藏。 */
+function syncEmptyHint() {
+  const el = $('emptyHint');
+  if (!el) return;
+  el.hidden = els.input.disabled || els.input.value !== '';
 }
 
 /** 文件标签栏。 */
@@ -819,6 +896,7 @@ function renderFiles() {
       els.input.value = f.code;
       renderFiles();
       showResult();
+      syncEmptyHint();
     });
     host.appendChild(b);
   });
@@ -1909,7 +1987,7 @@ async function init() {
     'licKey', 'actBtn', 'deactBtn', 'licInfo', 'licDevice', 'licBadge', 'seed', 'presetHint',
     'layoutHint', 'layoutResetBtn', 'cfgImportBtn', 'cfgExportBtn', 'cfgFile',
     'resetBtn', 'status', 'quota', 'ver', 'inputPane', 'outputPane', 'apiState', 'shortcutHint',
-    'compareBtn', 'compareModal', 'compareClose', 'compareBackdrop']) {
+    'compareBtn', 'compareModal', 'compareClose', 'compareBackdrop', 'emptyHint', 'sampleLinks']) {
     els[id] = $(id);
   }
 
@@ -1926,6 +2004,9 @@ async function init() {
   renderThemeBtn();   // 必须在 applyI18n() 之后：见 renderThemeBtn 的说明
   renderOptions();
   initPaneOrder();
+  renderSamples();
+  syncEmptyHint();
+  els.input.addEventListener('input', syncEmptyHint);
 
   // 事件绑定
   els.lang.addEventListener('change', async () => {
@@ -1938,6 +2019,7 @@ async function init() {
     showResult();
     renderApiState();
     renderShortcutHint();
+    renderSamples();
     // 授权面板与配额、状态栏都是"渲染一次"的（不走 data-i18n），切语言必须重刷，
     // 否则英文界面下这三处会一直停在初始化时的中文。
     await refreshLicensePanel();
@@ -1980,6 +2062,7 @@ async function init() {
     els.input.value = '';
     els.inInfo.textContent = '';
     setStatus('');
+    syncEmptyHint();
   });
 
   els.seed.addEventListener('input', () => {

@@ -387,6 +387,26 @@ html.light .pane { box-shadow: var(--shadow-pane), inset 0 1px 0 rgba(255, 255, 
 .editor::placeholder { color: var(--fg-dim); opacity: .7; }
 #output { color: var(--fg); }
 
+/* 输入区空状态：textarea 为空时居中覆盖一层提示 + 示例链接。
+   层本身 pointer-events:none（点击穿透到 textarea 聚焦），只有链接按钮可点。 */
+.editor-wrap { position: relative; flex: 1 1 auto; display: flex; min-height: 0; }
+.editor-wrap > .editor { flex: 1 1 auto; width: 100%; }
+.empty-hint {
+  position: absolute; inset: 0; display: flex; flex-direction: column;
+  align-items: center; justify-content: center; gap: 8px; text-align: center;
+  padding: 16px; pointer-events: none; color: var(--fg);
+}
+.empty-hint[hidden] { display: none; }
+.empty-hint p { margin: 0; }
+.sample-links { display: flex; flex-wrap: wrap; gap: 4px 12px; justify-content: center; }
+.sample-links button {
+  pointer-events: auto; background: none; border: 0; padding: 0; cursor: pointer;
+  font: inherit; color: #7dd3fc; text-decoration: underline; text-underline-offset: 2px;
+}
+.sample-links button:hover { color: #bae6fd; }
+html.light .sample-links button { color: #0369a1; }
+html.light .sample-links button:hover { color: #0284c7; }
+
 .pane-foot {
   display: flex;
   gap: 8px;

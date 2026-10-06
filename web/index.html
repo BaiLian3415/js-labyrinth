@@ -102,10 +102,16 @@
           </div>
         </div>
         <div class="files" id="files" hidden></div>
-        <textarea id="input" class="editor" spellcheck="false" autocomplete="off"
-          data-i18n-aria="guiInput" aria-label="input"
-          data-i18n-ph="guiInputPh"
-          placeholder="// 在此粘贴 JavaScript，或把 .js / .html 文件拖进这个面板"></textarea>
+        <div class="editor-wrap">
+          <textarea id="input" class="editor" spellcheck="false" autocomplete="off"
+            data-i18n-aria="guiInput" aria-label="input"
+            data-i18n-ph="guiInputPh"
+            placeholder="// 在此粘贴 JavaScript，或把 .js / .html 文件拖进这个面板"></textarea>
+          <div class="empty-hint" id="emptyHint" hidden>
+            <p data-i18n="guiSampleHint">在此粘贴您的 JavaScript 代码，或试试示例：</p>
+            <p class="sample-links" id="sampleLinks"></p>
+          </div>
+        </div>
         <div class="pane-foot">
           <span id="inInfo" class="dim"></span>
           <span id="dropHint" class="dim" data-i18n="guiDropHint">拖入 .js / .html 文件，或直接粘贴代码到左侧</span>
