@@ -13,6 +13,7 @@
  */
 import { obfuscate } from '../src/index.js';
 import * as shell from '../src/passes/shell.js';
+import rand from '../src/utils/rand.js';
 import { ok, report, section, cleanTmp, runNode } from './_harness.js';
 
 const SRC = [
@@ -95,17 +96,23 @@ section('原语算法多态');
     mismatch.slice(0, 3).join(' | '));
   ok(degenerate.length === 0, '全部变体的密钥流推进器非退化', degenerate.slice(0, 3).join(' | '));
 
-  // ③ mul32 两族必须给出同一结果——这是"只换写法不改行为"的前提。
-  //    Math.imul 是 ES2015 才进规范的，所以保留 16 位拆分那一族；两者同值才能自由切换。
+  // ③ mul32 各族必须给出同一结果——这是"只换写法不改行为"的前提。
+  //    Math.imul 是 ES2015 才进规范的，所以保留 16 位拆分那一族；移位加那族是
+  //    唯一带循环的。三族同值才能自由切换，族数由 PRIMITIVE_VARIANT_COUNTS 驱动。
   {
-    shell.setPrimitiveVariants({ mul32: 0 });
-    const m0 = probe.map((s) => shell.primitivesDirect.mul32(s, 0xffffffff));
-    shell.setPrimitiveVariants({ mul32: 1 });
-    const m1 = probe.map((s) => shell.primitivesDirect.mul32(s, 0xffffffff));
-    ok(JSON.stringify(m0) === JSON.stringify(m1), 'mul32 的两族给出同一结果（可自由切换）',
-      m0.map((x, i) => (x === m1[i] ? '' : i + ':' + x + '!=' + m1[i])).filter(Boolean).join(' '));
-    ok(m0.every((x) => Number.isInteger(x) && x >= 0 && x <= 0xffffffff),
-      'mul32 结果落在 uint32 区间', m0.filter((x) => !(x >= 0 && x <= 0xffffffff)).join(','));
+    const C2 = shell.PRIMITIVE_VARIANT_COUNTS.mul32;
+    const outs = [];
+    for (let f = 0; f < C2; f++) {
+      shell.setPrimitiveVariants({ mul32: f });
+      outs.push(probe.map((s) => shell.primitivesDirect.mul32(s, 0xffffffff)));
+    }
+    const bad = [];
+    for (let f = 1; f < C2; f++) {
+      outs[0].forEach((x, i) => { if (x !== outs[f][i]) bad.push(i + ':' + x + '!=' + outs[f][i]); });
+    }
+    ok(bad.length === 0, 'mul32 的 ' + C2 + ' 族给出同一结果（可自由切换）', bad.slice(0, 8).join(' '));
+    ok(outs[0].every((x) => Number.isInteger(x) && x >= 0 && x <= 0xffffffff),
+      'mul32 结果落在 uint32 区间', outs[0].filter((x) => !(x >= 0 && x <= 0xffffffff)).join(','));
   }
 
   // ④ choosePrimitiveVariants 对同一随机源序列给出同一族（可复现的前提）
@@ -217,6 +224,32 @@ section('多层壳与可复现性');
     const a = obfuscate(SRC, { preset: 'low', seed: 5, shell: false }).code;
     const b = obfuscate(SRC, { preset: 'low', seed: 5, shell: false }).code;
     ok(a === b, 'shell:false 时产物可复现');
+  }
+
+  // ⑨ 解码双形态 decStyle：显式指定 0（内联双层循环）/1（分段解码助手），
+  //    直接造引导器并真跑。variant 参数只开到 makeShellLayer，不经过 obfuscate，
+  //    所以种子与原语族在这里同样钉死；编码侧（分段/乱序）两种形态共用同一套。
+  {
+    const PAY = 'console.log("dec9:" + (6 * 7));';
+    let bad = 0, firstBad = '';
+    const texts = [];
+    for (const decStyle of [0, 1]) {
+      for (const seed of [5, 6]) {
+        rand.setSeed(seed);
+        shell.setPrimitiveVariants(shell.DEFAULT_VARIANTS);
+        const loader = shell.makeShellLayer(PAY,
+          { tailOrder: 0, evalStyle: 0, posHash: 0, decStyle }, {});
+        texts.push(loader);
+        const got = String(runNode(loader, 'hp-dec-' + decStyle + '-' + seed + '.js')).trim();
+        if (got !== 'dec9:42') { bad++; if (!firstBad) firstBad = 'decStyle=' + decStyle + ' seed=' + seed + ' → ' + got.slice(0, 50); }
+      }
+    }
+    shell.setPrimitiveVariants(shell.DEFAULT_VARIANTS);
+    ok(bad === 0, '解码双形态 0/1 的引导器都能跑出正确结果', firstBad);
+    // B 形态带分段助手（直接文本里还是占位名，未进 randomizeNames），A 形态没有
+    const hasHelper = texts.map((t) => t.includes('_0ds=function'));
+    ok(hasHelper[0] === false && hasHelper[1] === false && hasHelper[2] === true && hasHelper[3] === true,
+      'decStyle=1 的两份带分段助手、=0 的两份不带（形态确实分叉）', JSON.stringify(hasHelper));
   }
 }
 

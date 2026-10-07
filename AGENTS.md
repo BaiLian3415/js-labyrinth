@@ -72,6 +72,21 @@ npm run build:web:cloud  # 云端执行形态（核心不进产物，Vercel 部�
 - 解释器形态：`dispatchForm`（switch/表驱动/嵌套 if/直接寻址）× 循环骨架 ×
   分发桶函数 × junk 声明逐构建随机；单字节码加密用
   「值 ^ posMask ^ 掩码 ^ 链值 ^ 块密钥」，入口按掩码原位重写 B。
+- 形态多态（`src/utils/morph.js`，只收逐位等价的 AST 二/三选一：`declKind`、
+  `yodaEq`、`relCmp`、`negCmp`、`boolLit`、`incUpd`、`loopTrue`、`retVoid`、
+  `memberDot`；`numLit` 只改原文写法）。铁律：只用于生成的机器代码（不动用户
+  AST），操作数必须纯（标识符/字面量/纯数据成员读），`incUpd` 只进 for-update
+  槽且目标是数值计数器，loader 顶层一律保留 `var`（载荷 eval 同作用域，
+  `var` 改 `let` 会把同名复用变 SyntaxError）。
+- 外壳引导器语句多态（`shell.js` 内 `P()` 字符串模板二/三选 + `decStyle`
+  解码双形态 + 装载期死代码 0~14 条）：for/while、比较方向、点/方括号调用、
+  var 合/分、xor/加法结合律括号、链式赋值；全部手验等价，语义网靠
+  `test/semantics.js` + `test/handler-poly.js`。引导器新固定名必须进
+  `banner.js randomizeNames` 名单，否则成指纹。
+- 原语新族：`mul32-C`（8 位拆分精确式，无循环——移位加版曾在此处，因 32 轮
+  循环经控制流扁平化后把大载荷装载拖慢到触发反调试时延拖慢正反馈、产物运行
+  超过 60s 测试超时，已弃用；handler-poly ③ 已推广到全族两两等价）、
+  `shfl-C`（由内向外、新数组返回；调用点一律取返回值，不依赖原地改写）。
 - WASM 档（`wasm`/`wasmInterpreter`）把取指/分发搬进模块，**关闭**一套运行期
   选项（见 vm() 里 OFF 表）；改动 JS 侧取指式时要同步核对 `src/passes/wasm.js`
   与 `src/passes/wasmvm.js` 的同构实现。

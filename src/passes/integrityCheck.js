@@ -3,6 +3,7 @@ import generate from '../ast/generator.js';
 import parser from '../ast/parser.js';
 const { parse } = parser;
 import rand from '../utils/rand.js';
+import morph from '../utils/morph.js';
 import { isChineseNaming } from '../utils/cjk.js';
 const { randInt, randHex, uniqueName } = rand;
 import vm from './vm.js';
@@ -244,14 +245,16 @@ const targets = rootBody.filter((s) => s.type === 'FunctionDeclaration' && s.id 
     const form = randInt(0, 2);
     if (form === 0) {
       const c = (n1 ^ n2) + n3;
-      retStmt = t.returnStatement(t.binaryExpression('===',
+      // 比较方向多态（见 morph.yodaEq）：marker 由下面统一从 retStmt 文本导出，
+      // 方向翻转后 marker 同步变，构建期与运行期天然一致。
+      retStmt = t.returnStatement(morph.yodaEq(
         t.binaryExpression('+',
           t.binaryExpression('^', t.numericLiteral(n1), t.numericLiteral(n2)),
           t.numericLiteral(n3)),
         t.numericLiteral(c)));
     } else if (form === 1) {
       const c = (n1 + n2) ^ n3;
-      retStmt = t.returnStatement(t.binaryExpression('===',
+      retStmt = t.returnStatement(morph.yodaEq(
         t.binaryExpression('^',
           t.binaryExpression('+', t.numericLiteral(n1), t.numericLiteral(n2)),
           t.numericLiteral(n3)),
@@ -259,7 +262,7 @@ const targets = rootBody.filter((s) => s.type === 'FunctionDeclaration' && s.id 
     } else {
       // imul 的产物按 int32 比较，与运行期表达式同一口径，RT MUL 逐位等价
       const c = Math.imul(n1, n2 | 1) ^ n3;
-      retStmt = t.returnStatement(t.binaryExpression('===',
+      retStmt = t.returnStatement(morph.yodaEq(
         t.binaryExpression('^',
           rtlib.mulCall(ctx, t.numericLiteral(n1), t.binaryExpression('|', t.numericLiteral(n2), t.numericLiteral(1))),
           t.numericLiteral(n3)),

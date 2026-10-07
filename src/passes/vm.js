@@ -35,6 +35,7 @@ const { parse } = parser;
 import rtlib from './rtlib.js';
 import rand from '../utils/rand.js';
 const { shuffle, uniqueName, randInt } = rand;
+import morph from '../utils/morph.js';
 import i18n from '../i18n.js';
 const { t: msg } = i18n;
 import platform from '../platform.js';
@@ -1014,9 +1015,9 @@ function compileFunction(fn, ctx) {
       t.variableDeclaration('var', [t.variableDeclarator(t.identifier(nT0), t.stringLiteral(''))]),
       t.forStatement(
         t.variableDeclaration('var', [t.variableDeclarator(t.identifier(nT1), t.numericLiteral(0))]),
-        t.binaryExpression('<', t.identifier(nT1),
-          t.memberExpression(row, t.identifier('length'), false)),
-        t.updateExpression('++', t.identifier(nT1), false),
+        morph.relCmp('<', t.identifier(nT1),
+          morph.memberDot(row, 'length')),
+        morph.incUpd(nT1),
         t.blockStatement([
           t.expressionStatement(t.assignmentExpression('=',
             t.identifier(nT0),
@@ -1821,7 +1822,7 @@ function compileFunction(fn, ctx) {
     parts.push(t.identifier(nCHN));
     return t.sequenceExpression(parts);
   };
-  const Slen = () => t.memberExpression(S, t.identifier('length'), false);
+  const Slen = () => morph.memberDot(S, 'length');
   // topElem 是原样栈顶（已编码值），供 DUP 直接复制；topVal 是解码后的真值，
   // 供条件跳转判值、GETMK 取键这类"要用真值"的地方。
   const topElem = () => t.memberExpression(S,
@@ -1832,7 +1833,7 @@ function compileFunction(fn, ctx) {
     t.binaryExpression('-',
       t.memberExpression(arr, t.identifier('length'), false), t.numericLiteral(1)), true);
   const declConst = (name, init) =>
-    t.variableDeclaration('const', [t.variableDeclarator(t.identifier(name), init)]);
+    t.variableDeclaration(morph.declKind(), [t.variableDeclarator(t.identifier(name), init)]);
   const idn = (n) => t.identifier(n);
   const assignPC = (val) => t.expressionStatement(t.assignmentExpression('=', PC, val));
   // 跳转目标还原。开启 jumps 编码后操作数存的是差值，要用取指游标还原本指令的字下标：
@@ -1891,11 +1892,16 @@ function compileFunction(fn, ctx) {
   // 栈编解码。SE 幂等，编解码共用；只在压栈/出栈点各调用一次，
   // 绝不把 S.pop() 这类有副作用的表达式内联展开（展开三次就会弹三次）。
   const seCall = (x) => (stackEnc ? t.callExpression(t.identifier(nSE), [x]) : x);
-  const SPUSH = (x) => t.callExpression(
-    t.memberExpression(S, t.identifier('push'), false), [seCall(x)]);
+  // 压栈形态二选一：S.push(v) ↔ S[S.length]=v。语句位置（返回值丢弃）、真数组、
+  // 操作数求值一次，三者齐了才恒等。每次压栈独立随机，同一函数内两种形态混排。
+  const SPUSH = (x) => (randInt(0, 1) === 0
+    ? t.callExpression(morph.memberDot(S, 'push'), [seCall(x)])
+    : t.assignmentExpression('=',
+        t.memberExpression(S, morph.memberDot(S, 'length'), true),
+        seCall(x)));
   const SPUSHRAW = (x) => t.callExpression(
-    t.memberExpression(S, t.identifier('push'), false), [x]); // 复制已编码值，不能再编一次
-  const SPOPRAW = () => t.callExpression(t.memberExpression(S, t.identifier('pop'), false), []);
+    morph.memberDot(S, 'push'), [x]); // 复制已编码值，不能再编一次
+  const SPOPRAW = () => t.callExpression(morph.memberDot(S, 'pop'), []);
   const SPOP = () => seCall(SPOPRAW());
 
   // 压栈 / 出栈。
@@ -1924,8 +1930,8 @@ function compileFunction(fn, ctx) {
     t.variableDeclaration('var', [t.variableDeclarator(idn(nSO), t.stringLiteral(''))]),
     t.forStatement(
       t.variableDeclaration('var', [t.variableDeclarator(idn(nSJ), t.numericLiteral(0))]),
-      t.binaryExpression('<', idn(nSJ), t.memberExpression(idn(nSS), t.identifier('length'), false)),
-      t.updateExpression('++', idn(nSJ), false),
+      morph.relCmp('<', idn(nSJ), morph.memberDot(idn(nSS), 'length')),
+      morph.incUpd(nSJ),
       t.blockStatement([
         t.expressionStatement(t.assignmentExpression('=',
           idn(nSO),
@@ -2034,7 +2040,7 @@ function compileFunction(fn, ctx) {
       ];
     }
     if (kind === 'RET') return [t.returnStatement(popR())];
-    if (kind === 'RETU' || kind === 'END') return [t.returnStatement(null)];
+    if (kind === 'RETU' || kind === 'END') return [morph.retVoid()];
     if (kind === 'THR') return [t.throwStatement(popR())];
     if (kind.startsWith('BIN_')) return [
       declConst(N_B, popR()), declConst(N_A, popR()),
@@ -2093,7 +2099,7 @@ function compileFunction(fn, ctx) {
         let val = src[3];
         for (let s = 2; s >= 0; s--) {
           val = t.conditionalExpression(
-            t.binaryExpression('===',
+            morph.yodaEq(
               t.binaryExpression('&', idn(w), t.numericLiteral(3)),
               t.numericLiteral(s)),
             src[s], val);
@@ -2123,10 +2129,10 @@ function compileFunction(fn, ctx) {
   const junkNames = [];
   const junkDecls = [];
   const JN = decoys.length ? Math.min(24, Math.max(10, Math.ceil(decoys.length / 48))) : 0;
-  const slenE = () => t.memberExpression(S, t.identifier('length'), false);
+  const slenE = () => morph.memberDot(S, 'length');
   const junkReg = () => t.memberExpression(idn(nDV), t.binaryExpression('%',
     t.binaryExpression('+', PC, t.numericLiteral(randInt(0, 7))),
-    t.memberExpression(idn(nDV), t.identifier('length'), false)), true);
+    morph.memberDot(idn(nDV), 'length')), true);
   const junkStmt = () => {
     switch (randInt(0, 6)) {
       case 0: // 暂存数组算术，形态与真实的槽位/栈访问一致
@@ -2140,16 +2146,16 @@ function compileFunction(fn, ctx) {
       case 2: // 压栈与弹栈对冲，净效果为零，栈内容不变
         return t.blockStatement([
           t.expressionStatement(t.callExpression(
-            t.memberExpression(S, t.identifier('push'), false), [slenE()])),
+            morph.memberDot(S, 'push'), [slenE()])),
           t.expressionStatement(t.callExpression(
-            t.memberExpression(S, t.identifier('pop'), false), [])),
+            morph.memberDot(S, 'pop'), [])),
         ]);
       case 3: // 只读 K 再异或
         return t.expressionStatement(t.assignmentExpression('=', junkReg(),
           t.binaryExpression('^',
             t.binaryExpression('|',
               t.memberExpression(K, t.binaryExpression('&',
-                t.binaryExpression('-', t.memberExpression(K, t.identifier('length'), false), t.numericLiteral(1)),
+                t.binaryExpression('-', morph.memberDot(K, 'length'), t.numericLiteral(1)),
                 t.numericLiteral(7)), true),
               t.numericLiteral(0)),
             t.numericLiteral(randInt(1, 0xff)))));
@@ -2159,11 +2165,11 @@ function compileFunction(fn, ctx) {
         return t.expressionStatement(t.assignmentExpression('=',
           t.memberExpression(idn(nDV), t.binaryExpression('%',
             t.binaryExpression('+', PC, t.numericLiteral(randInt(0, 7))),
-            t.memberExpression(idn(nDV), t.identifier('length'), false)), true),
+            morph.memberDot(idn(nDV), 'length')), true),
           t.binaryExpression('^',
             t.memberExpression(idn(nDV), t.binaryExpression('%',
               t.binaryExpression('+', PC, t.numericLiteral(randInt(1, 8))),
-              t.memberExpression(idn(nDV), t.identifier('length'), false)), true),
+              morph.memberDot(idn(nDV), 'length')), true),
             t.numericLiteral(randInt(1, 0xff)))));
       case 5: // 只读地混合位置与掩码
         return t.expressionStatement(t.assignmentExpression('=', junkReg(),
@@ -2221,10 +2227,10 @@ function compileFunction(fn, ctx) {
   for (const e of entries) byBucket.get(dispBucket(e.word)).push(e);
   for (const b of byBucket.values()) shuffle(b); // 桶内顺序同样打乱
 
-  // 桶内比对 t === 分发字 d，d 在构建期已知，与字节码流一致
-  const fullCmp = (e) => t.binaryExpression('===',
-    t.identifier(_dispT),
-    t.numericLiteral(e.word));
+  // 桶内比对 t === 分发字 d，d 在构建期已知，与字节码流一致。
+  // 比较方向与数字写法双多态（见 morph.yodaEq/numLit）：每条目独立随机，
+  // 上千个干扰项的比较代码不再是同一模板的重复。
+  const fullCmp = (e) => morph.yodaEq(t.identifier(_dispT), morph.numLit(e.word));
 
   // 条目动作体。真实条目走语义 case，干扰条目调用共享的垃圾箭头，净无副作用
   const entryBody = (e) => (e.real
@@ -2384,17 +2390,17 @@ function compileFunction(fn, ctx) {
       ]),
       t.forStatement(
       t.variableDeclaration('var', [t.variableDeclarator(t.identifier(_q), t.numericLiteral(0))]),
-      t.binaryExpression('<',
+      morph.relCmp('<',
         t.identifier(_q),
-        t.memberExpression(t.identifier(_rw), t.identifier('length'), false)),
-      t.updateExpression('++', t.identifier(_q), false),
+        morph.memberDot(t.identifier(_rw), 'length')),
+      morph.incUpd(_q),
       t.blockStatement([
         t.variableDeclaration('var', [
           t.variableDeclarator(t.identifier(_e),
             t.memberExpression(t.identifier(_rw), t.identifier(_q), true)),
         ]),
         t.ifStatement(
-          t.binaryExpression('===',
+          morph.yodaEq(
             t.memberExpression(t.identifier(_e), t.numericLiteral(0), true),
             t.identifier(_dispT)),
           t.blockStatement([
@@ -2533,10 +2539,10 @@ function compileFunction(fn, ctx) {
         t.variableDeclaration('var', [
           t.variableDeclarator(idn(DDR), t.numericLiteral(0)),
         ]),
-        t.binaryExpression('<', idn(DDR),
-          t.binaryExpression('/', t.memberExpression(t.identifier(C_TBL), t.identifier('length'), false),
+        morph.relCmp('<', idn(DDR),
+          t.binaryExpression('/', morph.memberDot(t.identifier(C_TBL), 'length'),
             t.numericLiteral(3))),
-        t.updateExpression('++', idn(DDR), false),
+        morph.incUpd(DDR),
         t.blockStatement([
           // 三字共用一处掩码，先算一次
           t.variableDeclaration('var', [
@@ -2568,8 +2574,8 @@ function compileFunction(fn, ctx) {
         t.variableDeclaration('var', [
           t.variableDeclarator(idn(DDR), t.numericLiteral(0)),
         ]),
-        t.binaryExpression('<', idn(DDR), t.numericLiteral(NB_LIT)),
-        t.updateExpression('++', idn(DDR), false),
+        morph.relCmp('<', idn(DDR), t.numericLiteral(NB_LIT)),
+        morph.incUpd(DDR),
         t.blockStatement([
           t.variableDeclaration('var', [
             t.variableDeclarator(idn(DBI), biMask(idn(DDR))),
@@ -2611,13 +2617,13 @@ function compileFunction(fn, ctx) {
             t.binaryExpression('-',
               t.memberExpression(idn(BLO), idn(_bk), true), t.numericLiteral(1))),
         ]),
-        t.binaryExpression('<', idn(_q),
+        morph.relCmp('<', idn(_q),
           t.binaryExpression('-',
             t.memberExpression(idn(BHI), idn(_bk), true), t.numericLiteral(1))),
-        t.updateExpression('++', idn(_q), false),
+        morph.incUpd(_q),
         t.blockStatement([
           t.ifStatement(
-            t.binaryExpression('===',
+            morph.yodaEq(
               t.memberExpression(idn(DW), idn(_q), true),
               idn(_dispT)),
             t.blockStatement([
@@ -2695,9 +2701,9 @@ function compileFunction(fn, ctx) {
     preLoopStmts = preLoopStmts.concat([
       t.forStatement(
         t.variableDeclaration('var', [t.variableDeclarator(idn(DDR), t.numericLiteral(0))]),
-        t.binaryExpression('<', idn(DDR),
-          t.memberExpression(t.identifier(C_TBL), t.identifier('length'), false)),
-        t.updateExpression('++', idn(DDR), false),
+        morph.relCmp('<', idn(DDR),
+          morph.memberDot(t.identifier(C_TBL), 'length')),
+        morph.incUpd(DDR),
         t.blockStatement([
           t.expressionStatement(t.assignmentExpression('=',
             t.memberExpression(idn(M_TBL), idn(DDR), true),
@@ -2728,7 +2734,7 @@ function compileFunction(fn, ctx) {
       const kinds = byBucket.get(b);
       if (!kinds.length) continue;
       outer.push(t.ifStatement(
-        t.binaryExpression('===', idn(_bk), t.numericLiteral(b)),
+        morph.yodaEq(idn(_bk), t.numericLiteral(b)),
         t.blockStatement([bucketChain(kinds)])));
     }
     shuffle(outer);
@@ -2757,8 +2763,8 @@ function compileFunction(fn, ctx) {
     // 操作数栈深度护栏：正常编译产物的栈深由编译期就可推出上界，
     // 远低于该值；撞到这条说明字节码/解释器状态已损坏，显式抛错优于在坏状态下继续。
     t.ifStatement(
-      t.binaryExpression('>',
-        t.memberExpression(S, t.identifier('length'), false),
+      morph.relCmp('>',
+        morph.memberDot(S, 'length'),
         t.numericLiteral(stackDepthCap)),
       t.blockStatement([t.throwStatement(t.newExpression(
         t.identifier('Error'), [t.stringLiteral(msg('vmOverrun'))]))])),
@@ -2767,8 +2773,8 @@ function compileFunction(fn, ctx) {
     // 明确抛出，失败模式从"卡死"变成"立刻报错"。密钥正确时 END 一定会先 return，
     // 所以这道守卫不会误伤；默认路径（不开启本项）一条指令都不多。
     ...(rt ? [t.ifStatement(
-      t.binaryExpression('>', t.identifier(npc),
-        t.memberExpression(B, t.identifier('length'), false)),
+      morph.relCmp('>', t.identifier(npc),
+        morph.memberDot(B, 'length')),
       t.blockStatement([t.throwStatement(t.newExpression(
         t.identifier('Error'), [t.stringLiteral(msg('vmKeyMismatch'))]))]))] : []),
     t.variableDeclaration('var', [
@@ -2796,9 +2802,8 @@ function compileFunction(fn, ctx) {
     ]),
     dispatchBody,
   ]);
-  const interpLoop = randInt(0, 1) === 0
-    ? t.forStatement(null, null, null, interpBody)
-    : t.whileStatement(t.booleanLiteral(true), interpBody);
+  // 主解释循环形态二选一（见 morph.loopTrue）：与分发四形态正交组合。
+  const interpLoop = morph.loopTrue(interpBody);
 
   // 组装新函数体，依次放入指令序、参数拷贝、捕获名的 var 声明与解释器
   const dirStmts = directiveStmts(origDirectives);
@@ -2820,16 +2825,16 @@ function compileFunction(fn, ctx) {
         [t.identifier(nSEV)],
         t.conditionalExpression(
           t.binaryExpression('&&',
-            t.binaryExpression('===',
+            morph.yodaEq(
               t.unaryExpression('typeof', t.identifier(nSEV)),
               t.stringLiteral('number')),
             t.binaryExpression('&&',
-              t.binaryExpression('===',
+              morph.yodaEq(
                 t.binaryExpression('|', t.identifier(nSEV), t.numericLiteral(0)),
                 t.identifier(nSEV)),
               t.unaryExpression('!', t.binaryExpression('&&',
-                t.binaryExpression('===', t.identifier(nSEV), t.numericLiteral(0)),
-                t.binaryExpression('<',
+                morph.yodaEq(t.identifier(nSEV), t.numericLiteral(0)),
+                morph.relCmp('<',
                   t.binaryExpression('/', t.numericLiteral(1), t.identifier(nSEV)),
                   t.numericLiteral(0)))))),
           t.binaryExpression('^', t.identifier(nSEV), t.identifier(nSEK)),
@@ -2864,8 +2869,8 @@ function compileFunction(fn, ctx) {
     ]),
     t.forStatement(
       t.variableDeclaration('var', [t.variableDeclarator(t.identifier(nZI), t.numericLiteral(0))]),
-      t.binaryExpression('<', t.identifier(nZI), t.memberExpression(B, t.identifier('length'), false)),
-      t.updateExpression('++', t.identifier(nZI), false),
+      morph.relCmp('<', t.identifier(nZI), morph.memberDot(B, 'length')),
+      morph.incUpd(nZI),
       t.blockStatement([
         t.expressionStatement(t.assignmentExpression('=',
           t.memberExpression(B, t.identifier(nZI), true),
@@ -2942,8 +2947,8 @@ function compileFunction(fn, ctx) {
       // FNV-1a
       t.forStatement(
         null,
-        t.binaryExpression('<', RI(), t.memberExpression(RS(), t.identifier('length'), false)),
-        t.updateExpression('++', RI(), false),
+        morph.relCmp('<', RI(), morph.memberDot(RS(), 'length')),
+        morph.incUpd(rt.ri),
         t.blockStatement([
           setKS(shru(rtlib.mulCall(ctx, xor(KS(), t.callExpression(
             t.memberExpression(RS(), t.identifier('charCodeAt'), false), [RI()],
@@ -2952,7 +2957,7 @@ function compileFunction(fn, ctx) {
       ),
       // 0 是 xorshift32 的不动点，与构建期同一处兜底（同一个值，见 ctx.__vmKeyFallback）
       t.ifStatement(
-        t.binaryExpression('===', KS(), num(0)),
+        morph.yodaEq(KS(), num(0)),
         t.blockStatement([setKS(num(ctx.__vmKeyFallback))])),
     ];
     stmts.push(

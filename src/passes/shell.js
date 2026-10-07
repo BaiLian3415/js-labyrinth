@@ -55,6 +55,20 @@ const MUL32_FORMS = [
     src: 'function mul32(_0a,_0b){return Math.imul(_0a>>>0,_0b>>>0)>>>0;}',
     fn: (a, b) => Math.imul(a >>> 0, b >>> 0) >>> 0,
   },
+  {
+    // 8 位拆分版：与 16 位拆分同族思想不同分块，低 32 位与另两族逐位一致
+    // （handler-poly 全组合断言）。无循环，装载期每字节密钥流调一次也不慢；
+    // 移位加版曾在此处，因 32 轮循环把大载荷的装载拖慢到触发反调试时延拖慢
+    // （正反馈到 60s+ 超时），已弃用——教训：原语形态必须同时看渐近成本。
+    src: 'function mul32(_0a,_0b){_0a=_0a>>>0;_0b=_0b>>>0;' +
+      'var _0x0=_0a&255,_0x1=(_0a>>>8)&255,_0x2=(_0a>>>16)&255,_0x3=_0a>>>24;' +
+      'return ((_0x0*_0b)+(((_0x1*_0b)&16777215)<<8)+(((_0x2*_0b)&65535)<<16)+(((_0x3*_0b)&255)<<24))>>>0;}',
+    fn: (a, b) => {
+      a >>>= 0; b >>>= 0;
+      const x0 = a & 255, x1 = (a >>> 8) & 255, x2 = (a >>> 16) & 255, x3 = a >>> 24;
+      return ((x0 * b) + (((x1 * b) & 16777215) << 8) + (((x2 * b) & 65535) << 16) + (((x3 * b) & 255) << 24)) >>> 0;
+    },
+  },
 ];
 
 const LCG_FORMS = [
@@ -112,6 +126,24 @@ const SHFL_FORMS = [
         const t = a[i]; a[i] = a[j]; a[j] = t;
       }
       return a;
+    } },
+  // 由内向外：逐个把原数组元素插进新数组，不原地改写（调用点一律取返回值，
+  // 见各 shfl 调用处的注释前提）。不同族的置换结果本来就不必相同，只要同族
+  // 两侧一致——形状（新数组+if+取模+双写）与 Fisher-Yates 两族完全不同。
+  { src: 'function shfl(_0a,_0s){var _0x=_0s>>>0;var _0n=_0a.length;' +
+      'var _0b=new Array(_0n);for(var _0i=0;_0i<_0n;_0i++){_0x=lcg(_0x);' +
+      'var _0j=_0x%(_0i+1);if(_0i!==_0j){_0b[_0i]=_0b[_0j];}_0b[_0j]=_0a[_0i];}return _0b;}',
+    fn: (a, s) => {
+      let x = s >>> 0;
+      const n = a.length;
+      const b = new Array(n);
+      for (let i = 0; i < n; i++) {
+        x = lcg(x);
+        const j = x % (i + 1);
+        if (i !== j) b[i] = b[j];
+        b[j] = a[i];
+      }
+      return b;
     } },
 ];
 
@@ -371,10 +403,11 @@ export function jsfuckPrelude(name, maxChars) {
  * 同时累积 FNV 终态，差量非零就打碎载荷前 8 字节。
  *
  * @param {string} payload 层内载荷源码
- * @param {{tailOrder?:number, evalStyle?:number, posHash?:number}} [variant]
+ * @param {{tailOrder?:number, evalStyle?:number, posHash?:number, decStyle?:number}} [variant]
  *        层形态变体，tailOrder 为校验尾字节序（0 大端，1 小端），evalStyle
  *        为取值器形态（0 用 (0,eval)，1 用 Function 间接取器），posHash 决定
- *        FNV 是否混合位置；省略时随机
+ *        FNV 是否混合位置，decStyle 为 base64 解码形态（0 内联双层循环，
+ *        1 分段解码助手）；省略时随机
  * @param {{cjs?:boolean, esm?:boolean}} [mode] cjs 为真时用「带 CommonJS 形参的
  *        函数内直接 eval」放行载荷：require/module/exports/__dirname/__filename
  *        因此在载荷作用域内可用，`var` 声明也不再落进全局。esm 为真时改用
@@ -403,6 +436,10 @@ function makeShellLayer(payload, variant, mode) {
   const tailOrder = v.tailOrder !== undefined ? v.tailOrder : randInt(0, 1);
   const evalStyle = v.evalStyle !== undefined ? v.evalStyle : randInt(0, 1);
   const ph = v.posHash !== undefined ? v.posHash : randInt(0, 1);
+  // base64 解码双形态：0 内联双层循环（经典），1 分段解码助手（每段独立解、
+  // 外层拼回）。编码侧（分段/乱序）一字不动，两种解码算出的字节流逐位一致：
+  // 段长按 4 对齐，跨段无进位残留，坏字符计数改为分段累加。约一半构建走每边。
+  const decStyle = v.decStyle !== undefined ? v.decStyle : randInt(0, 1);
   // jsfuck 壳形式：密钥流 + 校验那段换成对全局 JSFuck 核心的一次调用，
   // 预置（var <name>=<表达式>）由调用方拼在流水线之外，见 jsfuckPrelude
   const jsfuckName = mode && mode.jsfuck ? mode.jsfuckName : null;
@@ -493,30 +530,129 @@ function makeShellLayer(payload, variant, mode) {
 
   const B = [];
   const put = (...xs) => B.push(...xs);
+  // 引导器语句形态多态：同义字符串模板逐构建随机挑一个（见下面的 P)。
+  //
+  // 为什么做在字符串层而不是 AST 层：引导器本来就是字符串拼出来的，拼完才进
+  // 流水线；在这里分叉形态最直接。约束与 morph.js 相同——只收逐位等价的写法，
+  // 且 loader 顶层一律保留 var：载荷经 eval 在同一函数作用域执行，var 改 let
+  // 会把"同名复用"变成 SyntaxError（let 重声明直接抛，var 只是复用）。
+  // 语义网：test/semantics.js（medium 起真跑产物，必经本引导）+ handler-poly。
+  const P = (forms) => forms[randInt(0, forms.length - 1)];
   put('(function(){');
   put(primitivesText);
+  // 装载期一次性死代码：纯字面量/纯读表达式赋给下面唯一的新暂存，值永不再读，
+  // 不触外部状态。形状（var/let/数组/三元/do-while/空循环）与数量（0~8）逐构建
+  // 随机：新增的都是骨架里少见或没有的形态，专打归一化 bigram 分布。
+  // 名 `_0qz<hex>` 每次现派、永不复用——let 重声明是 SyntaxError，固定名又怕与
+  // 载荷 var 同名顶撞（同上 loader 本体保留 var 的理由）。
+  {
+    const junkNames = new Set();
+    // 前缀三选一：死代码自己的暂存名不进 randomizeNames 名单，固定前缀本身会成
+    // 弱指纹，所以连前缀也逐个随机（三个都是 loader/载荷里不会出现的形状）。
+    const junkPrefs = ['_0qz', '_0qj', '_0qx'];
+    const junkName = () => {
+      let n;
+      do { n = junkPrefs[randInt(0, junkPrefs.length - 1)] + randHex(4); } while (junkNames.has(n));
+      junkNames.add(n);
+      return n;
+    };
+    const junkShapes = [
+      () => 'var ' + junkName() + '=' + randInt(1, 999999) + ';',
+      () => 'let ' + junkName() + '="qzx";',
+      () => 'let ' + junkName() + '=[1,2,3,4];',
+      () => 'let ' + junkName() + '=(11^22)>>>0;',
+      // 只读恒有定义的顶层常量（_0L/_0N/_0P1/_0P2；_0CK 只在 ASCII 载荷时存在，
+      // 死代码不能读它——中文载荷走 UTF-8 分支，没有 _0CK，读了就 ReferenceError）
+      () => 'let ' + junkName() + '=_0N>0?_0L:_0N;',
+      () => 'let ' + junkName() + '=_0L<=_0N?_0P1:_0P2;',
+      () => { const a = junkName(); return 'let ' + a + '=0;do{' + a + '+=1;}while(' + a + '<0);'; },
+      () => { const a = junkName(); return 'for(let ' + a + '=0;' + a + '<2;' + a + '+=1){}'; },
+      () => { const a = junkName(); return 'var ' + a + '=0;while(2<' + a + '){break;}'; },
+      // 空 switch：只读常量做判别，无 fallthrough、无副作用
+      () => 'switch(_0N){default:break;}',
+      () => { const a = junkName(); return 'let ' + a + '=_0N>0?(_0L>0?_0L:_0N):0;'; },
+      () => 'let ' + junkName() + '=void 0;',
+    ];
+    const junkCount = randInt(0, 14);
+    for (let ji = 0; ji < junkCount; ji++) put(junkShapes[randInt(0, junkShapes.length - 1)]());
+  }
   put('var _0s2=' + s2 + ';');
-  put('var _0a="";var _0i,_0j,_0t;');
-  put('for(_0i=0;_0i<26;_0i++){_0a+=String.fromCharCode(65+_0i);}');
-  put('for(_0i=0;_0i<26;_0i++){_0a+=String.fromCharCode(97+_0i);}');
-  put('for(_0i=0;_0i<10;_0i++){_0a+=String.fromCharCode(48+_0i);}');
-  put('_0a+=String.fromCharCode(43,47);_0a=shfl(_0a.split(""),_0S[1]).join("");');
-  put('var _0m2=new Array(128);for(_0i=0;_0i<128;_0i++){_0m2[_0i]=-1;}');
-  put('for(_0i=0;_0i<64;_0i++){_0m2[_0a.charCodeAt(_0i)]=_0i;}');
-  put('var _0sb=new Array(256);for(_0i=0;_0i<256;_0i++){_0sb[_0i]=_0i;}');
+  put(P(['var _0a="";var _0i,_0j,_0t;', 'var _0a="",_0i,_0j,_0t;']));
+  // 字符串累加三形态（右部纯： fromCharCode 调用无可见副作用，求值一次）
+  const accA = (rhs) => P(['_0a+=' + rhs + ';', '_0a=_0a+' + rhs + ';', '_0a=[_0a,' + rhs + '].join("");']);
+  // 计数循环三形态：for 正向 / for（Yoda 条件 + +=1 + 方括号调用）/ while。
+  // 体内无 continue/break，把 update 搬到尾部与 for 逐位等价。
+  const alphaLoop = (limit, first) => P([
+    'for(_0i=0;_0i<' + limit + ';_0i++){' + accA('String.fromCharCode(' + first + '+_0i)') + '}',
+    'for(_0i=0;' + limit + '>_0i;_0i+=1){' + accA('String["fromCharCode"](' + first + '+_0i)') + '}',
+    '_0i=0;while(_0i<' + limit + '){' + accA('String.fromCharCode(' + first + '+_0i)') + '_0i+=1;}',
+  ]);
+  put(alphaLoop(26, 65));
+  put(alphaLoop(26, 97));
+  put(alphaLoop(10, 48));
+  put(P([
+    '_0a+=String.fromCharCode(43,47);_0a=shfl(_0a.split(""),_0S[1]).join("");',
+    '_0a=_0a+String["fromCharCode"](43,47);_0a=shfl(_0a["split"](""),_0S[1])["join"]("");',
+    '_0a=[_0a,String.fromCharCode(43,47)].join("");_0a=shfl(_0a.split(""),_0S[1]).join("");',
+  ]));
+  put(P([
+    'var _0m2=new Array(128);for(_0i=0;_0i<128;_0i++){_0m2[_0i]=-1;}',
+    // Array(128) 与 new Array(128) 按规范逐位一致（普通 Array 调用即构造）
+    'var _0m2=Array(128);for(_0i=0;128>_0i;_0i+=1){_0m2[_0i]=-1;}',
+    'var _0m2=new Array(128);_0i=0;while(_0i<128){_0m2[_0i]=-1;_0i+=1;}',
+  ]));
+  put(P([
+    'for(_0i=0;_0i<64;_0i++){_0m2[_0a.charCodeAt(_0i)]=_0i;}',
+    'for(_0i=0;64>_0i;_0i+=1){_0m2[_0a["charCodeAt"](_0i)]=_0i;}',
+    '_0i=0;while(_0i<64){_0m2[_0a.charCodeAt(_0i)]=_0i;_0i+=1;}',
+  ]));
+  put(P([
+    'var _0sb=new Array(256);for(_0i=0;_0i<256;_0i++){_0sb[_0i]=_0i;}',
+    'var _0sb=Array(256);for(_0i=0;256>_0i;_0i+=1){_0sb[_0i]=_0i;}',
+    'var _0sb=new Array(256);_0i=0;while(_0i<256){_0sb[_0i]=_0i;_0i+=1;}',
+  ]));
   put('_0sb=shfl(_0sb,_0S[0]);');
   put('var _0s3=' + s3 + ';'); // 第三密钥分片放在表派生之后，让声明散布开
   put(saltVar
-    ? 'var _0e=(_0s1^_0s2^_0s3)^(' + saltVar + '|0);'
+    ? P(['var _0e=(_0s1^_0s2^_0s3)^(' + saltVar + '|0);',
+        // xor 结合律换括号：整数异或逐位一致
+        'var _0e=_0s1^((_0s2^_0s3)^(' + saltVar + '|0));'])
     : 'var _0e=_0s1^_0s2^_0s3;');
-  put('var _0d=new Array(_0SG);for(_0i=0;_0i<_0SG;_0i++){_0d[_0i]=_0i;}');
+  put(P([
+    'var _0d=new Array(_0SG);for(_0i=0;_0i<_0SG;_0i++){_0d[_0i]=_0i;}',
+    'var _0d=Array(_0SG);for(_0i=0;_0SG>_0i;_0i+=1){_0d[_0i]=_0i;}',
+  ]));
   put('_0d=shfl(_0d,_0S[2]);');
-  put('var _0r=new Uint8Array(_0N);var _0n=0;var _0acc=0;var _0pc=0;var _0bd2=0;');
-  put('for(var _0j2=0;_0j2<_0SG;_0j2++){var _0sg=_0g[_0d[_0j2]];');
-  put('for(var _0q2=0;_0q2<_0sg.length;_0q2++){var _0c=_0m2[_0sg.charCodeAt(_0q2)];');
-  put('if(_0c<0){_0bd2++;continue;}');
-  put('_0acc=_0acc*64+_0c;_0pc=_0pc+6;');
-  put('if(_0pc>7){_0pc=_0pc-8;_0r[_0n]=(_0acc>>>_0pc)&255;_0n++;_0acc=_0acc&((1<<_0pc)-1);}}}');
+  if (decStyle === 0) {
+    put(P(['var _0r=new Uint8Array(_0N);var _0n=0;var _0acc=0;var _0pc=0;var _0bd2=0;',
+      'var _0r=new Uint8Array(_0N),_0n=0,_0acc=0,_0pc=0,_0bd2=0;']));
+    put(P(['for(var _0j2=0;_0j2<_0SG;_0j2++){var _0sg=_0g[_0d[_0j2]];',
+      'for(var _0j2=0;_0SG>_0j2;_0j2+=1){var _0sg=_0g[_0d[_0j2]];']));
+    // 注意：内层 for 在此行不闭合（与原版同位），闭合在下面 `}}}` 行。
+    put(P(['for(var _0q2=0;_0q2<_0sg.length;_0q2++){var _0c=_0m2[_0sg.charCodeAt(_0q2)];',
+      'for(var _0q2=0;_0sg.length>_0q2;_0q2+=1){var _0c=_0m2[_0sg["charCodeAt"](_0q2)];']));
+    put(P(['if(_0c<0){_0bd2++;continue;}', 'if(0>_0c){_0bd2+=1;continue;}']));
+    // 加法交换律只用于纯数字累加（_0acc/_0pc/_0c 全是数字，无拼接语义）
+    put(P(['_0acc=_0acc*64+_0c;_0pc=_0pc+6;',
+      '_0acc=_0c+_0acc*64;_0pc=6+_0pc;',
+      '_0acc=_0c+64*_0acc;_0pc=_0pc+6;']));
+    put(P(['if(_0pc>7){_0pc=_0pc-8;_0r[_0n]=(_0acc>>>_0pc)&255;_0n++;_0acc=_0acc&((1<<_0pc)-1);}}}',
+      'if(7<_0pc){_0pc=_0pc-8;_0r[_0n]=(_0acc>>>_0pc)&255;_0n+=1;_0acc=_0acc&((1<<_0pc)-1);}}}']));
+  } else {
+    // 分段解码助手：每段独立解成（字节, 个数, 坏字符数），外层按原段序拼回。
+    // 与内联版逐位一致：段长按 4 对齐使跨段无进位残留，坏字符分段计数再累加，
+    // 掩码折叠式与内联版同一条（(1<<p)-1，p=0 时归零）。
+    put('var _0ds=function(_0s){var _0o=new Uint8Array(_0s.length);var _0da=0,_0dp=0,_0dc=0,_0de=0;'
+      + 'for(var _0dk=0;_0dk<_0s.length;_0dk++){var _0dv=_0m2[_0s.charCodeAt(_0dk)];'
+      + 'if(_0dv<0){_0de++;continue;}_0da=_0da*64+_0dv;_0dp+=6;'
+      + 'if(_0dp>7){_0dp-=8;_0o[_0dc++]=(_0da>>>_0dp)&255;_0da&=(1<<_0dp)-1;}}'
+      + 'return [_0o,_0dc,_0de];};');
+    put('var _0r=new Uint8Array(_0N),_0n=0,_0bd2=0;');
+    put(P(['for(var _0j2=0;_0j2<_0SG;_0j2++){var _0dr=_0ds(_0g[_0d[_0j2]]);'
+      + '_0r.set(_0dr[0].subarray(0,_0dr[1]),_0n);_0n+=_0dr[1];_0bd2+=_0dr[2];}',
+      'for(var _0j2=0;_0SG>_0j2;_0j2+=1){var _0dr=_0ds(_0g[_0d[_0j2]]);'
+      + '_0r.set(_0dr[0].subarray(0,_0dr[1]),_0n);_0n+=_0dr[1];_0bd2+=_0dr[2];}']));
+  }
   put('var _0q=new Uint8Array(_0N);');
   if (jsfuckName) {
     // 与 classic 分支逐语句等价，只是整段搬进了 JSFuck 表达式求值出来的函数。
@@ -525,41 +661,75 @@ function makeShellLayer(payload, variant, mode) {
     put('var _0bd=' + jsfuckName + '(_0q,_0r,_0sb,_0N,_0L,_0P1,_0P2,_0HB,_0e,' + ph + ',' +
       tailOrder + ',xs32,mix,ipos);');
   } else {
-    put('var _0u=_0e>>>0;var _0pv=0;var _0h=_0HB>>>0;');
-    put('for(var _0t2=0;_0t2<_0N;_0t2++){');
-    put('_0u=xs32(_0u);_0u=(_0u+_0pv+_0t2)>>>0;');
-    put('var _0kb=(_0u^(_0u>>>15)^(_0u>>>22))&255;');
+    // 三个独立初值，声明合/分/换序逐位一致（右部互不引用）
+    put(P(['var _0u=_0e>>>0;var _0pv=0;var _0h=_0HB>>>0;',
+      'var _0u=_0e>>>0,_0pv=0,_0h=_0HB>>>0;',
+      'var _0h=_0HB>>>0;var _0u=_0e>>>0;var _0pv=0;']));
+    put(P(['for(var _0t2=0;_0t2<_0N;_0t2++){',
+      'for(var _0t2=0;_0N>_0t2;_0t2+=1){']));
+    // 整数加法结合律换括号：三数和 < 2^33，double 精确，>>>0 口径一致
+    put(P(['_0u=xs32(_0u);_0u=(_0u+_0pv+_0t2)>>>0;',
+      '_0u=xs32(_0u);_0u=(_0u+(_0pv+_0t2))>>>0;']));
+    // xor 结合律换括号：int32 逐位一致
+    put(P(['var _0kb=(_0u^(_0u>>>15)^(_0u>>>22))&255;',
+      'var _0kb=(_0u^((_0u>>>15)^(_0u>>>22)))&255;']));
     put('var _0v=(_0sb[_0r[ipos(_0t2,_0P1,_0P2,_0N)]]^_0kb)&255;');
-    put('_0q[_0t2]=_0v;_0pv=_0v;');
-    put('if(_0t2<_0L){_0h=mix(_0h,_0v,_0t2,' + ph + ');}}');
-    put('var _0bd=(_0h^_0e^' + tailExpr + ')>>>0;');
+    // 链式赋值：右结合，先 _0pv=_0v 再写入槽，值与顺序逐位一致
+    put(P(['_0q[_0t2]=_0v;_0pv=_0v;', '_0q[_0t2]=_0pv=_0v;']));
+    put(P(['if(_0t2<_0L){_0h=mix(_0h,_0v,_0t2,' + ph + ');}}',
+      'if(_0L>_0t2){_0h=mix(_0h,_0v,_0t2,' + ph + ');}}']));
+    put(P(['var _0bd=(_0h^_0e^' + tailExpr + ')>>>0;',
+      'var _0bd=(_0h^(_0e^' + tailExpr + '))>>>0;']));
   }
   put('_0bd=(_0bd^mul32(_0bd2,' + JUNK_MULT + '))>>>0;');
-  put('if(_0bd2>0&&_0bd===0){_0bd=1;}');
-  put('if((""+eval).indexOf(' + NATIVE + ')<0){_0bd=(_0bd^(mul32(_0e^_0L,' + JUNK_MULT + ')||1))>>>0;}');
+  put(P(['if(_0bd2>0&&_0bd===0){_0bd=1;}',
+    'if(0<_0bd2&&0===_0bd){_0bd=1;}',
+    'if(_0bd2>0&&0===_0bd){_0bd=1;}']));
+  put(P(['if((""+eval).indexOf(' + NATIVE + ')<0){_0bd=(_0bd^(mul32(_0e^_0L,' + JUNK_MULT + ')||1))>>>0;}',
+    'if(0>((""+eval)["indexOf"](' + NATIVE + '))){_0bd=(_0bd^(mul32(_0e^_0L,' + JUNK_MULT + ')||1))>>>0;}']));
   if (evalStyle === 1) {
-    put('if((""+Function).indexOf(' + NATIVE + ')<0){_0bd=(_0bd^(mul32(_0e^_0N,' + JUNK_MULT + ')||1))>>>0;}');
+    put(P(['if((""+Function).indexOf(' + NATIVE + ')<0){_0bd=(_0bd^(mul32(_0e^_0N,' + JUNK_MULT + ')||1))>>>0;}',
+      'if(0>((""+Function)["indexOf"](' + NATIVE + '))){_0bd=(_0bd^(mul32(_0e^_0N,' + JUNK_MULT + ')||1))>>>0;}']));
   }
-  put('if(_0bd!==0){var _0u2=xs32(_0e^_0bd);var _0lim=_0L<8?_0L:8;');
-  put('for(_0i=0;_0i<_0lim;_0i++){_0u2=xs32(_0u2^_0bd^_0i);_0q[_0i]=(_0q[_0i]^(_0u2>>>11))&255;}}');
+  put(P(['if(_0bd!==0){var _0u2=xs32(_0e^_0bd);var _0lim=_0L<8?_0L:8;',
+    // 合并声明但不提前闭合 if：闭合仍由下面的 for 行末 `}}` 完成（与原版同位）
+    'if(0!==_0bd){var _0u2=xs32(_0e^_0bd),_0lim=_0L<8?_0L:8;']));
+  put(P(['for(_0i=0;_0i<_0lim;_0i++){_0u2=xs32(_0u2^_0bd^_0i);_0q[_0i]=(_0q[_0i]^(_0u2>>>11))&255;}}',
+    'for(_0i=0;_0lim>_0i;_0i+=1){_0u2=xs32(_0u2^(_0bd^_0i));_0q[_0i]=(_0q[_0i]^(_0u2>>>11))&255;}}']));
   if (plainIsAscii) {
     // 载荷字节全为 ASCII 时，默认产物经 escapeNonAscii 转义必为 ASCII，
     // UTF-8 解码退化为定长分块 fromCharCode。校验、密钥流、位置交织与投毒
     // 打碎逻辑一字不动，省掉每字节的三向分支状态机，那是引导器耗时的主要
     // 成分。块长在构建期随机，避免留下固定分块特征。
-    put('var _0s2="";var _0st=0;var _0en;');
-    put('while(_0st<_0L){_0en=_0st+_0CK;if(_0en>_0L){_0en=_0L;}');
-    put('_0s2+=String.fromCharCode.apply(null,_0q.subarray(_0st,_0en));_0st=_0en;}');
+    put(P(['var _0s2="";var _0st=0;var _0en;', 'var _0s2="",_0st=0,_0en;']));
+    // while(C) ↔ for(;C;)：无 init/update，逐位一致；注意本行只闭合内层 if，
+    // 外层循环的闭合仍由下一行行末 `}` 完成（与原版同位）
+    put(P(['while(_0st<_0L){_0en=_0st+_0CK;if(_0en>_0L){_0en=_0L;}',
+      'for(;_0st<_0L;){_0en=_0CK+_0st;if(_0L<_0en){_0en=_0L;}']));
+    put(P(['_0s2+=String.fromCharCode.apply(null,_0q.subarray(_0st,_0en));_0st=_0en;}',
+      '_0s2=_0s2+String["fromCharCode"]["apply"](null,_0q["subarray"](_0st,_0en));_0st=_0en;}',
+      '_0s2=[_0s2,String.fromCharCode.apply(null,_0q.subarray(_0st,_0en))].join("");_0st=_0en;}']));
   } else {
-    put('var _0s2="";var _0p=[];var _0y=0;');
-    put('while(_0y<_0L){var _0c2=_0q[_0y++];');
-    put('if(_0c2<128){_0p.push(_0c2);}');
-    put('else if(_0c2<224){_0p.push(((_0c2&31)<<6)|(_0q[_0y++]&63));}');
-    put('else if(_0c2<240){_0p.push(((_0c2&15)<<12)|((_0q[_0y++]&63)<<6)|(_0q[_0y++]&63));}');
+    put(P(['var _0s2="";var _0p=[];var _0y=0;', 'var _0s2="",_0p=[],_0y=0;']));
+    // _0y++ 的值被用作下标，只动方向不动自增
+    put(P(['while(_0y<_0L){var _0c2=_0q[_0y++];', 'for(;_0L>_0y;){var _0c2=_0q[_0y++];']));
+    // push(v) ↔ v 进槽：语句位置、真数组、右部求值一次，三者齐了才恒等
+    put(P(['if(_0c2<128){_0p.push(_0c2);}',
+      'if(128>_0c2){_0p["push"](_0c2);}',
+      'if(_0c2<128){_0p[_0p.length]=_0c2;}']));
+    put(P(['else if(_0c2<224){_0p.push(((_0c2&31)<<6)|(_0q[_0y++]&63));}',
+      'else if(224>_0c2){_0p[_0p.length]=(((_0c2&31)<<6)|(_0q[_0y++]&63));}']));
+    put(P(['else if(_0c2<240){_0p.push(((_0c2&15)<<12)|((_0q[_0y++]&63)<<6)|(_0q[_0y++]&63));}',
+      'else if(240>_0c2){_0p["push"](((_0c2&15)<<12)|((_0q[_0y++]&63)<<6)|(_0q[_0y++]&63));}']));
     put('else{var _0cp=(((_0c2&7)<<18)|((_0q[_0y++]&63)<<12)|((_0q[_0y++]&63)<<6)|(_0q[_0y++]&63))-65536;');
-    put('_0p.push(55296+(_0cp>>10),56320+(_0cp&1023));}');
-    put('if(_0p.length>=512){_0s2+=String.fromCharCode.apply(null,_0p);_0p=[];}}');
-    put('if(_0p.length){_0s2+=String.fromCharCode.apply(null,_0p);}');
+    // 双参 push 进双槽：两右部皆纯算术，各求值一次，顺序不变
+    put(P(['_0p.push(55296+(_0cp>>10),56320+(_0cp&1023));}',
+      '_0p[_0p.length]=55296+(_0cp>>10);_0p[_0p.length]=56320+(_0cp&1023);}']));
+    put(P(['if(_0p.length>=512){_0s2+=String.fromCharCode.apply(null,_0p);_0p=[];}}',
+      'if(512<=_0p.length){_0s2=[_0s2,String["fromCharCode"]["apply"](null,_0p)].join("");_0p=[];}}']));
+    // length 是非负数字：if(n) ⟺ if(n!==0)，逐位一致
+    put(P(['if(_0p.length){_0s2+=String.fromCharCode.apply(null,_0p);}',
+      'if(_0p.length!==0){_0s2=_0s2+String.fromCharCode.apply(null,_0p);}']));
   }
   if (isCjs) {
     put('var _0cm={exports:{}};');
@@ -574,12 +744,27 @@ function makeShellLayer(payload, variant, mode) {
   }
   put('})();');
 
-  const consts =
-    'var _0s1=' + s1 + ';var _0S=[' + [SD_S, SD_T, SD_D] + '];' +
-    'var _0L=' + L + ';var _0N=' + N + ';var _0P1=' + P1 + ';var _0P2=' + P2 + ';' +
-    (plainIsAscii ? 'var _0CK=' + randInt(320, 704) + ';' : '') +
-    'var _0HB=' + HB + ';var _0SG=' + SG + ';var _0g=[' +
-    gSlots.map((s) => JSON.stringify(s)).join(',') + '];';
+  // 顶层常量声明合/分三形态：各右部互不引用，合分逐位一致（保留 var，
+  // 理由见 P 的注释：载荷 eval 同作用域，let 会把同名复用变 SyntaxError）
+  const constDecls = [
+    'var _0s1=' + s1,
+    'var _0S=[' + [SD_S, SD_T, SD_D] + ']',
+    'var _0L=' + L,
+    'var _0N=' + N,
+    'var _0P1=' + P1,
+    'var _0P2=' + P2,
+    ...(plainIsAscii ? ['var _0CK=' + randInt(320, 704)] : []),
+    'var _0HB=' + HB,
+    'var _0SG=' + SG,
+  ];
+  const consts = P([
+    constDecls.join(';') + ';var _0g=[' + gSlots.map((s) => JSON.stringify(s)).join(',') + '];',
+    'var ' + constDecls.map((d) => d.replace(/^var /, '')).join(',') + ';var _0g=[' +
+      gSlots.map((s) => JSON.stringify(s)).join(',') + '];',
+    constDecls.slice(0, 4).join(';') + ';var ' +
+      constDecls.slice(4).map((d) => d.replace(/^var /, '')).join(',') + ';var _0g=[' +
+      gSlots.map((s) => JSON.stringify(s)).join(',') + '];',
+  ]);
   return consts + B.join('');
 }
 

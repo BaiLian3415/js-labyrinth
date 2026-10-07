@@ -47,6 +47,8 @@ function randomizeNames(src, used, prefix) {
     '_0pc', '_0bd2', '_0j2', '_0sg', '_0q2', '_0c', '_0c2', '_0q', '_0u', '_0pv',
     '_0h', '_0t2', '_0kb', '_0v', '_0bd', '_0u2', '_0lim', '_0s2', '_0p', '_0y',
     '_0st', '_0en', '_0m2', '_0sb',
+    // 分段解码助手（decStyle=1）自带的固定名，同样逐构建随机化，不留字面量指纹
+    '_0ds', '_0s', '_0o', '_0da', '_0dp', '_0dc', '_0de', '_0dk', '_0dv', '_0dr',
     'mul32', 'lcg', 'xs32', 'shfl', 'ipos', 'mix',
   ];
   const mapa = new Map();

@@ -9,6 +9,7 @@
 import { cleanTmp, ok, report, runNode, section } from './_harness.js';
 import obfuscateMod from '../src/obfuscate.js';
 import parserMod from '../src/ast/parser.js';
+import keysMod from '../src/ast/keys.js';
 import traverseMod from '../src/ast/traverse.js';
 import generatorMod from '../src/ast/generator.js';
 import numberObf from '../src/passes/numberObf.js';
@@ -172,6 +173,89 @@ section('多态与可复现');
   ok(s1 !== s2, '不同 seed 的产物不同');
   ok(overlap < 0.6, '不同 seed 的标识符集合重叠度低于 60%（结构级多态）',
     '重叠度 ' + overlap.toFixed(2));
+
+  // 跨 seed 结构多态（2026-10 多态混淆）：上面只看了标识符集合，这里看骨架。
+  // 口径有二：① AST 归一化 token（名字/字面量抹掉，只留节点类型与算子拼写）
+  // bigram 多重集 Jaccard——常量与改名对此口径不可见，只有语句形态分叉才算数；
+  // ② 原始 token bigram Jaccard（名字常量保留，最接近文本相似度工具的读数）。
+  // 引导器语句多态 + 解码双形态 + 原语多族 + VM/解释器形态多态把它们分别从
+  // ~0.93/~0.39 压下来；阈值是防回退的棘轮（28 对 seed 实测 max 结构 0.90、
+  // 原文 0.37，留余量）。
+  {
+    const { VISITOR_KEYS } = keysMod;
+    const structToks = (ast) => {
+      const out = [];
+      const walk = (node) => {
+        if (!node || typeof node.type !== 'string') return;
+        switch (node.type) {
+          case 'Identifier': out.push('ID'); return;
+          case 'StringLiteral': out.push('STR'); return;
+          case 'NumericLiteral': out.push('NUM'); return;
+          case 'BooleanLiteral': out.push('BOOL'); return;
+          case 'NullLiteral': out.push('NULL'); return;
+          case 'RegExpLiteral': out.push('REGEX'); return;
+          case 'TemplateLiteral': out.push('TPL'); break;
+          case 'BinaryExpression': case 'LogicalExpression':
+            out.push('Bin:' + node.operator); break;
+          case 'UnaryExpression': out.push('Una:' + node.operator); break;
+          case 'UpdateExpression':
+            out.push('Upd:' + node.operator + (node.prefix ? ':pre' : ':post')); break;
+          case 'AssignmentExpression': out.push('Assign:' + node.operator); break;
+          case 'VariableDeclaration': out.push('Decl:' + node.kind); break;
+          case 'MemberExpression': out.push(node.computed ? 'Mem:C' : 'Mem:D'); break;
+          case 'CallExpression': out.push('Call'); break;
+          case 'NewExpression': out.push('New'); break;
+          case 'FunctionDeclaration': case 'FunctionExpression':
+          case 'ArrowFunctionExpression': out.push('Func'); break;
+          default: out.push(node.type);
+        }
+        const ks = VISITOR_KEYS[node.type] || [];
+        for (const k of ks) {
+          const v = node[k];
+          if (Array.isArray(v)) { for (const c of v) walk(c); }
+          else if (v && typeof v.type === 'string') walk(v);
+        }
+      };
+      walk(ast.type === 'File' && ast.program ? ast.program : ast);
+      return out;
+    };
+    const rawToks = (code) => {
+      const toks = [];
+      const re = /([A-Za-z_$][\w$]*)|(\d+(?:\.\d+)?)|('(?:[^'\\]|\\.)*'|"(?:[^"\\]|\\.)*"|`(?:[^`\\]|\\.)*`)|\s+|(.)/g;
+      let m;
+      while ((m = re.exec(code))) {
+        if (m[1]) toks.push('ID:' + m[1]);
+        else if (m[2]) toks.push('NUM:' + m[2]);
+        else if (m[3]) toks.push('STR');
+        else if (m[4] === undefined) { /* 空白跳过 */ }
+        else toks.push(m[4]);
+      }
+      return toks;
+    };
+    const bigramJ = (a, b) => {
+      const cnt = (toks) => {
+        const m = new Map();
+        for (let i = 0; i + 1 < toks.length; i++) {
+          const k = toks[i] + '\x00' + toks[i + 1];
+          m.set(k, (m.get(k) || 0) + 1);
+        }
+        return m;
+      };
+      const A = cnt(a), B = cnt(b);
+      let inter = 0, union = 0;
+      for (const [k, v] of A) { inter += Math.min(v, B.get(k) || 0); union += Math.max(v, B.get(k) || 0); }
+      for (const [k, v] of B) { if (!A.has(k)) union += v; }
+      return inter / Math.max(1, union);
+    };
+    const stJ = bigramJ(
+      structToks(parse(s1, { sourceType: 'script' })),
+      structToks(parse(s2, { sourceType: 'script' })));
+    const rawJ = bigramJ(rawToks(s1), rawToks(s2));
+    ok(stJ < 0.9, '不同 seed 的归一化结构 bigram 相似度低于 90%（骨架级多态）',
+      '结构相似度 ' + stJ.toFixed(3));
+    ok(rawJ < 0.4, '不同 seed 的原始文本 bigram 相似度低于 40%',
+      '原文相似度 ' + rawJ.toFixed(3));
+  }
 
   // 运行期滚动重键：开关两态都得跑得对，且产物不同
   const base = {

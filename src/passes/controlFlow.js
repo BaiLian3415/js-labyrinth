@@ -1,6 +1,7 @@
 import t from '../ast/types.js';
 import rand from '../utils/rand.js';
 const { randInt, shuffle } = rand;
+import morph from '../utils/morph.js';
 import vmBoundary from './vmBoundary.js';
 const { insideVmFunction } = vmBoundary;
 /**
@@ -561,7 +562,8 @@ function doFlatten(path, stmts, rng, loopFlatten, rolling) {
       t.switchStatement(t.identifier(dName), cases),
     ]);
   }
-  const whileStmt = t.whileStatement(t.booleanLiteral(true), loopBody);
+  // 主循环形态二选一：while(true) ↔ for(;;)，恒等（见 morph.loopTrue）。
+  const loopStmt = morph.loopTrue(loopBody);
 
   const newBody = [];
   for (const fn of hoistedFns) newBody.push(fn);
@@ -581,7 +583,7 @@ function doFlatten(path, stmts, rng, loopFlatten, rolling) {
   newBody.push(t.variableDeclaration('var', [
     t.variableDeclarator(stateName, initState),
   ]));
-  newBody.push(whileStmt);
+  newBody.push(loopStmt);
 
   body.node.body = newBody;
   return { cases: cases.length, loops: loopsDone };
