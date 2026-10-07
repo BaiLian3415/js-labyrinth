@@ -407,7 +407,7 @@ export function jsfuckPrelude(name, maxChars) {
  *        层形态变体，tailOrder 为校验尾字节序（0 大端，1 小端），evalStyle
  *        为取值器形态（0 用 (0,eval)，1 用 Function 间接取器），posHash 决定
  *        FNV 是否混合位置，decStyle 为 base64 解码形态（0 内联双层循环，
- *        1 分段解码助手）；省略时随机
+ *        1 分段 for 助手，2 分段 forEach 助手）；省略时随机
  * @param {{cjs?:boolean, esm?:boolean}} [mode] cjs 为真时用「带 CommonJS 形参的
  *        函数内直接 eval」放行载荷：require/module/exports/__dirname/__filename
  *        因此在载荷作用域内可用，`var` 声明也不再落进全局。esm 为真时改用
@@ -436,10 +436,10 @@ function makeShellLayer(payload, variant, mode) {
   const tailOrder = v.tailOrder !== undefined ? v.tailOrder : randInt(0, 1);
   const evalStyle = v.evalStyle !== undefined ? v.evalStyle : randInt(0, 1);
   const ph = v.posHash !== undefined ? v.posHash : randInt(0, 1);
-  // base64 解码双形态：0 内联双层循环（经典），1 分段解码助手（每段独立解、
-  // 外层拼回）。编码侧（分段/乱序）一字不动，两种解码算出的字节流逐位一致：
-  // 段长按 4 对齐，跨段无进位残留，坏字符计数改为分段累加。约一半构建走每边。
-  const decStyle = v.decStyle !== undefined ? v.decStyle : randInt(0, 1);
+  // base64 解码三形态：0 内联双层循环（经典），1 分段 for 助手，2 分段
+  // forEach 助手（每段独立解、外层拼回）。编码侧（分段/乱序）一字不动，三种解码
+  // 算出的字节流逐位一致：段长按 4 对齐使跨段无进位残留，坏字符计数累加方式一致。
+  const decStyle = v.decStyle !== undefined ? v.decStyle : randInt(0, 2);
   // jsfuck 壳形式：密钥流 + 校验那段换成对全局 JSFuck 核心的一次调用，
   // 预置（var <name>=<表达式>）由调用方拼在流水线之外，见 jsfuckPrelude
   const jsfuckName = mode && mode.jsfuck ? mode.jsfuckName : null;
@@ -586,6 +586,9 @@ function makeShellLayer(payload, variant, mode) {
     'for(_0i=0;_0i<' + limit + ';_0i++){' + accA('String.fromCharCode(' + first + '+_0i)') + '}',
     'for(_0i=0;' + limit + '>_0i;_0i+=1){' + accA('String["fromCharCode"](' + first + '+_0i)') + '}',
     '_0i=0;while(_0i<' + limit + '){' + accA('String.fromCharCode(' + first + '+_0i)') + '_0i+=1;}',
+    // 展开 ×2：步长 2，体复制两份（i 与 i+1，右部纯、写不同槽）。只用于偶数界
+    // （26/26/10），奇数界（_0SG/_0N/_0L 那几处）不碰——尾巴要另起分支，不值。
+    'for(_0i=0;_0i<' + limit + ';_0i+=2){' + accA('String.fromCharCode(' + first + '+_0i)') + accA('String.fromCharCode(' + first + '+(_0i+1))') + '}',
   ]);
   put(alphaLoop(26, 65));
   put(alphaLoop(26, 97));
@@ -600,16 +603,21 @@ function makeShellLayer(payload, variant, mode) {
     // Array(128) 与 new Array(128) 按规范逐位一致（普通 Array 调用即构造）
     'var _0m2=Array(128);for(_0i=0;128>_0i;_0i+=1){_0m2[_0i]=-1;}',
     'var _0m2=new Array(128);_0i=0;while(_0i<128){_0m2[_0i]=-1;_0i+=1;}',
+    // 展开 ×2（128 偶数）：相邻两槽各写一次，顺序与逐个写一致
+    'var _0m2=new Array(128);for(_0i=0;_0i<128;_0i+=2){_0m2[_0i]=-1;_0m2[(_0i+1)]=-1;}',
   ]));
   put(P([
     'for(_0i=0;_0i<64;_0i++){_0m2[_0a.charCodeAt(_0i)]=_0i;}',
     'for(_0i=0;64>_0i;_0i+=1){_0m2[_0a["charCodeAt"](_0i)]=_0i;}',
     '_0i=0;while(_0i<64){_0m2[_0a.charCodeAt(_0i)]=_0i;_0i+=1;}',
+    // 展开 ×2（64 偶数）：两次查表写不同槽，右部纯
+    'for(_0i=0;_0i<64;_0i+=2){_0m2[_0a.charCodeAt(_0i)]=_0i;_0m2[_0a.charCodeAt((_0i+1))]=(_0i+1);}',
   ]));
   put(P([
     'var _0sb=new Array(256);for(_0i=0;_0i<256;_0i++){_0sb[_0i]=_0i;}',
     'var _0sb=Array(256);for(_0i=0;256>_0i;_0i+=1){_0sb[_0i]=_0i;}',
     'var _0sb=new Array(256);_0i=0;while(_0i<256){_0sb[_0i]=_0i;_0i+=1;}',
+    'var _0sb=new Array(256);for(_0i=0;_0i<256;_0i+=2){_0sb[_0i]=_0i;_0sb[(_0i+1)]=(_0i+1);}',
   ]));
   put('_0sb=shfl(_0sb,_0S[0]);');
   put('var _0s3=' + s3 + ';'); // 第三密钥分片放在表派生之后，让声明散布开
@@ -642,16 +650,36 @@ function makeShellLayer(payload, variant, mode) {
     // 分段解码助手：每段独立解成（字节, 个数, 坏字符数），外层按原段序拼回。
     // 与内联版逐位一致：段长按 4 对齐使跨段无进位残留，坏字符分段计数再累加，
     // 掩码折叠式与内联版同一条（(1<<p)-1，p=0 时归零）。
-    put('var _0ds=function(_0s){var _0o=new Uint8Array(_0s.length);var _0da=0,_0dp=0,_0dc=0,_0de=0;'
-      + 'for(var _0dk=0;_0dk<_0s.length;_0dk++){var _0dv=_0m2[_0s.charCodeAt(_0dk)];'
-      + 'if(_0dv<0){_0de++;continue;}_0da=_0da*64+_0dv;_0dp+=6;'
-      + 'if(_0dp>7){_0dp-=8;_0o[_0dc++]=(_0da>>>_0dp)&255;_0da&=(1<<_0dp)-1;}}'
-      + 'return [_0o,_0dc,_0de];};');
+    // 助手两形态：1 是 for 下标版，2 是 forEach 回调版（continue 在回调里非法，
+    // 改成 if/else 嵌套，语义逐位一致；回调逐字符顺序执行，与下标版同序）。
+    // split("") 按码元切分，段内容全是 ASCII base64，无代理对，切分与下标版一致。
+    if (decStyle === 1) {
+      put('var _0ds=function(_0s){var _0o=new Uint8Array(_0s.length);var _0da=0,_0dp=0,_0dc=0,_0de=0;'
+        + 'for(var _0dk=0;_0dk<_0s.length;_0dk++){var _0dv=_0m2[_0s.charCodeAt(_0dk)];'
+        + 'if(_0dv<0){_0de++;continue;}_0da=_0da*64+_0dv;_0dp+=6;'
+        + 'if(_0dp>7){_0dp-=8;_0o[_0dc++]=(_0da>>>_0dp)&255;_0da&=(1<<_0dp)-1;}}'
+        + 'return [_0o,_0dc,_0de];};');
+    } else {
+      put('var _0ds=function(_0s){var _0o=new Uint8Array(_0s.length);var _0da=0,_0dp=0,_0dc=0,_0de=0;'
+        + '_0s.split("").forEach(function(_0ch){var _0dv=_0m2[_0ch.charCodeAt(0)];'
+        + 'if(_0dv<0){_0de++;}else{_0da=_0da*64+_0dv;_0dp+=6;'
+        + 'if(_0dp>7){_0dp-=8;_0o[_0dc++]=(_0da>>>_0dp)&255;_0da&=(1<<_0dp)-1;}}});'
+        + 'return [_0o,_0dc,_0de];};');
+    }
     put('var _0r=new Uint8Array(_0N),_0n=0,_0bd2=0;');
-    put(P(['for(var _0j2=0;_0j2<_0SG;_0j2++){var _0dr=_0ds(_0g[_0d[_0j2]]);'
-      + '_0r.set(_0dr[0].subarray(0,_0dr[1]),_0n);_0n+=_0dr[1];_0bd2+=_0dr[2];}',
-      'for(var _0j2=0;_0SG>_0j2;_0j2+=1){var _0dr=_0ds(_0g[_0d[_0j2]]);'
-      + '_0r.set(_0dr[0].subarray(0,_0dr[1]),_0n);_0n+=_0dr[1];_0bd2+=_0dr[2];}']));
+    if (decStyle === 1) {
+      put(P(['for(var _0j2=0;_0j2<_0SG;_0j2++){var _0dr=_0ds(_0g[_0d[_0j2]]);'
+        + '_0r.set(_0dr[0].subarray(0,_0dr[1]),_0n);_0n+=_0dr[1];_0bd2+=_0dr[2];}',
+        'for(var _0j2=0;_0SG>_0j2;_0j2+=1){var _0dr=_0ds(_0g[_0d[_0j2]]);'
+        + '_0r.set(_0dr[0].subarray(0,_0dr[1]),_0n);_0n+=_0dr[1];_0bd2+=_0dr[2];}']));
+    } else {
+      // C 外层换序：先累加偏移再用（_0n-_0dr[1] 还原段基址），与 B 的
+      // "先拼后累加"逐位一致（同一 _0n 时间线，只是 set 行位置不同）。
+      put(P(['for(var _0j2=0;_0j2<_0SG;_0j2++){var _0dr=_0ds(_0g[_0d[_0j2]]);'
+        + '_0n+=_0dr[1];_0bd2+=_0dr[2];_0r.set(_0dr[0].subarray(0,_0dr[1]),_0n-_0dr[1]);}',
+        'for(var _0j2=0;_0SG>_0j2;_0j2+=1){var _0dr=_0ds(_0g[_0d[_0j2]]);'
+        + '_0bd2+=_0dr[2];_0n+=_0dr[1];_0r.set(_0dr[0].subarray(0,_0dr[1]),_0n-_0dr[1]);}']));
+    }
   }
   put('var _0q=new Uint8Array(_0N);');
   if (jsfuckName) {

@@ -79,10 +79,11 @@ npm run build:web:cloud  # 云端执行形态（核心不进产物，Vercel 部�
   槽且目标是数值计数器，loader 顶层一律保留 `var`（载荷 eval 同作用域，
   `var` 改 `let` 会把同名复用变 SyntaxError）。
 - 外壳引导器语句多态（`shell.js` 内 `P()` 字符串模板二/三选 + `decStyle`
-  解码双形态 + 装载期死代码 0~14 条）：for/while、比较方向、点/方括号调用、
-  var 合/分、xor/加法结合律括号、链式赋值；全部手验等价，语义网靠
-  `test/semantics.js` + `test/handler-poly.js`。引导器新固定名必须进
-  `banner.js randomizeNames` 名单，否则成指纹。
+  解码三形态（0 内联双层循环 / 1 分段 for 助手 / 2 分段 forEach 助手，
+  1/2 外层拼回语句也不同构） + 偶数界计数循环展开 ×2 + 装载期死代码 0~14 条）：
+  for/while、比较方向、点/方括号调用、var 合/分、xor/加法结合律括号、链式赋值；
+  全部手验等价，语义网靠 `test/semantics.js` + `test/handler-poly.js`。
+  引导器新固定名必须进 `banner.js randomizeNames` 名单，否则成指纹。
 - 原语新族：`mul32-C`（8 位拆分精确式，无循环——移位加版曾在此处，因 32 轮
   循环经控制流扁平化后把大载荷装载拖慢到触发反调试时延拖慢正反馈、产物运行
   超过 60s 测试超时，已弃用；handler-poly ③ 已推广到全族两两等价）、

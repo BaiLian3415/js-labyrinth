@@ -226,14 +226,15 @@ section('多层壳与可复现性');
     ok(a === b, 'shell:false 时产物可复现');
   }
 
-  // ⑨ 解码双形态 decStyle：显式指定 0（内联双层循环）/1（分段解码助手），
-  //    直接造引导器并真跑。variant 参数只开到 makeShellLayer，不经过 obfuscate，
-  //    所以种子与原语族在这里同样钉死；编码侧（分段/乱序）两种形态共用同一套。
+  // ⑨ 解码三形态 decStyle：显式指定 0（内联双层循环）/1（分段 for 助手）
+  //    /2（分段 forEach 助手），直接造引导器并真跑。variant 参数只开到
+  //    makeShellLayer，不经过 obfuscate，所以种子与原语族在这里同样钉死；
+  //    编码侧（分段/乱序）三种形态共用同一套。
   {
     const PAY = 'console.log("dec9:" + (6 * 7));';
     let bad = 0, firstBad = '';
     const texts = [];
-    for (const decStyle of [0, 1]) {
+    for (const decStyle of [0, 1, 2]) {
       for (const seed of [5, 6]) {
         rand.setSeed(seed);
         shell.setPrimitiveVariants(shell.DEFAULT_VARIANTS);
@@ -245,11 +246,15 @@ section('多层壳与可复现性');
       }
     }
     shell.setPrimitiveVariants(shell.DEFAULT_VARIANTS);
-    ok(bad === 0, '解码双形态 0/1 的引导器都能跑出正确结果', firstBad);
-    // B 形态带分段助手（直接文本里还是占位名，未进 randomizeNames），A 形态没有
+    ok(bad === 0, '解码三形态 0/1/2 的引导器都能跑出正确结果', firstBad);
+    // 1/2 形态带分段助手（直接文本里还是占位名，未进 randomizeNames），0 形态没有；
+    // 只有 2 形态用 forEach 回调（continue 在回调里非法，改成 if/else 嵌套）。
     const hasHelper = texts.map((t) => t.includes('_0ds=function'));
-    ok(hasHelper[0] === false && hasHelper[1] === false && hasHelper[2] === true && hasHelper[3] === true,
-      'decStyle=1 的两份带分段助手、=0 的两份不带（形态确实分叉）', JSON.stringify(hasHelper));
+    const hasEach = texts.map((t) => t.includes('forEach'));
+    ok(JSON.stringify(hasHelper) === JSON.stringify([false, false, true, true, true, true]),
+      'decStyle=1/2 的四份带分段助手、=0 的两份不带（形态确实分叉）', JSON.stringify(hasHelper));
+    ok(JSON.stringify(hasEach) === JSON.stringify([false, false, false, false, true, true]),
+      '只有 decStyle=2 的两份用 forEach 回调', JSON.stringify(hasEach));
   }
 }
 

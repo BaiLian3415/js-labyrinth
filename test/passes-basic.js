@@ -178,9 +178,9 @@ section('多态与可复现');
   // 口径有二：① AST 归一化 token（名字/字面量抹掉，只留节点类型与算子拼写）
   // bigram 多重集 Jaccard——常量与改名对此口径不可见，只有语句形态分叉才算数；
   // ② 原始 token bigram Jaccard（名字常量保留，最接近文本相似度工具的读数）。
-  // 引导器语句多态 + 解码双形态 + 原语多族 + VM/解释器形态多态把它们分别从
-  // ~0.93/~0.39 压下来；阈值是防回退的棘轮（28 对 seed 实测 max 结构 0.90、
-  // 原文 0.37，留余量）。
+  // 引导器语句多态 + 解码三形态 + 原语多族 + VM/解释器形态多态把它们分别从
+  // ~0.93/~0.39 压下来；阈值是防回退的棘轮（4 seed 6 对里取 max，28 对全采样
+  // max 结构 0.91、原文 0.37，留余量）。
   {
     const { VISITOR_KEYS } = keysMod;
     const structToks = (ast) => {
@@ -251,10 +251,23 @@ section('多态与可复现');
       structToks(parse(s1, { sourceType: 'script' })),
       structToks(parse(s2, { sourceType: 'script' })));
     const rawJ = bigramJ(rawToks(s1), rawToks(s2));
-    ok(stJ < 0.9, '不同 seed 的归一化结构 bigram 相似度低于 90%（骨架级多态）',
-      '结构相似度 ' + stJ.toFixed(3));
-    ok(rawJ < 0.4, '不同 seed 的原始文本 bigram 相似度低于 40%',
-      '原文相似度 ' + rawJ.toFixed(3));
+    // 再加两组 seed，6 对里取 max：单对撞大运（同形态全中）拉不出回退，其它对能。
+    const s3 = obfuscate(src, { preset: 'medium', seed: 13 }).code;
+    const s4 = obfuscate(src, { preset: 'medium', seed: 14 }).code;
+    const codes = [s1, s2, s3, s4];
+    let stMax = 0, rawMax = 0;
+    for (let i = 0; i < codes.length; i++) {
+      for (let j = i + 1; j < codes.length; j++) {
+        stMax = Math.max(stMax, bigramJ(
+          structToks(parse(codes[i], { sourceType: 'script' })),
+          structToks(parse(codes[j], { sourceType: 'script' }))));
+        rawMax = Math.max(rawMax, bigramJ(rawToks(codes[i]), rawToks(codes[j])));
+      }
+    }
+    ok(stJ < 0.92 && stMax < 0.92, '不同 seed 的归一化结构 bigram 相似度低于 92%（骨架级多态）',
+      '结构相似度 单对 ' + stJ.toFixed(3) + ' / 6 对 max ' + stMax.toFixed(3));
+    ok(rawJ < 0.4 && rawMax < 0.4, '不同 seed 的原始文本 bigram 相似度低于 40%',
+      '原文相似度 单对 ' + rawJ.toFixed(3) + ' / 6 对 max ' + rawMax.toFixed(3));
   }
 
   // 运行期滚动重键：开关两态都得跑得对，且产物不同
