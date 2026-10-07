@@ -268,6 +268,35 @@ section('多态与可复现');
       '结构相似度 单对 ' + stJ.toFixed(3) + ' / 6 对 max ' + stMax.toFixed(3));
     ok(rawJ < 0.4 && rawMax < 0.4, '不同 seed 的原始文本 bigram 相似度低于 40%',
       '原文相似度 单对 ' + rawJ.toFixed(3) + ' / 6 对 max ' + rawMax.toFixed(3));
+
+    // 原生函数单点收敛（2026-10）：fromCharCode / charCodeAt / Uint8Array 在外层
+    // 产物里各只允许声明行那 1 处，调用点一律走别名。数之前先剥字符串字面量，
+    // 免得池密文里的巧合子串干扰计数（12/10 字符的长名不会出现在随机名里，
+    // split/join 短则可能，故一律先剥）。
+    // 本组数与抽取形态无关，4 seed 全断言：
+    //   fromCharCode 恒 1（引导器别名声明；解码器里的在壳内密文里，不可见）；
+    //   charCodeAt 恒 2（别名声明 1 + 引导 FNV 6 族各 1）；
+    //   Uint8Array 恒 1（别名声明）。
+    // split/join 随形态浮动，只设上限防回退（8 seed 实测 max split=2/join=3；
+    // join 含二次流水线 stringArray 自带的一处，模板侧最多 2 处）。
+    {
+      const stripStr = (code) => code.replace(/'(?:\\.|[^'\\])*'|"(?:\\.|[^"\\])*"/g, '""');
+      const count = (code, name) => (stripStr(code).match(new RegExp(name, 'g')) || []).length;
+      let natBad = '';
+      for (const [i, code] of codes.entries()) {
+        const fcc = count(code, 'fromCharCode');
+        const cca = count(code, 'charCodeAt');
+        const u8 = count(code, 'Uint8Array');
+        const sp = count(code, 'split');
+        const jn = count(code, 'join');
+        if (fcc !== 1 || cca !== 2 || u8 !== 1 || sp > 2 || jn > 3) {
+          natBad = 'seed=' + [11, 12, 13, 14][i] + ' fromCharCode=' + fcc
+            + ' charCodeAt=' + cca + ' Uint8Array=' + u8 + ' split=' + sp + ' join=' + jn;
+          break;
+        }
+      }
+      ok(!natBad, '原生函数名出现次数收敛（fromCharCode=1/charCodeAt=2/Uint8Array=1/split≤2/join≤3）', natBad);
+    }
   }
 
   // 运行期滚动重键：开关两态都得跑得对，且产物不同

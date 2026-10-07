@@ -32,8 +32,8 @@ const DBG_CODES = [100, 101, 98, 117, 103, 103, 101, 114];
 
 // globalThis 安全引用，与毒药标志同一模式
 const GLOBAL_EXPR =
-  '(typeof globalThis!=="undefined"?globalThis:typeof self!=="undefined"?self:' +
-  'typeof window!=="undefined"?window:typeof global!=="undefined"?global:{})';
+  '(typeof globalThis!==typeof void 0?globalThis:typeof self!==typeof void 0?self:' +
+  'typeof window!==typeof void 0?window:typeof global!==typeof void 0?global:{})';
 
 /**
  * 生成把字符串 s 拼出来的掩码恒等式表达式源码。

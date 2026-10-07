@@ -90,7 +90,7 @@ function makeHasher(loopVar, rt) {
 
 /** 访问 globalThis 的表达式源码，无局部 var 绑定，mangle 不会波及。 */
 function globalRef() {
-  return '(typeof globalThis!=="undefined"?globalThis:typeof self!=="undefined"?self:typeof window!=="undefined"?window:typeof global!=="undefined"?global:{})';
+  return '(typeof globalThis!==typeof void 0?globalThis:typeof self!==typeof void 0?self:typeof window!==typeof void 0?window:typeof global!==typeof void 0?global:{})';
 }
 
 export default function integrityCheck(ast, options, ctx) {
@@ -452,11 +452,11 @@ const targets = rootBody.filter((s) => s.type === 'FunctionDeclaration' && s.id 
       : '(' + hay + ').indexOf(' + needle + ')');
     const isNative = (expr) => 'typeof ' + expr + '==="function"&&' + iof('("" + ' + expr + ')', nat) + '>-1';
     const pool = [
-      isNative('(typeof Object!=="undefined"?Object.defineProperty:undefined)'),
-      isNative('(typeof String!=="undefined"&&String.prototype?String.prototype.split:undefined)'),
-      isNative('(typeof Array!=="undefined"&&Array.prototype?Array.prototype.join:undefined)'),
+      isNative('(typeof Object!==typeof void 0?Object.defineProperty:undefined)'),
+      isNative('(typeof String!==typeof void 0&&String.prototype?String.prototype.split:undefined)'),
+      isNative('(typeof Array!==typeof void 0&&Array.prototype?Array.prototype.join:undefined)'),
     ];
-    const probes = ['(typeof Function==="undefined"||!Function.prototype?true:' + isNative('Function.prototype.toString') + ')']
+    const probes = ['(typeof Function===typeof void 0||!Function.prototype?true:' + isNative('Function.prototype.toString') + ')']
       .concat([pool[randInt(0, pool.length - 1)]]);
     headLines.push('try{if(!(' + probes.join('&&') + ')){' + setPoisonSrc() + '}}catch(_0w){}');
   }

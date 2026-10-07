@@ -63,7 +63,9 @@ export default function antiLLM(ast, options, ctx) {
     const test = t.logicalExpression('&&',
       t.binaryExpression('!==',
         t.unaryExpression('typeof', t.identifier('process')),
-        t.stringLiteral('undefined')),
+        // "undefined" 字面量会进产物明文：typeof void 0 逐位恒等于它（见本轮
+        // typeof-void 替换），且无字面量可锚
+        t.unaryExpression('typeof', t.unaryExpression('void', t.numericLiteral(0), true), true)),
       t.logicalExpression('&&',
         t.memberExpression(t.identifier('process'), t.identifier('env'), false),
         t.binaryExpression('===',

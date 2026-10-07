@@ -503,7 +503,8 @@ function makeShellLayer(payload, variant, mode) {
   for (let j = 0; j < SG; j++) gSlots[ord[j]] = segs[j];
 
   // 引导器模板，原生语句，无任何外部引用，原语文本逐字嵌入。
-  const NATIVE = 'String.fromCharCode(110,97,116,105,118,101)'; // 拼出 native
+  // native 拼写走别名 _0fc（上面已声明）：指纹只剩 1 处。
+  const NATIVE = '_0fc(110,97,116,105,118,101)'; // 拼出 native
   const tailExpr = tailOrder === 0
     ? '(((_0q[_0L]<<24)|(_0q[_0L+1]<<16)|(_0q[_0L+2]<<8)|_0q[_0L+3])>>>0)'
     : '(((_0q[_0L+3]<<24)|(_0q[_0L+2]<<16)|(_0q[_0L+1]<<8)|_0q[_0L])>>>0)';
@@ -576,48 +577,69 @@ function makeShellLayer(payload, variant, mode) {
     const junkCount = randInt(0, 14);
     for (let ji = 0; ji < junkCount; ji++) put(junkShapes[randInt(0, junkShapes.length - 1)]());
   }
+  // 原生函数单点收敛：下面用到的 String.fromCharCode / charCodeAt /
+  // Uint8Array / Array 在此各取一次别名，调用点只写别名。静态扫
+  // "fromCharCode" 这类指纹时命中从 N 处降到 1 处（声明行本身）。
+  // 等价性：fromCharCode 是静态方法无需 receiver；charCodeAt 经闭包透传 receiver；
+  // Uint8Array/Array 经别名 new 与直接 new 同内在（未被改写）。
+  put(P([
+    'var _0fc=String.fromCharCode;var _0cc=function(_0s9,_0k9){return _0s9.charCodeAt(_0k9);};var _0U8=Uint8Array;var _0Ar=Array;',
+    'var _0fc=String.fromCharCode,_0U8=Uint8Array,_0Ar=Array;var _0cc=function(_0s9,_0k9){return _0s9.charCodeAt(_0k9);};',
+  ]));
   put('var _0s2=' + s2 + ';');
   put(P(['var _0a="";var _0i,_0j,_0t;', 'var _0a="",_0i,_0j,_0t;']));
-  // 字符串累加三形态（右部纯： fromCharCode 调用无可见副作用，求值一次）
-  const accA = (rhs) => P(['_0a+=' + rhs + ';', '_0a=_0a+' + rhs + ';', '_0a=[_0a,' + rhs + '].join("");']);
-  // 计数循环三形态：for 正向 / for（Yoda 条件 + +=1 + 方括号调用）/ while。
-  // 体内无 continue/break，把 update 搬到尾部与 for 逐位等价。
+  // 字符串累加二形态（右部纯：别名调用无可见副作用，求值一次）。
+  // 曾经的第三形态 `[a,b].join("")` 已删：它本身没问题，但模板字面量替代方案
+  // 实测证明引导器里的模板经二次流水线（templateToConcat/stringArray 处理含
+  // 表达式模板）会 corrupt 字母表、整包解出乱码——教训：loader 字符串模板只用
+  // 引号字面量，不用反引号。join 因此只剩两处（shfl 尾与 ascii 快道，各 0/1）。
+  const accA = (rhs) => P(['_0a+=' + rhs + ';', '_0a=_0a+' + rhs + ';']);
+  // 计数循环四形态：for 正向 / for（Yoda 条件 + +=1）/ while / 展开 ×2。
+  // 体内无 continue/break，把 update 搬到尾部与 for 逐位等价（见各调用点注释）。
   const alphaLoop = (limit, first) => P([
-    'for(_0i=0;_0i<' + limit + ';_0i++){' + accA('String.fromCharCode(' + first + '+_0i)') + '}',
-    'for(_0i=0;' + limit + '>_0i;_0i+=1){' + accA('String["fromCharCode"](' + first + '+_0i)') + '}',
-    '_0i=0;while(_0i<' + limit + '){' + accA('String.fromCharCode(' + first + '+_0i)') + '_0i+=1;}',
+    'for(_0i=0;_0i<' + limit + ';_0i++){' + accA('_0fc(' + first + '+_0i)') + '}',
+    'for(_0i=0;' + limit + '>_0i;_0i+=1){' + accA('_0fc(' + first + '+_0i)') + '}',
+    '_0i=0;while(_0i<' + limit + '){' + accA('_0fc(' + first + '+_0i)') + '_0i+=1;}',
     // 展开 ×2：步长 2，体复制两份（i 与 i+1，右部纯、写不同槽）。只用于偶数界
     // （26/26/10），奇数界（_0SG/_0N/_0L 那几处）不碰——尾巴要另起分支，不值。
-    'for(_0i=0;_0i<' + limit + ';_0i+=2){' + accA('String.fromCharCode(' + first + '+_0i)') + accA('String.fromCharCode(' + first + '+(_0i+1))') + '}',
+    'for(_0i=0;_0i<' + limit + ';_0i+=2){' + accA('_0fc(' + first + '+_0i)') + accA('_0fc(' + first + '+(_0i+1))') + '}',
   ]);
   put(alphaLoop(26, 65));
   put(alphaLoop(26, 97));
   put(alphaLoop(10, 48));
   put(P([
-    '_0a+=String.fromCharCode(43,47);_0a=shfl(_0a.split(""),_0S[1]).join("");',
-    '_0a=_0a+String["fromCharCode"](43,47);_0a=shfl(_0a["split"](""),_0S[1])["join"]("");',
-    '_0a=[_0a,String.fromCharCode(43,47)].join("");_0a=shfl(_0a.split(""),_0S[1]).join("");',
+    '_0a+=_0fc(43,47);',
+    '_0a=_0a+_0fc(43,47);',
+    '_0a=[_0a,_0fc(43,47)].join("");',
+  ]));
+  // shfl 表派生尾：split+join 版与手工拆合版二选一。后者用下标建数组、
+  // 累加拼回，不碰原生函数（_0a 全 ASCII，下标取码元与 split("") 一致）。
+  // _0i 在此复用：顺序执行，前后都重新初始化，无干扰。
+  put(P([
+    '_0a=shfl(_0a.split(""),_0S[1]).join("");',
+    'var _0sa=new _0Ar(_0a.length);for(_0i=0;_0i<_0a.length;_0i++){_0sa[_0i]=_0a[_0i];}'
+    + '_0a=shfl(_0sa,_0S[1]);var _0sj="";for(_0i=0;_0i<_0a.length;_0i++){_0sj+=_0a[_0i];}_0a=_0sj;',
   ]));
   put(P([
-    'var _0m2=new Array(128);for(_0i=0;_0i<128;_0i++){_0m2[_0i]=-1;}',
+    'var _0m2=new _0Ar(128);for(_0i=0;_0i<128;_0i++){_0m2[_0i]=-1;}',
     // Array(128) 与 new Array(128) 按规范逐位一致（普通 Array 调用即构造）
-    'var _0m2=Array(128);for(_0i=0;128>_0i;_0i+=1){_0m2[_0i]=-1;}',
-    'var _0m2=new Array(128);_0i=0;while(_0i<128){_0m2[_0i]=-1;_0i+=1;}',
+    'var _0m2=_0Ar(128);for(_0i=0;128>_0i;_0i+=1){_0m2[_0i]=-1;}',
+    'var _0m2=new _0Ar(128);_0i=0;while(_0i<128){_0m2[_0i]=-1;_0i+=1;}',
     // 展开 ×2（128 偶数）：相邻两槽各写一次，顺序与逐个写一致
-    'var _0m2=new Array(128);for(_0i=0;_0i<128;_0i+=2){_0m2[_0i]=-1;_0m2[(_0i+1)]=-1;}',
+    'var _0m2=new _0Ar(128);for(_0i=0;_0i<128;_0i+=2){_0m2[_0i]=-1;_0m2[(_0i+1)]=-1;}',
   ]));
   put(P([
-    'for(_0i=0;_0i<64;_0i++){_0m2[_0a.charCodeAt(_0i)]=_0i;}',
-    'for(_0i=0;64>_0i;_0i+=1){_0m2[_0a["charCodeAt"](_0i)]=_0i;}',
-    '_0i=0;while(_0i<64){_0m2[_0a.charCodeAt(_0i)]=_0i;_0i+=1;}',
-    // 展开 ×2（64 偶数）：两次查表写不同槽，右部纯
-    'for(_0i=0;_0i<64;_0i+=2){_0m2[_0a.charCodeAt(_0i)]=_0i;_0m2[_0a.charCodeAt((_0i+1))]=(_0i+1);}',
+    'for(_0i=0;_0i<64;_0i++){_0m2[_0cc(_0a,_0i)]=_0i;}',
+    'for(_0i=0;64>_0i;_0i+=1){_0m2[_0cc(_0a,_0i)]=_0i;}',
+    '_0i=0;while(_0i<64){_0m2[_0cc(_0a,_0i)]=_0i;_0i+=1;}',
+    // 展开 ×2（64 偶数）：两次查表走别名，写不同槽，右部纯
+    'for(_0i=0;_0i<64;_0i+=2){_0m2[_0cc(_0a,_0i)]=_0i;_0m2[_0cc(_0a,(_0i+1))]=(_0i+1);}',
   ]));
   put(P([
-    'var _0sb=new Array(256);for(_0i=0;_0i<256;_0i++){_0sb[_0i]=_0i;}',
-    'var _0sb=Array(256);for(_0i=0;256>_0i;_0i+=1){_0sb[_0i]=_0i;}',
-    'var _0sb=new Array(256);_0i=0;while(_0i<256){_0sb[_0i]=_0i;_0i+=1;}',
-    'var _0sb=new Array(256);for(_0i=0;_0i<256;_0i+=2){_0sb[_0i]=_0i;_0sb[(_0i+1)]=(_0i+1);}',
+    'var _0sb=new _0Ar(256);for(_0i=0;_0i<256;_0i++){_0sb[_0i]=_0i;}',
+    'var _0sb=_0Ar(256);for(_0i=0;256>_0i;_0i+=1){_0sb[_0i]=_0i;}',
+    'var _0sb=new _0Ar(256);_0i=0;while(_0i<256){_0sb[_0i]=_0i;_0i+=1;}',
+    'var _0sb=new _0Ar(256);for(_0i=0;_0i<256;_0i+=2){_0sb[_0i]=_0i;_0sb[(_0i+1)]=(_0i+1);}',
   ]));
   put('_0sb=shfl(_0sb,_0S[0]);');
   put('var _0s3=' + s3 + ';'); // 第三密钥分片放在表派生之后，让声明散布开
@@ -627,18 +649,19 @@ function makeShellLayer(payload, variant, mode) {
         'var _0e=_0s1^((_0s2^_0s3)^(' + saltVar + '|0));'])
     : 'var _0e=_0s1^_0s2^_0s3;');
   put(P([
-    'var _0d=new Array(_0SG);for(_0i=0;_0i<_0SG;_0i++){_0d[_0i]=_0i;}',
-    'var _0d=Array(_0SG);for(_0i=0;_0SG>_0i;_0i+=1){_0d[_0i]=_0i;}',
+    'var _0d=new _0Ar(_0SG);for(_0i=0;_0i<_0SG;_0i++){_0d[_0i]=_0i;}',
+    'var _0d=_0Ar(_0SG);for(_0i=0;_0SG>_0i;_0i+=1){_0d[_0i]=_0i;}',
   ]));
   put('_0d=shfl(_0d,_0S[2]);');
   if (decStyle === 0) {
-    put(P(['var _0r=new Uint8Array(_0N);var _0n=0;var _0acc=0;var _0pc=0;var _0bd2=0;',
-      'var _0r=new Uint8Array(_0N),_0n=0,_0acc=0,_0pc=0,_0bd2=0;']));
+    put(P(['var _0r=new _0U8(_0N);var _0n=0;var _0acc=0;var _0pc=0;var _0bd2=0;',
+      'var _0r=new _0U8(_0N),_0n=0,_0acc=0,_0pc=0,_0bd2=0;']));
     put(P(['for(var _0j2=0;_0j2<_0SG;_0j2++){var _0sg=_0g[_0d[_0j2]];',
       'for(var _0j2=0;_0SG>_0j2;_0j2+=1){var _0sg=_0g[_0d[_0j2]];']));
     // 注意：内层 for 在此行不闭合（与原版同位），闭合在下面 `}}}` 行。
-    put(P(['for(var _0q2=0;_0q2<_0sg.length;_0q2++){var _0c=_0m2[_0sg.charCodeAt(_0q2)];',
-      'for(var _0q2=0;_0sg.length>_0q2;_0q2+=1){var _0c=_0m2[_0sg["charCodeAt"](_0q2)];']));
+    // 查表经 _0cc 别名（直接点调用会把 charCodeAt 计数顶到 3，见棘轮注释）。
+    put(P(['for(var _0q2=0;_0q2<_0sg.length;_0q2++){var _0c=_0m2[_0cc(_0sg,_0q2)];',
+      'for(var _0q2=0;_0sg.length>_0q2;_0q2+=1){var _0c=_0m2[_0cc(_0sg,_0q2)];']));
     put(P(['if(_0c<0){_0bd2++;continue;}', 'if(0>_0c){_0bd2+=1;continue;}']));
     // 加法交换律只用于纯数字累加（_0acc/_0pc/_0c 全是数字，无拼接语义）
     put(P(['_0acc=_0acc*64+_0c;_0pc=_0pc+6;',
@@ -654,19 +677,20 @@ function makeShellLayer(payload, variant, mode) {
     // 改成 if/else 嵌套，语义逐位一致；回调逐字符顺序执行，与下标版同序）。
     // split("") 按码元切分，段内容全是 ASCII base64，无代理对，切分与下标版一致。
     if (decStyle === 1) {
-      put('var _0ds=function(_0s){var _0o=new Uint8Array(_0s.length);var _0da=0,_0dp=0,_0dc=0,_0de=0;'
-        + 'for(var _0dk=0;_0dk<_0s.length;_0dk++){var _0dv=_0m2[_0s.charCodeAt(_0dk)];'
+      put('var _0ds=function(_0s){var _0o=new _0U8(_0s.length);var _0da=0,_0dp=0,_0dc=0,_0de=0;'
+        // 别名只替调用点，查表不能丢：_0cc 给的是码点，还要经 _0m2 映成 6 位值
+        + 'for(var _0dk=0;_0dk<_0s.length;_0dk++){var _0dv=_0m2[_0cc(_0s,_0dk)];'
         + 'if(_0dv<0){_0de++;continue;}_0da=_0da*64+_0dv;_0dp+=6;'
         + 'if(_0dp>7){_0dp-=8;_0o[_0dc++]=(_0da>>>_0dp)&255;_0da&=(1<<_0dp)-1;}}'
         + 'return [_0o,_0dc,_0de];};');
     } else {
-      put('var _0ds=function(_0s){var _0o=new Uint8Array(_0s.length);var _0da=0,_0dp=0,_0dc=0,_0de=0;'
-        + '_0s.split("").forEach(function(_0ch){var _0dv=_0m2[_0ch.charCodeAt(0)];'
+      put('var _0ds=function(_0s){var _0o=new _0U8(_0s.length);var _0da=0,_0dp=0,_0dc=0,_0de=0;'
+        + '_0s.split("").forEach(function(_0ch){var _0dv=_0m2[_0cc(_0ch,0)];'
         + 'if(_0dv<0){_0de++;}else{_0da=_0da*64+_0dv;_0dp+=6;'
         + 'if(_0dp>7){_0dp-=8;_0o[_0dc++]=(_0da>>>_0dp)&255;_0da&=(1<<_0dp)-1;}}});'
         + 'return [_0o,_0dc,_0de];};');
     }
-    put('var _0r=new Uint8Array(_0N),_0n=0,_0bd2=0;');
+    put('var _0r=new _0U8(_0N),_0n=0,_0bd2=0;');
     if (decStyle === 1) {
       put(P(['for(var _0j2=0;_0j2<_0SG;_0j2++){var _0dr=_0ds(_0g[_0d[_0j2]]);'
         + '_0r.set(_0dr[0].subarray(0,_0dr[1]),_0n);_0n+=_0dr[1];_0bd2+=_0dr[2];}',
@@ -681,7 +705,7 @@ function makeShellLayer(payload, variant, mode) {
         + '_0bd2+=_0dr[2];_0n+=_0dr[1];_0r.set(_0dr[0].subarray(0,_0dr[1]),_0n-_0dr[1]);}']));
     }
   }
-  put('var _0q=new Uint8Array(_0N);');
+  put('var _0q=new _0U8(_0N);');
   if (jsfuckName) {
     // 与 classic 分支逐语句等价，只是整段搬进了 JSFuck 表达式求值出来的函数。
     // 原语按名传参（引导器作用域里的 xs32/mix/ipos），randomizeNames 会把它们
@@ -734,9 +758,9 @@ function makeShellLayer(payload, variant, mode) {
     // 外层循环的闭合仍由下一行行末 `}` 完成（与原版同位）
     put(P(['while(_0st<_0L){_0en=_0st+_0CK;if(_0en>_0L){_0en=_0L;}',
       'for(;_0st<_0L;){_0en=_0CK+_0st;if(_0L<_0en){_0en=_0L;}']));
-    put(P(['_0s2+=String.fromCharCode.apply(null,_0q.subarray(_0st,_0en));_0st=_0en;}',
-      '_0s2=_0s2+String["fromCharCode"]["apply"](null,_0q["subarray"](_0st,_0en));_0st=_0en;}',
-      '_0s2=[_0s2,String.fromCharCode.apply(null,_0q.subarray(_0st,_0en))].join("");_0st=_0en;}']));
+    put(P(['_0s2+=_0fc.apply(null,_0q.subarray(_0st,_0en));_0st=_0en;}',
+      '_0s2=_0s2+_0fc["apply"](null,_0q["subarray"](_0st,_0en));_0st=_0en;}',
+      '_0s2=[_0s2,_0fc.apply(null,_0q.subarray(_0st,_0en))].join("");_0st=_0en;}']));
   } else {
     put(P(['var _0s2="";var _0p=[];var _0y=0;', 'var _0s2="",_0p=[],_0y=0;']));
     // _0y++ 的值被用作下标，只动方向不动自增
@@ -753,11 +777,11 @@ function makeShellLayer(payload, variant, mode) {
     // 双参 push 进双槽：两右部皆纯算术，各求值一次，顺序不变
     put(P(['_0p.push(55296+(_0cp>>10),56320+(_0cp&1023));}',
       '_0p[_0p.length]=55296+(_0cp>>10);_0p[_0p.length]=56320+(_0cp&1023);}']));
-    put(P(['if(_0p.length>=512){_0s2+=String.fromCharCode.apply(null,_0p);_0p=[];}}',
-      'if(512<=_0p.length){_0s2=[_0s2,String["fromCharCode"]["apply"](null,_0p)].join("");_0p=[];}}']));
+    put(P(['if(_0p.length>=512){_0s2+=_0fc.apply(null,_0p);_0p=[];}}',
+      'if(512<=_0p.length){_0s2=[_0s2,_0fc["apply"](null,_0p)].join("");_0p=[];}}']));
     // length 是非负数字：if(n) ⟺ if(n!==0)，逐位一致
-    put(P(['if(_0p.length){_0s2+=String.fromCharCode.apply(null,_0p);}',
-      'if(_0p.length!==0){_0s2=_0s2+String.fromCharCode.apply(null,_0p);}']));
+    put(P(['if(_0p.length){_0s2+=_0fc.apply(null,_0p);}',
+      'if(_0p.length!==0){_0s2=_0s2+_0fc.apply(null,_0p);}']));
   }
   if (isCjs) {
     put('var _0cm={exports:{}};');

@@ -942,7 +942,7 @@ function _v(I) {
 }
 function _g(){
   try {
-    if (typeof WebAssembly === "undefined") { _ok = true; _f(); return; }
+    if (typeof WebAssembly === typeof void 0) { _ok = true; _f(); return; }
     try {
       // 同步快道：编译 + 实例化 + 校验 + 解密，一次完成
       var I = new WebAssembly.Instance(new WebAssembly.Module(_w));

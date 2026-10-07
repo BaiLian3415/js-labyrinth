@@ -72,12 +72,12 @@ export default function antiCDP(ast, options, ctx) {
 
   // V2/V3 的源码被启动首遍与周期复查共用
   const v2Src =
-    '(function(){if(typeof navigator==="undefined"||!navigator){return;}' +
+    '(function(){if(typeof navigator===typeof void 0||!navigator){return;}' +
     'if(navigator[' + M('webdriver') + ']===true){' + hitSrc('_0xG') + '}})();';
   const v3Src =
-    '(function(){if(typeof window==="undefined"){return;}' +
-    'var _0os=[window,(typeof navigator!=="undefined"&&navigator)?navigator:null,' +
-    '(typeof document!=="undefined"&&document)?document:null];' +
+    '(function(){if(typeof window===typeof void 0){return;}' +
+    'var _0os=[window,(typeof navigator!==typeof void 0&&navigator)?navigator:null,' +
+    '(typeof document!==typeof void 0&&document)?document:null];' +
     'var _0ks=[' + ARTIFACTS.map(M).join(',') + '];' +
     'var _0hit=false;' +
     'for(var _0i=0;_0i<_0os.length&&!_0hit;_0i++){var _0o=_0os[_0i];if(!_0o){continue;}' +
@@ -87,7 +87,7 @@ export default function antiCDP(ast, options, ctx) {
     'catch(_0e){}if(_0hit){break;}}}' +
     'if(_0hit){' + hitSrc('_0xG') + '}})();';
   const v1Src =
-    '(function(){if(typeof window==="undefined"||!_0clog||!_0cdb){return;}' +
+    '(function(){if(typeof window===typeof void 0||!_0clog||!_0cdb){return;}' +
     'var _0n=0;var _0gp={};' +
     // enumerable 必须显式置真：defineProperty 默认不可枚举，而 CDP 预览与
     // 自动化框架的序列化都走"枚举自属性再求值访问器"的路径，不可枚举的
@@ -107,7 +107,7 @@ export default function antiCDP(ast, options, ctx) {
   parts.push('var _0xG=' + GLOBAL_EXPR + ';');
   // 原生 console 引用必须最先捕获：本头部在产物中先于 debugProtection 执行，
   // consoleStub 的失效化发生在后，捕获到的引用永远是原生方法
-  parts.push('var _0cl=(typeof console!=="undefined"&&console)?console:null;');
+  parts.push('var _0cl=(typeof console!==typeof void 0&&console)?console:null;');
   parts.push('var _0clog=(_0cl&&typeof _0cl["log"]==="function")?_0cl["log"]:null;');
   parts.push('var _0cdb=(_0cl&&typeof _0cl["debug"]==="function")?_0cl["debug"]:null;');
   parts.push('try{' + v1Src + '}catch(_0z){}');
@@ -115,7 +115,7 @@ export default function antiCDP(ast, options, ctx) {
   parts.push('try{' + v3Src + '}catch(_0z){}');
   // 周期复查只跑 V2/V3（V1 会往控制台打探针对象，周期重跑是可见污染）。
   // 仅浏览器环境装配；句柄 unref，不阻塞进程退出。
-  parts.push('if(typeof window!=="undefined"&&typeof setInterval==="function"){try{' +
+  parts.push('if(typeof window!==typeof void 0&&typeof setInterval==="function"){try{' +
     'var _0th=setInterval(function(){try{' + v2Src + v3Src + '}catch(_0e){}},' + PERIOD + ');' +
     'try{if(_0th&&typeof _0th.unref==="function"){_0th.unref();}}catch(_0w){}}catch(_0w){}}');
 

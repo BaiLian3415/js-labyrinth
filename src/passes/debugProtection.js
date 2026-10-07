@@ -114,37 +114,37 @@ export default function debugProtection(ast, options, ctx) {
   // 可选检测点，源码形态，命中动作为 _0xdg()，构建级子集抽取
   const checks = [
     // 尺寸检测，看浏览器 DevTools 停靠占位，属性名掩码重组后经计算下标访问
-    '(function(){if(typeof window!=="undefined"){var _0w=window;' +
+    '(function(){if(typeof window!==typeof void 0){var _0w=window;' +
     'var _0dx=_0w[' + M('outerWidth') + ']-_0w[' + M('innerWidth') + '];' +
     'var _0dy=_0w[' + M('outerHeight') + ']-_0w[' + M('innerHeight') + '];' +
     'if(_0dx>' + SIZE_ALLOW + '||_0dy>' + SIZE_ALLOW + '){_0xdg();}}})();',
     // Function.prototype.toString 防 hook
     '(function(){if(' + IOF('(Function.prototype.toString.toString()+"")', M('native')) + '===-1){_0xdg();}})();',
     // console 原生性检测
-    '(function(){if(typeof console!=="undefined"&&console&&typeof console.log==="function"){' +
+    '(function(){if(typeof console!==typeof void 0&&console&&typeof console.log==="function"){' +
     'if(' + IOF('(Function.prototype.toString.call(console.log)+"")', M('native code')) + '===-1){_0xdg();}}})();',
     // performance 高精度时差，确认命中计入投毒计数
-    '(function(){if(typeof performance!=="undefined"&&performance&&typeof performance.now==="function"){' +
+    '(function(){if(typeof performance!==typeof void 0&&performance&&typeof performance.now==="function"){' +
     'var _0p0=performance.now();_0xdg();var _0p1=performance.now();var _0pg=_0p1-_0p0;' +
     'if(_0pg>' + PERF_CONFIRM + '){' + confirmSrc('_0xG') + '}' +
     'if(_0pg>' + PERF_ALLOW + '){_0xdg();var _0ph=performance.now();while(performance.now()-_0ph<' + PERF_HANG + '){}}' +
     '}})();',
     // Error.prepareStackTrace 被 hook，属性名经掩码重组
-    '(function(){if(typeof Error!=="undefined"&&typeof Error[' + M('prepareStackTrace') + ']!=="undefined"){_0xdg();}})();',
+    '(function(){if(typeof Error!==typeof void 0&&typeof Error[' + M('prepareStackTrace') + ']!==typeof void 0){_0xdg();}})();',
     // Error.stackTraceLimit 被篡改
-    '(function(){if(typeof Error!=="undefined"&&typeof Error[' + M('stackTraceLimit') + ']!=="undefined"&&' +
+    '(function(){if(typeof Error!==typeof void 0&&typeof Error[' + M('stackTraceLimit') + ']!==typeof void 0&&' +
     'typeof Error[' + M('stackTraceLimit') + ']!=="number"){_0xdg();}})();',
     // Error().stack 自一致性，空栈或单行压扁说明栈被 hook，不支持栈的环境不误触
-    '(function(){if(typeof Error!=="undefined"){var _0st=new Error().stack;' +
+    '(function(){if(typeof Error!==typeof void 0){var _0st=new Error().stack;' +
     'if(typeof _0st==="string"&&_0st.length>0&&' +
     IOF('_0st', rt.fcc ? rt.fcc + '(10)' : '"\\n"') + '===-1){_0xdg();}}})();',
     // console getter 探针，DevTools 打开时 console.log 会求值对象 getter，仅浏览器
-    '(function(){if(typeof console!=="undefined"&&typeof window!=="undefined"){' +
+    '(function(){if(typeof console!==typeof void 0&&typeof window!==typeof void 0){' +
     'var _0gf=false;var _0gp={};' +
     'Object.defineProperty(_0gp,"x",{get:function(){_0gf=true;return 1;}});' +
     'console.log(_0gp);if(_0gf){_0xdg();}}})();',
     // window 属性 Proxy 劫持 canary，读两次比对一致性，仅浏览器
-    '(function(){if(typeof window!=="undefined"&&typeof Math!=="undefined"){' +
+    '(function(){if(typeof window!==typeof void 0&&typeof Math!==typeof void 0){' +
     'var _0xy=(function(){try{' +
     'var _0kw="__z"+' + (rt.toh ? rt.toh + '((new Date().getTime()^0x5f3a5f3a)>>>0)' : '(new Date().getTime()).toString(36)') + ';' +
     'Object.defineProperty(window,_0kw,{configurable:true,get:function(){return 0x1a7;}});' +
@@ -154,30 +154,30 @@ export default function debugProtection(ast, options, ctx) {
     '}catch(_0e){return true;}})();' +
     'if(!_0xy){_0xdg();}}})();',
     // Node --inspect 证据，查 execArgv 与 NODE_OPTIONS，置证据键后单次确认命中即投毒
-    '(function(){if(typeof process!=="undefined"){' +
-    'var _0ja=(typeof process.execArgv!=="undefined"?process.execArgv:[]);' +
+    '(function(){if(typeof process!==typeof void 0){' +
+    'var _0ja=(typeof process.execArgv!==typeof void 0?process.execArgv:[]);' +
     'var _0j=' + (rt.join ? rt.join + '(_0ja," ")' : '_0ja.join(" ")') + ';' +
     'var _0o=(process.env&&typeof process.env.NODE_OPTIONS==="string")?process.env.NODE_OPTIONS:"";' +
     'if(' + IOF('_0j', M('inspect')) + '>-1||' + IOF('_0o', M('inspect')) + '>-1){' +
     (poisonable ? '_0xG["' + KEYS.insp + '"]=1;' : '') +
     '_0xdg();}}})();',
     // Function.prototype.toString 被事后替换，与头部捕获的原生引用比对身份
-    '(function(){if(typeof Function!=="undefined"&&Function.prototype&&' +
+    '(function(){if(typeof Function!==typeof void 0&&Function.prototype&&' +
     'Function.prototype[' + M('toString') + ']!==_0xFP){_0xdg();}})();',
     // prepareStackTrace 陷阱被摘除，描述符上的 set 访问器不再在位
     '(function(){if(_0xPT&&!_0xPT()){_0xdg();}})();',
     // setInterval 被替换，比对头部捕获的引用与当前全局
-    '(function(){if(_0xSI&&typeof setInterval!=="undefined"&&setInterval!==_0xSI){_0xdg();}})();',
+    '(function(){if(_0xSI&&typeof setInterval!==typeof void 0&&setInterval!==_0xSI){_0xdg();}})();',
     // 内建身份快照组。头部捕获 Function、Object.defineProperty、
     // Object.getOwnPropertyDescriptor、Function.prototype.call 与 eval 的引用，
     // 运行期比对身份：替换式 hook 会换掉函数对象，比对身份比查 toString 更
     // 难骗——hook 者常把 toString 一并伪造，却很少能保住对象身份。
-    '(function(){if(_0xF1&&typeof Function!=="undefined"&&Function!==_0xF1){_0xdg();}})();',
-    '(function(){if(_0xDP&&typeof Object!=="undefined"&&Object.defineProperty!==_0xDP){_0xdg();}})();',
-    '(function(){if(_0xGP&&typeof Object!=="undefined"&&Object.getOwnPropertyDescriptor!==_0xGP){_0xdg();}})();',
-    '(function(){if(_0xCA&&typeof Function!=="undefined"&&Function.prototype&&Function.prototype.call!==_0xCA){_0xdg();}})();',
+    '(function(){if(_0xF1&&typeof Function!==typeof void 0&&Function!==_0xF1){_0xdg();}})();',
+    '(function(){if(_0xDP&&typeof Object!==typeof void 0&&Object.defineProperty!==_0xDP){_0xdg();}})();',
+    '(function(){if(_0xGP&&typeof Object!==typeof void 0&&Object.getOwnPropertyDescriptor!==_0xGP){_0xdg();}})();',
+    '(function(){if(_0xCA&&typeof Function!==typeof void 0&&Function.prototype&&Function.prototype.call!==_0xCA){_0xdg();}})();',
     // eval 被替换：外壳与隐蔽触发器都经它构造，换掉 eval 是脱壳与去断点的前提
-    '(function(){if(_0xEV&&typeof eval!=="undefined"&&eval!==_0xEV){_0xdg();}})();',
+    '(function(){if(_0xEV&&typeof eval!==typeof void 0&&eval!==_0xEV){_0xdg();}})();',
     // 描述符 canary：在自建对象上装一个访问器再读回描述符，被 hook 的
     // defineProperty / getOwnPropertyDescriptor 留不下完全一致的描述符
     '(function(){if(!_0xDP||!_0xGP){return;}' +
@@ -187,7 +187,7 @@ export default function debugProtection(ast, options, ctx) {
     'if(!_0cd||_0cd.get!==_0cg||!_0cd.configurable){_0xdg();}}catch(_0e){_0xdg();}})();',
     // RT 内核依赖的原生存活性：String.prototype.split 是解码器的底座之一，
     // 被替换即说明整条原生链被接管
-    '(function(){if(typeof String!=="undefined"&&String.prototype&&typeof String.prototype.split==="function"){' +
+    '(function(){if(typeof String!==typeof void 0&&String.prototype&&typeof String.prototype.split==="function"){' +
     'if(' + IOF('(""+String.prototype.split)', M('native code')) + '===-1){_0xdg();}}})();',
     // 多时钟源交叉验证。上面的 performance 检查只看"有没有明显停顿"，对"时钟被
     // 整体换掉但照样返回数字"无能为力；而 hook Date.now / performance.now 正是
@@ -200,18 +200,18 @@ export default function debugProtection(ast, options, ctx) {
     //      没动"这种自相矛盾出现（真挂起会同时推高两者，因此不会误判）；
     //   ③ Node 侧再掺入 process.hrtime，三个时钟源两两对照，单独伪造一个必然
     //      与另两个对不上。
-    '(function(){if(typeof Date!=="undefined"&&typeof Date.now==="function"){' +
+    '(function(){if(typeof Date!==typeof void 0&&typeof Date.now==="function"){' +
     'var _0cy=new Date().getTime();var _0cz=Date.now();' +
     'if(_0cy-_0cz>' + CROSS_ALLOW + '||_0cz-_0cy>' + CROSS_ALLOW + '){_0xdg();}' +
-    'if(typeof performance!=="undefined"&&performance&&typeof performance.now==="function"){' +
+    'if(typeof performance!==typeof void 0&&performance&&typeof performance.now==="function"){' +
     'var _0cq=performance.now();var _0cd=_0cz;' +
-    'if(typeof process!=="undefined"&&process&&typeof process.hrtime==="function"){var _0ch0=process.hrtime();}' +
+    'if(typeof process!==typeof void 0&&process&&typeof process.hrtime==="function"){var _0ch0=process.hrtime();}' +
     'var _0cj=0;for(var _0ci=0;_0ci<2000;_0ci++){_0cj=(_0cj+_0ci)%7;}' +
     'if(_0cj===-1){_0xdg();}' +
     'var _0cr=performance.now();var _0ce=Date.now();' +
     'var _0cP=_0cr-_0cq;var _0cD=_0ce-_0cd;' +
     'if(_0cP>' + CROSS_CONFIRM + '&&_0cD*4<_0cP){' + confirmSrc('_0xG') + '}' +
-    'if(typeof process!=="undefined"&&process&&typeof process.hrtime==="function"){' +
+    'if(typeof process!==typeof void 0&&process&&typeof process.hrtime==="function"){' +
     'var _0ch1=process.hrtime();' +
     'var _0cH=((_0ch1[0]-_0ch0[0])*1000)+((_0ch1[1]-_0ch0[1])/1000000);' +
     'if(_0cH-_0cP>' + CROSS_CONFIRM + '||_0cP-_0cH>' + CROSS_CONFIRM + '){_0xdg();}' +
@@ -236,18 +236,18 @@ export default function debugProtection(ast, options, ctx) {
   const hookChecks = [
     // --- 身份比对（strong=false：语义等价的 polyfill 理论可能存在，留一次确认）---
     // Function.prototype.apply 被替换
-    '(function(){if(_0xAP&&typeof Function!=="undefined"&&Function.prototype&&Function.prototype[' + M('apply') + ']!==_0xAP){' + hookHit(false) + '}})();',
+    '(function(){if(_0xAP&&typeof Function!==typeof void 0&&Function.prototype&&Function.prototype[' + M('apply') + ']!==_0xAP){' + hookHit(false) + '}})();',
     // Proxy 构造器被替换
-    '(function(){if(_0xPX&&typeof Proxy!=="undefined"&&Proxy!==_0xPX){' + hookHit(false) + '}})();',
+    '(function(){if(_0xPX&&typeof Proxy!==typeof void 0&&Proxy!==_0xPX){' + hookHit(false) + '}})();',
     // Reflect 被替换 / 被包装
-    '(function(){if(_0xRF&&typeof Reflect!=="undefined"&&Reflect!==_0xRF){' + hookHit(false) + '}})();',
+    '(function(){if(_0xRF&&typeof Reflect!==typeof void 0&&Reflect!==_0xRF){' + hookHit(false) + '}})();',
     // --- 行为自洽（strong=true：语义等价的实现不可能命中，立即投毒）---
     // apply 行为：两种途径调用必须一致。预装 hook 也抓得到（不依赖快照）
     '(function(){try{var _0af=function(_0x){return _0x+1;};if(_0af[' + M('apply') + '](null,[1])!==2){' + hookHit(true) + '}}catch(_0w){' + hookHit(true) + '}})();',
     // Proxy 行为：trap 必须真的被调用，且透传取值正确
     '(function(){if(!_0xPX){return;}try{var _0pa=0;var _0pt=new Proxy({v:0x1a7},{get:function(_0t,_0k){_0pa++;return _0t[_0k];}});if(_0pt.v!==0x1a7||_0pa<1){' + hookHit(true) + '}}catch(_0w){' + hookHit(true) + '}})();',
     // Reflect.apply 行为：被替换，或与 Function.prototype.apply 结果不一致
-    '(function(){if(!_0xRG||typeof Reflect==="undefined"||!Reflect||!Reflect[' + M('apply') + ']){return;}if(Reflect[' + M('apply') + ']!==_0xRG){' + hookHit(true) + ';return;}try{var _0af=function(_0x){return _0x+1;};if(Reflect[' + M('apply') + '](_0af,null,[1])!==2){' + hookHit(true) + '}}catch(_0w){' + hookHit(true) + '}})();',
+    '(function(){if(!_0xRG||typeof Reflect===typeof void 0||!Reflect||!Reflect[' + M('apply') + ']){return;}if(Reflect[' + M('apply') + ']!==_0xRG){' + hookHit(true) + ';return;}try{var _0af=function(_0x){return _0x+1;};if(Reflect[' + M('apply') + '](_0af,null,[1])!==2){' + hookHit(true) + '}}catch(_0w){' + hookHit(true) + '}})();',
     // defineProperty 行为：数据属性必须真的写进去（转发但吞掉/改写的包装层会露）
     '(function(){if(!_0xDP){return;}try{var _0o={};_0xDP(_0o,' + M('d') + ',{value:0x1a7,configurable:true});if(_0o[' + M('d') + ']!==0x1a7){' + hookHit(true) + '}}catch(_0w){' + hookHit(true) + '}})();',
   ];
@@ -265,8 +265,8 @@ export default function debugProtection(ast, options, ctx) {
   parts.push(dbgVarSource('_0xdg'));
   parts.push('var _0xG=' + GLOBAL_EXPR + ';');
   parts.push('var _0armed=false;');
-  parts.push('var _0xSI=(typeof setInterval!=="undefined"?setInterval:null);');
-  parts.push('var _0xCI=(typeof clearInterval!=="undefined"?clearInterval:null);');
+  parts.push('var _0xSI=(typeof setInterval!==typeof void 0?setInterval:null);');
+  parts.push('var _0xCI=(typeof clearInterval!==typeof void 0?clearInterval:null);');
   // 每个句柄登记进 __h 表，_0xclr 据表清空。装配路径无论是首装配还是复入重
   // 建都先清后装，定时器数量恒定一份，不随重建次数叠加。
   parts.push('var _0xarm=function(_0xf,_0xm){if(!_0xSI){return null;}' +
@@ -285,30 +285,30 @@ export default function debugProtection(ast, options, ctx) {
   // Object.defineProperty、Object.getOwnPropertyDescriptor、
   // Function.prototype.call 与 eval。外壳、隐蔽触发器与解码器全部依赖它们，
   // 身份比对比 toString 文本比对更难伪造——hook 者通常顺手改掉 toString。
-  parts.push('var _0xFP=(typeof Function!=="undefined"&&Function.prototype)?Function.prototype[' + M('toString') + ']:null;');
-  parts.push('var _0xF1=(typeof Function!=="undefined"?Function:null);');
-  parts.push('var _0xDP=(typeof Object!=="undefined"?Object.defineProperty:null);');
-  parts.push('var _0xGP=(typeof Object!=="undefined"?Object.getOwnPropertyDescriptor:null);');
-  parts.push('var _0xCA=(typeof Function!=="undefined"&&Function.prototype?Function.prototype[' + M('call') + ']:null);');
-  parts.push('var _0xEV=(typeof eval!=="undefined"?eval:null);');
+  parts.push('var _0xFP=(typeof Function!==typeof void 0&&Function.prototype)?Function.prototype[' + M('toString') + ']:null;');
+  parts.push('var _0xF1=(typeof Function!==typeof void 0?Function:null);');
+  parts.push('var _0xDP=(typeof Object!==typeof void 0?Object.defineProperty:null);');
+  parts.push('var _0xGP=(typeof Object!==typeof void 0?Object.getOwnPropertyDescriptor:null);');
+  parts.push('var _0xCA=(typeof Function!==typeof void 0&&Function.prototype?Function.prototype[' + M('call') + ']:null);');
+  parts.push('var _0xEV=(typeof eval!==typeof void 0?eval:null);');
   // ---- 反 Hook / 反 Proxy 快照（劫持检测用）----
   // 身份快照能查出"被替换"，查不出"被包装成行为不同的等价物"。所以除了快照，
   // 下面还配了行为探针：同一个函数用两种途径调用结果必须一致，Proxy 的 trap
   // 必须真的触发且取值正确。劫持方要绕过就得同时伪造身份与行为。
   // apply 与 call 是一对，此前只快照了 call；Reflect.apply 又常被用来绕过
   // Function.prototype.apply 上的 hook，三者一并纳入。
-  parts.push('var _0xAP=(typeof Function!=="undefined"&&Function.prototype?Function.prototype[' + M('apply') + ']:null);');
-  parts.push('var _0xPX=(typeof Proxy!=="undefined"?Proxy:null);');
-  parts.push('var _0xRF=(typeof Reflect!=="undefined"?Reflect:null);');
-  parts.push('var _0xRG=(typeof Reflect!=="undefined"&&Reflect[' + M('apply') + ']?Reflect[' + M('apply') + ']:null);');
+  parts.push('var _0xAP=(typeof Function!==typeof void 0&&Function.prototype?Function.prototype[' + M('apply') + ']:null);');
+  parts.push('var _0xPX=(typeof Proxy!==typeof void 0?Proxy:null);');
+  parts.push('var _0xRF=(typeof Reflect!==typeof void 0?Reflect:null);');
+  parts.push('var _0xRG=(typeof Reflect!==typeof void 0&&Reflect[' + M('apply') + ']?Reflect[' + M('apply') + ']:null);');
   // Error.prepareStackTrace 设值陷阱：devtools 协议 attach 时会赋值该属性，
   // 陷阱被摘除即描述符不再是访问器，同样命中。_0xPT 是在位性探测函数，先于
   // 装配定义，复入路径上探测能力不会丢失；探测到陷阱在位就不重装，重装会把
   // 已有的赋值状态清零，还白造一个闭包。
   parts.push('var _0xPT=null;');
-  parts.push('try{(function(){if(typeof Error==="undefined"){return;}' +
+  parts.push('try{(function(){if(typeof Error===typeof void 0){return;}' +
     'var _0key=' + M('prepareStackTrace') + ';' +
-    'if(typeof Error[_0key]!=="undefined"){return;}' +
+    'if(typeof Error[_0key]!==typeof void 0){return;}' +
     '_0xPT=function(){try{var _0d=Object.getOwnPropertyDescriptor(Error,_0key);' +
     'return !_0d||typeof _0d.set==="function";}catch(_0e){return true;};};' +
     'if(!_0xPT()){return;}' +
@@ -336,7 +336,7 @@ export default function debugProtection(ast, options, ctx) {
   // 值恒大于停滞阈值，停滞判定于是永不为假，每次哨兵复入都重装一份定时器且
   // 不清旧的，定时器数量随宿主调用线性增长。
   parts.push('var _0xstale=function(){try{' +
-    'if(typeof document!=="undefined"&&typeof document.visibilityState==="string"&&document.visibilityState==="hidden"){return false;}' +
+    'if(typeof document!==typeof void 0&&typeof document.visibilityState==="string"&&document.visibilityState==="hidden"){return false;}' +
     'var _0n=' + NOW + ';var _0l=+_0xG["' + KEYS.hb + '"];' +
     'if(_0l>0&&_0n-_0l<' + STALL_MS + '){return false;}' +
     'var _0rc=+_0xG["' + KEYS.rc + '"]|0;' +
@@ -349,7 +349,7 @@ export default function debugProtection(ast, options, ctx) {
   // 一并挂上，于是 hook 无论何时出现，最迟一个复查周期内必被投毒。
   const hookProbes = hookChecks.join('');
   parts.push('var _0xpd=function(){try{_0xhb();' +
-    'if(typeof Function!=="undefined"&&Function.prototype&&Function.prototype[' + M('toString') + ']!==_0xFP){' +
+    'if(typeof Function!==typeof void 0&&Function.prototype&&Function.prototype[' + M('toString') + ']!==_0xFP){' +
     (poisonable ? confirmSrc('_0xG') : '_0xdg();') + '}' +
     'if(_0xPT&&!_0xPT()){_0xdg();}' +
     hookProbes +
@@ -360,7 +360,7 @@ export default function debugProtection(ast, options, ctx) {
     'if(_0xdt>' + TIME_ALLOW + '){_0xdg();var _0xh=new Date();while(new Date()-_0xh<' + HANG_MS + '){}}' +
     '}catch(_0w){}};');
   parts.push('var _0xwd=function(){try{' +
-    'if(_0xSI&&typeof setInterval!=="undefined"&&setInterval!==_0xSI){_0xdg();}' +
+    'if(_0xSI&&typeof setInterval!==typeof void 0&&setInterval!==_0xSI){_0xdg();}' +
     'if(_0xstale()){_0xclr();_0xarm(_0xpd,' + perPd + ');_0xarm(_0xtd,' + perTd + ');' +
     (extraDebuggers ? '_0xarm(_0xpd,' + perPd2 + ');' : '') +
     '}}catch(_0w){}};');
@@ -379,7 +379,7 @@ export default function debugProtection(ast, options, ctx) {
   parts.push('_0xarm(_0xtd,' + perTd + ');');
   parts.push('_0xarm(_0xwd,' + WD_MS + ');');
   if (options.consoleStub) {
-    parts.push('if(typeof console!=="undefined"){var _0cm=["log","info","warn","error","debug","table","trace"];' +
+    parts.push('if(typeof console!==typeof void 0){var _0cm=["log","info","warn","error","debug","table","trace"];' +
       'for(var _0z=0;_0z<_0cm.length;_0z++){try{console[_0cm[_0z]]=function(){};}catch(_0w){}}}');
   }
 
@@ -420,10 +420,10 @@ export default function debugProtection(ast, options, ctx) {
       'if(_0te-_0xt>' + timeConfirm + '){' + confirmSrc('_0xg') + '}' +
       bounded('_0xdg();') + '}';
     const hookCheck = 'if(' + IOF('(Function.prototype.toString.toString()+"")', M('native')) + '===-1){' + bounded('_0xdg();') + '}';
-    const sizeCheck = 'if(typeof window!=="undefined"&&(window[' + M('outerWidth') + ']-window[' + M('innerWidth') + ']>' + sizeAllow +
+    const sizeCheck = 'if(typeof window!==typeof void 0&&(window[' + M('outerWidth') + ']-window[' + M('innerWidth') + ']>' + sizeAllow +
       '||window[' + M('outerHeight') + ']-window[' + M('innerHeight') + ']>' + sizeAllow + ')){_0xdg();}';
-    const inspCheck = 'if(typeof process!=="undefined"&&(' +
-      IOF((rt.join ? rt.join + '((typeof process.execArgv!=="undefined"?process.execArgv:[])," ")' : '(typeof process.execArgv!=="undefined"?process.execArgv:[]).join(" ")'), M('inspect')) + '>-1' +
+    const inspCheck = 'if(typeof process!==typeof void 0&&(' +
+      IOF((rt.join ? rt.join + '((typeof process.execArgv!==typeof void 0?process.execArgv:[])," ")' : '(typeof process.execArgv!==typeof void 0?process.execArgv:[]).join(" ")'), M('inspect')) + '>-1' +
       (poisonable ? '||' + IOF('((process.env&&typeof process.env.NODE_OPTIONS==="string")?process.env.NODE_OPTIONS:"")', M('inspect')) + '>-1' : '') +
       ')){' + (poisonable ? '_0xg["' + KEYS.insp + '"]=1;' : '') + '_0xdg();}';
     const tail = [];

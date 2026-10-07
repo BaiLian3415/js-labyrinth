@@ -47,6 +47,8 @@ function randomizeNames(src, used, prefix) {
     '_0pc', '_0bd2', '_0j2', '_0sg', '_0q2', '_0c', '_0c2', '_0q', '_0u', '_0pv',
     '_0h', '_0t2', '_0kb', '_0v', '_0bd', '_0u2', '_0lim', '_0s2', '_0p', '_0y',
     '_0st', '_0en', '_0m2', '_0sb',
+    // 原生函数别名（单点收敛）：声明与调用点一起随机化，调用点只剩别名
+    '_0fc', '_0cc', '_0s9', '_0k9', '_0U8', '_0Ar', '_0sa', '_0sj',
     // 分段解码助手（decStyle=1/2）自带的固定名，同样逐构建随机化，不留字面量指纹
     '_0ds', '_0s', '_0o', '_0da', '_0dp', '_0dc', '_0de', '_0dk', '_0dv', '_0dr', '_0ch',
     'mul32', 'lcg', 'xs32', 'shfl', 'ipos', 'mix',
@@ -172,7 +174,7 @@ export { FNV_FORMS };
 
 /** 全局对象引用链，与 shell/stringArray 用的是同一套探测串。 */
 function globalRef() {
-  return '(typeof globalThis!=="undefined"?globalThis:typeof self!=="undefined"?self:typeof window!=="undefined"?window:typeof global!=="undefined"?global:{})';
+  return '(typeof globalThis!==typeof void 0?globalThis:typeof self!==typeof void 0?self:typeof window!==typeof void 0?window:typeof global!==typeof void 0?global:{})';
 }
 
 /**

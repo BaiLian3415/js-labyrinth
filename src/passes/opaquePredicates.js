@@ -184,7 +184,8 @@ export default function opaquePredicates(ast, options, ctx) {
                   t.binaryExpression('&&',
                     t.binaryExpression('!==',
                       t.unaryExpression('typeof', t.identifier('performance'), true),
-                      t.stringLiteral('undefined')),
+                      // "undefined" 会进产物明文：typeof void 0 逐位恒等于它
+                      t.unaryExpression('typeof', t.unaryExpression('void', t.numericLiteral(0), true), true)),
                     t.memberExpression(t.identifier('performance'), t.identifier('now'), false)),
                   t.binaryExpression('*',
                     t.callExpression(

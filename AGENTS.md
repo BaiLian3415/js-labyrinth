@@ -88,6 +88,19 @@ npm run build:web:cloud  # 云端执行形态（核心不进产物，Vercel 部�
   循环经控制流扁平化后把大载荷装载拖慢到触发反调试时延拖慢正反馈、产物运行
   超过 60s 测试超时，已弃用；handler-poly ③ 已推广到全族两两等价）、
   `shfl-C`（由内向外、新数组返回；调用点一律取返回值，不依赖原地改写）。
+- 原生函数单点收敛（shell 引导器）：`String.fromCharCode`/`charCodeAt`/
+  `Uint8Array`/`Array` 各取一次别名（`_0fc`/`_0cc`/`_0U8`/`_0Ar`），调用点只写
+  别名；`split`/`join` 给手工拆合二选一。medium 外层实测 fromCharCode=1、
+  charCodeAt=2（含引导 FNV）、Uint8Array=1，passes-basic 有精确棘轮。
+  教训两条：别名化时不得丢掉查表（如 `_0m2[_0cc(…)]` 写成 `_0cc(…)` 会整包
+  解出乱码）；引导器字符串模板只用引号字面量，不用反引号（二次流水线的
+  templateToConcat/stringArray 处理含表达式模板会 corrupt 字母表）。
+- `"undefined"` 字面量清零：全部 `typeof X==="undefined"` 改写成
+  `typeof X===typeof void 0`（逐位恒等，无字面量、无原生、无作用域依赖，
+  跨 cjs/esm/严格模式都安全）。发射点在 hide.js、banner、domainLock、
+  integrityCheck、stringArray、antiCDP、debugProtection、envFingerprint、
+  wasm、antiLLM、opaquePredicates；medium/max 外层实测 0 处。构建期字符串
+  （platform、parser 关键字表、绑定名过滤）与 VM 内部 `undefined` 标识不碰。
 - WASM 档（`wasm`/`wasmInterpreter`）把取指/分发搬进模块，**关闭**一套运行期
   选项（见 vm() 里 OFF 表）；改动 JS 侧取指式时要同步核对 `src/passes/wasm.js`
   与 `src/passes/wasmvm.js` 的同构实现。

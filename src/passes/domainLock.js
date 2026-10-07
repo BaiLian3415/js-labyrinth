@@ -45,8 +45,8 @@ const { t: msg } = i18n;
 import rtlib from './rtlib.js';
 
 /** globalThis 兜底表达式，与 integrityCheck/banner 同构。 */
-const GREF = '(typeof globalThis!=="undefined"?globalThis:typeof self!=="undefined"?self:' +
-  'typeof window!=="undefined"?window:typeof global!=="undefined"?global:{})';
+const GREF = '(typeof globalThis!==typeof void 0?globalThis:typeof self!==typeof void 0?self:' +
+  'typeof window!==typeof void 0?window:typeof global!==typeof void 0?global:{})';
 
 /** 运行期与构建期共用的加盐折叠散列：h = ((imul(h ^ cc, P)) >>> 0) ^ M。 */
 function rtHash(str, salt, prime, mix) {

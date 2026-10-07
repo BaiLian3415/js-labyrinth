@@ -110,7 +110,7 @@ function listLiteral(xs) {
 }
 
 function globalRef() {
-  return '(typeof globalThis!=="undefined"?globalThis:typeof self!=="undefined"?self:typeof window!=="undefined"?window:typeof global!=="undefined"?global:{})';
+  return '(typeof globalThis!==typeof void 0?globalThis:typeof self!==typeof void 0?self:typeof window!==typeof void 0?window:typeof global!==typeof void 0?global:{})';
 }
 
 export default function stringArray(ast, options, ctx) {
@@ -343,7 +343,7 @@ export default function stringArray(ast, options, ctx) {
   // 槽位和访问次数分化，静态 dump 出的密文快照每次运行都不同，彼此不可复用
   const sharedSrc = "var " + nm.g + "=" + globalRef() + ";var " + nm.e + "=(function(){var " + nm.et + "=0;" +
     "try{" + nm.et + "=(new Date().getTime())&0xff;}catch(" + nm.ee + "){}" +
-    'try{if(typeof performance!=="undefined"&&performance.now)' + nm.et + "^=(performance.now()*1000)&0xff;}catch(" + nm.ee2 + "){}" +
+    'try{if(typeof performance!==typeof void 0&&performance.now)' + nm.et + "^=(performance.now()*1000)&0xff;}catch(" + nm.ee2 + "){}" +
     "return " + nm.et + ";})();";
   const sharedParsed = parse(sharedSrc, { sourceType: "script" });
   const sharedStatements = sharedParsed.program.body;
