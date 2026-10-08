@@ -121,11 +121,14 @@ section('WASM 档位（阶段一恢复）');
       .filter((v) => Math.abs(+v) > 1000000));
   let semBad = 0, firstSem = '';
   const seen = [];
+  let fusedSeen = 0;
   for (const seed of [21, 22]) {
     const r = obfuscate(WSRC, {
       preset: 'high', seed, shell: false, integrityCheck: false,
       wasmInterpreter: true, wasm: false, vmLayers: 1,
     });
+    const vst = r.stats.find((x) => x.pass === 'vm');
+    fusedSeen += (vst && vst.result && vst.result.fused && vst.result.fused.jumps) || 0;
     const ws = r.stats.find((x) => (x.pass || '').startsWith('wasm'));
     if (!ws || !ws.result || ws.result.imports !== 5) {
       semBad++;
@@ -138,6 +141,9 @@ section('WASM 档位（阶段一恢复）');
     if (got !== want) { semBad++; if (!firstSem) firstSem = 'seed=' + seed + ' → ' + got.slice(0, 60); }
   }
   ok(semBad === 0, '复用导入下面向 2 seed 语义正确且导入数为 5', firstSem);
+  // 融合关系跳转（JLT/JLTF 等）必须真的进模块：WSRC 的 i<n、x<0 都是关系测试，
+  // 融合与否只看形状不看随机数，断言是确定性的。进模块不断言 NOP（8% 抽取，小函数可能一个抽不中）。
+  ok(fusedSeen > 0, '融合关系跳转到达 wasm 内核档（2 seed 共 ' + fusedSeen + ' 条）', 'fusedSeen=' + fusedSeen);
   if (seen.length === 2) {
     const a = [...seen[0]].sort().join(','), b = [...seen[1]].sort().join(',');
     ok(seen[0].size >= 10 && a !== b, '子码逐构建变化（两 seed 无一相同）',

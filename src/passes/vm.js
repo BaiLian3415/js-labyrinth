@@ -648,7 +648,22 @@ function directiveStmts(directives) {
 
 const JUMP_KINDS = new Set([
   'JMP', 'JPF', 'JPT', 'JANDK', 'JORK', 'JNULK',
+  // 融合关系跳转（单层复杂度）：比较 + 条件跳转一字。真极性（T 结尾省略，
+  // 如 JLT = a<b 时跳）与假极性（F 结尾，如 JLTF = !(a<b) 时跳）各 6 种。
+  // 假极性不靠"反转算子"实现（NaN 下 !(a<b) 与 a>=b 不等价！），而是把 `!`
+  // 包在原比较外面，逐位恒等。发射器见 emitTestJump，动作体见 caseBody。
+  'JLT', 'JLE', 'JGT', 'JGE', 'JEQ', 'JNE',
+  'JLTF', 'JLEF', 'JGTF', 'JGEF', 'JEQF', 'JNEF',
 ]);
+// 融合跳转种类 → JS 比较算子（真/假极性共用同一个，极性由种类后缀 F 决定）。
+// wasm 侧复用同一张表（见 wasmvm.js 的导入），两边漂移即静默算错。
+const FUSED_REL_OPS = {
+  JLT: '<', JLE: '<=', JGT: '>', JGE: '>=', JEQ: '===', JNE: '!==',
+  JLTF: '<', JLEF: '<=', JGTF: '>', JGEF: '>=', JEQF: '===', JNEF: '!==',
+};
+// 源码比较算子 → 融合种类（true = 条件为真时跳，false = 条件为假时跳）。
+const FUSED_T = { '<': 'JLT', '<=': 'JLE', '>': 'JGT', '>=': 'JGE', '===': 'JEQ', '!==': 'JNE' };
+const FUSED_F = { '<': 'JLTF', '<=': 'JLEF', '>': 'JGTF', '>=': 'JGEF', '===': 'JEQF', '!==': 'JNEF' };
 const ARG1_KINDS = new Set(['LDC', 'LOD', 'STR', 'GET', 'SET', 'FRAG', 'EXEC', 'MKS']);
 const ARG2_KINDS = new Set(['JANDK', 'JORK', 'JNULK']);
 // 宏指令的操作数个数。MPKn 把 n 条连续的操作数装载指令压成一条，
@@ -670,6 +685,8 @@ const MACRO_SRC_CODE = new Map([['LDC', 0], ['LOD', 1], ['GET', 2], ['FRAG', 3]]
 function layoutOf(e) {
   const m = MACRO_KINDS.get(e.op);
   if (m !== undefined) return { args: m, chain: false };
+  // NOP：1 字无操作数无链值，解释器遇到直接进下一条（动作体为空）。
+  if (e.op === 'NOP') return { args: 0, chain: false };
   const isJump = JUMP_KINDS.has(e.op);
   if (ARG2_KINDS.has(e.op)) return { args: 2, chain: isJump };
   if (isJump) return { args: 1, chain: true };
@@ -1225,8 +1242,8 @@ function compileFunction(fn, ctx) {
         return;
       }
       case 'ConditionalExpression': {
-        emitExpr(node.test);
-        const j = emit('JPF', -1);
+        let j = emitTestJump(node.test, -1, false);
+        if (j < 0) { emitExpr(node.test); j = emit('JPF', -1); }
         emitExpr(node.consequent);
         const m = emit('JMP', -1);
         code[j].a = code.length;
@@ -1305,6 +1322,21 @@ function compileFunction(fn, ctx) {
     }
   }
 
+  // 条件测试的融合发射：test 为关系/恒等比较时直接发"比较+跳转"一条融合指令，
+  // 否则回退成"求值 + JPF/JPT"老序列（返回 -1）。求值顺序与次数与老序列逐位
+  // 一致（左右各求值一次，先左后右），融合恒等价，无需操作数纯——有副作用的
+  // 调用照样能融。wantTrue 取真极性（do-while 回边），false 取假极性。
+  function emitTestJump(test, target, wantTrue) {
+    const fused = test && test.type === 'BinaryExpression'
+      ? (wantTrue ? FUSED_T[test.operator] : FUSED_F[test.operator])
+      : undefined;
+    if (fused === undefined) return -1;
+    emitExpr(test.left);
+    emitExpr(test.right);
+    if (ctx.__vmFused) ctx.__vmFused.jumps++;
+    return emit(fused, target);
+  }
+
   function emitStmt(s) {
     if (!s) return;
     switch (s.type) {
@@ -1316,8 +1348,8 @@ function compileFunction(fn, ctx) {
         return;
       case 'ThrowStatement': emitExpr(s.argument); emit('THR'); return;
       case 'IfStatement': {
-        emitExpr(s.test);
-        const j = emit('JPF', -1);
+        let j = emitTestJump(s.test, -1, false);
+        if (j < 0) { emitExpr(s.test); j = emit('JPF', -1); }
         emitStmt(s.consequent);
         const m = emit('JMP', -1);
         code[j].a = code.length;
@@ -1327,8 +1359,8 @@ function compileFunction(fn, ctx) {
       }
       case 'WhileStatement': {
         const top = code.length;
-        emitExpr(s.test);
-        const j = emit('JPF', -1);
+        let j = emitTestJump(s.test, -1, false);
+        if (j < 0) { emitExpr(s.test); j = emit('JPF', -1); }
         const loop = pushLoop();
         emitStmt(s.body);
         loop.contAt = top;
@@ -1343,8 +1375,7 @@ function compileFunction(fn, ctx) {
         const loop = pushLoop();
         emitStmt(s.body);
         loop.contAt = code.length; // continue 回到测试条件，重新求值
-        emitExpr(s.test);
-        emit('JPT', top);
+        if (emitTestJump(s.test, top, true) < 0) { emitExpr(s.test); emit('JPT', top); }
         loop.brkAt = code.length;
         popLoop();
         return;
@@ -1357,8 +1388,8 @@ function compileFunction(fn, ctx) {
         const top = code.length;
         let jTest = -1;
         if (s.test) {
-          emitExpr(s.test);
-          jTest = emit('JPF', -1);
+          jTest = emitTestJump(s.test, -1, false);
+          if (jTest < 0) { emitExpr(s.test); jTest = emit('JPF', -1); }
         }
         const loop = pushLoop();
         emitStmt(s.body);
@@ -1487,6 +1518,56 @@ function compileFunction(fn, ctx) {
     // 统计并入 ctx：片段里嵌套的函数走 compileInnerFns 递归编译，那条路的返回值
     // 没人接，所以计数必须落在共享的累加器上才不会漏报
     if (ctx.__vmMacro) { ctx.__vmMacro.fused += macroFused; ctx.__vmMacro.saved += macroSaved; }
+  }
+
+  // 流干扰 NOP（单层复杂度）：融合之后、编号之前注入无操作指令。
+  // 跳转目标记的是 code 下标，插入会整体移位，所以边插边给所有 JUMP_KINDS
+  // （含上面的融合跳转）重定位 .a。NOP 不并入融合段（融合已结束），不占操作数，
+  // 布局 1 字无链值（见 layoutOf）。门控：干扰项关闭（vmDecoyOps=0）时连流
+  // 干扰一起关，保持最小足迹模式干净。
+  let nopInjected = 0;
+  if (ctx.options.vmDecoyOps === undefined || (ctx.options.vmDecoyOps | 0) > 0) {
+    // 坏邻接预防（这条是踩坑换来的，见下）。code[i] 是跳转、且 code[i+1] 恰是某跳转
+    // 目标时，本间隔一律不插 NOP。
+    //
+    // 为什么：字流里 [跳转的链值字][1 字指令][该跳转的目标] 这个三连会构成链求解的
+    // 2-环——链值字的明文按定义取自「目标的前一字」（即中间这条 1 字指令），而中间这条
+    // 的明文在 dynOps 下是「规范编号 − rot(前一字明文)」，前一字正是链值字本身。
+    // wordAt 的不动点循环对环上的链字会保留首轮猜测值，此后不再重算，于是链值字与它
+    // 依赖的 rot 永久不一致且**静默**（收敛校验过不了也不抛，只是不自洽）：跳转落点
+    // 的字按错误的链值解密 → 落点解出非法操作码 → 后面全级联偏移，实测表现为整包输出
+    // 乱码、undefined 或提前 END。
+    //
+    // 为什么原生布局碰不到：无 NOP 时中间那条必须恰是 1 字指令（LOD/LDC/BIN_/DUP 等），
+    // 概率极低；插 NOP 后 NOP 本身就是 1 字指令，概率从「极低」变成「8% 每条」。
+    //
+    // 定位手法（留给下一个遇到字节码级静默错的人）：在解释器分发前临时插一行
+    // `console.log(npc + ":" + dispT)`，跑产物拿执行轨迹，再与构建期的
+    // {pos: 指令字下标表, canon: 分发字→种类逆表} 对账——若某次取指的位置不在 pos
+    // 里、或解出的字不在 canon 里，就是这条链字不一致。切 vmDynOpcodes:false 或
+    // vmDecoyOps:0 各自能消掉症状，就是这条（前者去掉 rot 环，后者去掉中间那条字）。
+    const targetIdx = new Set();
+    for (const e of code) {
+      if (e.op && JUMP_KINDS.has(e.op) && e.a >= 0) targetIdx.add(e.a);
+    }
+    const nextCode = [];
+    const remapN = new Array(code.length);
+    for (let i = 0; i < code.length; i++) {
+      remapN[i] = nextCode.length;
+      nextCode.push(code[i]);
+      // END 之后不插（解释器到 END 即返回，尾巴指令永不可达还占字流）；
+      // 密度 8%：线性扫描器每十几条就撞上一条假指令。
+      const badAdj = JUMP_KINDS.has(code[i].op) && targetIdx.has(i + 1);
+      if (code[i].op !== 'END' && !badAdj && randInt(0, 99) < 8) {
+        nextCode.push({ op: 'NOP', a: 0, n: 0 });
+        nopInjected++;
+      }
+    }
+    code.length = 0;
+    for (const e of nextCode) code.push(e);
+    for (const e of code) if (JUMP_KINDS.has(e.op)) e.a = remapN[e.a];
+    if (nopInjected > 0) usedOps.add('NOP');
+    if (ctx.__vmFused) ctx.__vmFused.nops += nopInjected;
   }
 
   // 操作码随机编号后展平，跳转目标用绝对索引
@@ -2011,6 +2092,30 @@ function compileFunction(fn, ctx) {
           ])),
       ];
     }
+    // 融合关系跳转（JLT/JLE/JGT/JGE/JEQ/JNE 真极性 + JLTF 等假极性）：
+    // 弹两个值比较，条件成立时跳。求值顺序（先左后右、各一次）由发射器保证，
+    // 这里复现同一次比较与同一次跳转，与"比较压栈 + JPF/JPT"逐位一致。
+    // 假极性把 `!` 包在原比较外面（NaN 下 !(a<b) 与 a>=b 不等价，不敢反转算子）。
+    // 链字两条路径各取一次、目标字宽 3，与 JPF 同式。
+    const fusedRel = FUSED_REL_OPS[kind];
+    if (fusedRel !== undefined) {
+      const cmp = t.binaryExpression(fusedRel, idn(N_V), idn(N_B));
+      return [
+        declJmpA(),
+        t.expressionStatement(t.assignmentExpression('=', idn(N_A), bAt(N_A))),
+        declConst(N_B, popR()), // 先弹的是右操作数（后压栈）
+        declConst(N_V, popR()), // 再弹左操作数
+        t.ifStatement(
+          kind.endsWith('F') ? t.unaryExpression('!', cmp) : cmp,
+          t.blockStatement([
+            t.expressionStatement(bAt(null)), // 链值字，取走后 nCHAIN 即为目标链值
+            assignPC(jumpTarget(idn(N_A), 3)),
+          ]),
+          t.blockStatement([
+            t.expressionStatement(bAt(null)), // 链值字，取走后 nCHAIN 即为顺序预期值
+          ])),
+      ];
+    }
     if (kind === 'JANDK' || kind === 'JORK' || kind === 'JNULK') {
       // JANDK 对应 &&，假值时保留跳转；JORK 对应 ||，真值时保留跳转；
       // JNULK 对应 ??，非 nullish 时保留跳转，判断条件是 v != null。
@@ -2108,6 +2213,10 @@ function compileFunction(fn, ctx) {
       }
       return out;
     }
+    // NOP（流干扰）：动作体为空，进分发即下一条。与干扰项的区别是它真的进
+    // 字节码流（干扰项只占编号）；线性扫描器看到的是"有编号、有槽位、执行无事
+    // 发生"的真指令。toActionFn（表驱动形态）包一层空块同样无害。
+    if (kind === 'NOP') return [];
     throw new Error(msg('vmUnknownOpcode', { kind }));
   }
 
@@ -3334,6 +3443,9 @@ function vm(ast, options, ctx) {
   // vmMacroOps 的融合计数。放在 ctx 上共享：片段里嵌套的函数由 compileInnerFns
   // 递归编译，计数从那里并回来才不会漏（见 compileFunction 的融合段）
   ctx.__vmMacro = { fused: 0, saved: 0 };
+  // 融合跳转 + 流 NOP 的计数（单层复杂度口径）。同样放 ctx 上：嵌套/片段递归
+  // 编译的函数也要并回来（emitTestJump 与 NOP 注入里累加）。
+  ctx.__vmFused = { jumps: 0, nops: 0 };
   // vmDynOpcodes 的计数：同样放 ctx 上，片段里嵌套编译的函数也要算进来
   ctx.__vmDyn = { applied: false, space: 0 };
   ctx.__vmAsync = { funcs: 0 };
@@ -3407,6 +3519,8 @@ function vm(ast, options, ctx) {
     ops: { real: opsReal, decoy: opsDecoy, total: opsReal + opsDecoy, shared: !!ctx.__vmWasmShared },
     // vmMacroOps：融合出的宏指令条数，与因此少掉的指令条数（字流相应变短）
     macros: { fused: ctx.__vmMacro.fused, saved: ctx.__vmMacro.saved },
+    // 单层复杂度：融合关系跳转条数 + 流干扰 NOP 条数（0 表示本函数没融上/没插上）
+    fused: { jumps: ctx.__vmFused.jumps, nops: ctx.__vmFused.nops },
     // vmDynOpcodes：是否真的生效，以及取整后的字空间大小（0 表示本项没生效）
     dyn: { applied: ctx.__vmDyn.applied, space: ctx.__vmDyn.space },
     // vmAsyncExecutor：被 WASM 解释器内核档挡下或 await 落进闭包被保守放弃时为 0。
@@ -3427,4 +3541,4 @@ function vm(ast, options, ctx) {
 vm.isVMCompiled = isVMCompiled;
 
 export default vm;
-export { isVMCompiled };
+export { isVMCompiled, FUSED_REL_OPS };

@@ -430,6 +430,70 @@ section('多层 VM × WASM：嵌套让路 JS 路径，内层进模块');
   ok(got === want, 'wasm × 嵌套产物语义一致', got.slice(0, 60));
 }
 
+section('单层复杂度：融合关系跳转 + 流干扰 NOP');
+{
+  // JLT/JLTF 等 12 种融合跳转 + 流 NOP（8% 抽取）是单层 VM 的复杂度主体。
+  // 融合与否只看测试形状（关系/恒等比较必融），与随机数无关；NOP 抽取看概率，
+  // 3 组 seed 累计断言（两函数上百条指令，全抽不中概率可忽略）。
+  const src = 'function f(n){var a=0;for(var i=0;i<n;i++){if(i%2===0){a+=i*3;}else{a-=1;}}return a;}\n'
+    + 'function g(t){var s=0;while(s<t){s++;if(s>100){s-=50;}else if(s===7){s+=3;}}return s;}\n'
+    + 'process.stdout.write(f(20)+","+g(9)+"\\n");';
+  const want = runNode(src, 'sc-want.js').trim();
+  let semBad = 0, firstSem = '', jumps = 0, nops = 0;
+  for (const seed of [11, 12, 13]) {
+    const r = obfuscate(src, { preset: 'high', seed, shell: false, wasm: false, wasmInterpreter: false });
+    const st = r.stats.find((x) => x.pass === 'vm');
+    jumps += (st && st.result && st.result.fused && st.result.fused.jumps) || 0;
+    nops += (st && st.result && st.result.fused && st.result.fused.nops) || 0;
+    let got;
+    try { got = runNode(r.code, 'sc-' + seed + '.js').trim(); } catch (e) { got = 'THREW'; }
+    if (got !== want) { semBad++; if (!firstSem) firstSem = 'seed=' + seed + ' → ' + got.slice(0, 60); }
+  }
+  ok(semBad === 0, '融合+NOP 下 3 seed 语义全部正确', firstSem);
+  ok(jumps > 0, '融合关系跳转确实用上了（3 seed 共 ' + jumps + ' 条）', 'jumps=' + jumps);
+  ok(nops > 0, '流干扰 NOP 确实注入了（3 seed 共 ' + nops + ' 条）', 'nops=' + nops);
+}
+
+// 回归防线：NOP 与「跳转链字 → 1 字指令 → 该跳转目标」的坏邻接。插入这种 NOP 会让链
+// 求解出现 2-环，wordAt 对环上的链字保留首轮猜测且**静默**不自洽（不抛错），跳转落点
+// 按错链值解密 → 落点是非法操作码 → 级联偏移。实测症状：整包输出乱码 / undefined /
+// 提前 END，切 vmDynOpcodes:false 或 vmDecoyOps:0 各自能消掉症状。
+//
+// 样本是当时真实踩中的那个（for + if/else-if/else + ?? + && + while + ||），seed 与
+// 配置逐条照抄当时失败的组合，所以断言是确定性的；下面再扫一圈别的 seed 防邻接形态变化。
+section('回归：NOP 不许插在「跳转链字 ↔ 该跳转目标」之间（链求解 2-环）');
+{
+  const src = 'function work(a,b){var r=0;'
+    + 'for(var i=0;i<a;i++){if(i%3===0){r+=i;}else if(i%3===1){r-=b&&1;}else{r^=i+3;}}'
+    + 'var s=b??7;'
+    + 'if(a>3&&b>0){r+=s;}else{r-=1;}'
+    + 'while(r>100){r-=100;}'
+    + 'if(r<0||s===0){r=r*-1+2;}'
+    + 'return r;}'
+    + 'process.stdout.write([work(17,3),work(4,0),work(25,9)].join(" ")+"\\n");';
+  const want = runNode(src, 'chain-want.js').trim();
+  // blk 关/开 × dynOps 开（踩中时 dynOps 是开的，且 enc 开）。wasm 关掉以隔离纯 JS 取指式。
+  let bad = 0, first = '';
+  let covered = 0;
+  for (const blk of [false, true]) {
+    for (let seed = 1; seed <= 4; seed++) {
+      const r = obfuscate(src, {
+        preset: 'high', seed, shell: false, integrityCheck: false,
+        wasm: false, wasmInterpreter: false, vmBlockDecrypt: blk,
+      });
+      const st = r.stats.find((x) => x.pass === 'vm');
+      const nops = (st && st.result && st.result.fused && st.result.fused.nops) || 0;
+      if (nops > 0) covered++;
+      let got;
+      try { got = runNode(r.code, 'chain-' + blk + '-' + seed + '.js').trim(); } catch (e) { got = 'THREW'; }
+      if (got !== want) { bad++; if (!first) first = 'blk=' + blk + ' seed=' + seed + ' → ' + got.slice(0, 60); }
+    }
+  }
+  ok(bad === 0, '坏邻接被拦住：blk 开/关 × 4 seed 语义全对', first);
+  // 覆盖确认：不能因为「一个 NOP 都没插」而假通过（那样这组断言是空跑的）
+  ok(covered === 8, '8 组配置都真的注入了 NOP（断言非空跑）', 'covered=' + covered);
+}
+
 if (process.argv[1] && process.argv[1].endsWith('vm.js')) {
   const bad = report();
   cleanTmp();

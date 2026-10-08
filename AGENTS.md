@@ -72,6 +72,24 @@ npm run build:web:cloud  # 云端执行形态（核心不进产物，Vercel 部�
 - 解释器形态：`dispatchForm`（switch/表驱动/嵌套 if/直接寻址）× 循环骨架 ×
   分发桶函数 × junk 声明逐构建随机；单字节码加密用
   「值 ^ posMask ^ 掩码 ^ 链值 ^ 块密钥」，入口按掩码原位重写 B。
+- 单层复杂度（2026-10）：融合关系跳转 12 种（JLT/JLE/JGT/JGE/JEQ/JNE 真极性 +
+  JLTF 等假极性，比较+条件跳转一字；假极性把 `!` 包在原比较外面，NaN 下
+  !(a<b) 与 a>=b 不等价，不敢反转算子）+ 流干扰 NOP（融合后按 8% 注入，
+  跳转下标同步重定位；动作为空，进分发即下一条）。发射器只看测试形状
+  （关系/恒等比较必融，与随机数无关）；门控：vmDecoyOps=0 时连 NOP 一起关。
+  stats.fused 报 {jumps, nops}。WASM 侧经共享 FUSED_REL_OPS 表 + 宿主 bin
+  按字查关系算子（imports 恒为 5，不加新导入），NOP 在模块里是空动作。
+- **插 NOP 的坏邻接铁律**：`[跳转的链值字][1 字指令][该跳转的目标]` 三连会让
+  链求解出现 2-环（链值字按定义取自「目标的前一字」，而 1 字指令在 dynOps 下的
+  明文又取自链值字）。wordAt 的不动点循环对环上的链字**保留首轮猜测且静默不自洽**
+  —— 不抛错、不触发收敛校验，只是解错：跳转落点按错链值解密 → 落点是非法操作码 →
+  级联偏移（整包输出乱码 / undefined / 提前 END）。所以 NOP 一律不插在
+  「code[i] 是跳转且 code[i+1] 是任一跳转目标」这个间隔上（`badAdj` 护栏）。
+  没有 NOP 时中间那条必须恰是 1 字指令，概率极低，NOP 让它从「极低」变成「每条 8%」。
+  定位手法见 `src/passes/vm.js` 该护栏注释：分发前临时打一行 `console.log(npc+":"+dispT)`
+  拿执行轨迹，与构建期的 pos 表 / canon 逆表对账；切 `vmDynOpcodes:false` 与
+  `vmDecoyOps:0` 各自能消掉症状即坐实本条。回归测试见 `test/vm.js`
+  「NOP 不许插在『跳转链字 ↔ 该跳转目标』之间」。
 - 形态多态（`src/utils/morph.js`，只收逐位等价的 AST 二/三选一：`declKind`、
   `yodaEq`、`relCmp`、`negCmp`、`boolLit`、`incUpd`、`loopTrue`、`retVoid`、
   `memberDot`；`numLit` 只改原文写法）。铁律：只用于生成的机器代码（不动用户

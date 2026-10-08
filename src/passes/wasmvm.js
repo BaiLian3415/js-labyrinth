@@ -31,6 +31,8 @@ const {
 import rtlib from './rtlib.js';
 import rtgen from './rtgen.js';
 import platform from '../platform.js';
+// 融合跳转种类 → 比较算子表：唯一真源在 vm.js， wasm 侧只读不用，两边漂移即静默算错。
+import { FUSED_REL_OPS } from './vm.js';
 
 // 宿主导入表（语义键 → 签名）。导入函数索引即本表下标，名字逐构建随机。
 //
@@ -508,6 +510,25 @@ function buildInterpreter(fns, wordOf, total) {
         G(L.t), S(L.pc),
         [OP.end]);
     }
+    // 融合关系跳转：弹两个值，经宿主 bin 按本分发字查关系算子求值，再按极性分支。
+    // 引用计数照 BIN_ + JPF 两段原样拼（pops 释放、结果用后释放、不压栈）；
+    // F 假极性在 i32 结果上补一个 eqz（与 JPF 同式），比较本身不取反。
+    const fusedRel = FUSED_REL_OPS[kind];
+    if (fusedRel !== undefined) {
+      const cond = kind.endsWith('F') ? [OP.i32_eqz] : [];
+      return [].concat(
+        fetch(L.t),
+        popMove(L.b), popMove(L.a2),
+        G(L.d), G(L.a2), G(L.b), callImp('bin'), S(L.h),
+        rcDec(L.b), rcDec(L.a2),
+        ...u1sub('bool'), G(L.h), callImp('u1'), S(L.c), rcDec(L.h),
+        fetch(L.b),
+        G(L.c), cond, [OP.if, BLOCK_VOID],
+        G(L.t), S(L.pc),
+        [OP.end]);
+    }
+    // NOP（流干扰）：空动作，取指已由循环统一推进，直接回主循环。
+    if (kind === 'NOP') return [];
     if (kind === 'JANDK' || kind === 'JORK' || kind === 'JNULK') {
       const imp = kind === 'JNULK' ? 'nul' : 'bool';
       const jumpWhenTruthy = kind !== 'JANDK';
@@ -905,7 +926,9 @@ export default function wasmvm(ast, options, ctx) {
     expNames: built.expNames,
     importDefs: IMPORT_DEFS,
     subCodes: built.subCodes,
-    binWords: [...shared.wordOf].filter(([k]) => k.startsWith('BIN_')).map(([k, w]) => [w, k.slice(4)]),
+    binWords: [...shared.wordOf]
+      .filter(([k]) => k.startsWith('BIN_') || FUSED_REL_OPS[k] !== undefined)
+      .map(([k, w]) => (k.startsWith('BIN_') ? [w, k.slice(4)] : [w, FUSED_REL_OPS[k]])),
     unWords: [...shared.wordOf].filter(([k]) => k.startsWith('UN_')).map(([k, w]) => [w, k.slice(3)]),
     strParams: fns.map((f) => [f.STR_P, f.STR_K1, f.STR_K2, f.STR_M0]),
     anchorVal: built.ANCHOR,
