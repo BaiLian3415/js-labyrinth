@@ -71,8 +71,7 @@ export default {
     "htmle": false,
     "bannerText": '',
     "domainLock": '',
-    "simplify": false,
-    "renameProperties": false
+    "simplify": false
   },
   "medium": {
     "compact": true,
@@ -154,8 +153,7 @@ export default {
     "htmle": false,
     "bannerText": '',
     "domainLock": '',
-    "simplify": false,
-    "renameProperties": false
+    "simplify": false
   },
   "high": {
     "compact": true,
@@ -239,8 +237,7 @@ export default {
     "htmle": false,
     "bannerText": '',
     "domainLock": '',
-    "simplify": false,
-    "renameProperties": false
+    "simplify": false
   },
   "max": {
     "compact": true,
@@ -321,7 +318,6 @@ export default {
     "htmle": false,
     "bannerText": '',
     "domainLock": '',
-    "simplify": false,
-    "renameProperties": false
+    "simplify": false
   }
 };

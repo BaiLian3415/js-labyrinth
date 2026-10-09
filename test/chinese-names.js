@@ -84,7 +84,10 @@ section('中文命名：四档预设');
     let built = true;
     try {
       r = obfuscate(SAMPLE, {
-        preset, seed: 11, nameStyle: 'Chinese', renameProperties: true, shell: false, ...NO_STUB,
+        // Chinese-props：属性名重命名已并入 nameStyle 档位（2026-10-09），旧的
+      // renameProperties 布尔项是未知键、会被静默忽略——写在这里看着像在测属性名，
+      // 实际只测了标识符。
+      preset, seed: 11, nameStyle: 'Chinese-props', shell: false, ...NO_STUB,
       });
     } catch (e) {
       built = false;
@@ -192,7 +195,7 @@ section('中文命名：完整预设矩阵（回归防线）');
 
 section('中文命名：属性名与套餐闸门');
 {
-  const r = obfuscate(SAMPLE, { preset: 'low', seed: 11, nameStyle: 'Chinese', renameProperties: true, ...NO_STUB });
+  const r = obfuscate(SAMPLE, { preset: 'low', seed: 11, nameStyle: 'Chinese-props', ...NO_STUB });
   ok(!/result/.test(r.code), '属性名也被换成中文（原名不残留）');
   ok(String(runNode(r.code, 'cjk-prop.js')).trim() === SAMPLE_WANT, '属性改名后语义不变');
 

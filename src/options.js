@@ -7,8 +7,8 @@ export default {
   "simplify": false,
   "identifierPrefix": "_0x",
   "mangle": true,
-  // 命名策略（Paid 档，plus+；free 档闸门锁死 Mangled）。五档，与 obfuscator.io 的
-  // identifierNamesGenerator 同一套命名（Chinese 一档为本项目扩展）：
+  // 命名策略（Paid 档，plus+；free 档闸门锁死 Mangled）。五个基础档 + 每个基础档的
+  // 一个带属性名变体，共十档（合法值以 utils/naming.js 的 NAME_STYLES 为准）：
   //   Mangled           规范短名（a、b、c…），决定性、与 seed 无关、可逐字节 diff，
   //                     体积最小，但产物里必然出现发名顺序，指纹最强
   //   Mangled-shuffled  同样形状，字母表逐构建打乱——体积相当且不留字母表指纹，
@@ -16,24 +16,30 @@ export default {
   //   Hexadecimal       字母 + 十六进制位（a7 / f30），一样短但完全无规律
   //   Dictionary        固定 64 词表的可读名，调试友好；产物更大、词表可枚举
   //                     故抗指纹弱，定位是调试档不是发布档
-  //   Chinese           标识符与属性名换成汉字（甲乙丙丁…）。产物里汉字原样写出、
-  //                     不做 \uXXXX 转义（见 generator 的 _escapeIdent），
-  //                     因此要求产物按 UTF-8 提供
+  //   Chinese           标识符换成汉字（甲乙丙丁…）。产物里汉字原样写出、不做
+  //                     \uXXXX 转义（见 generator 的 _escapeIdent），因此要求
+  //                     产物按 UTF-8 提供
   //
-  // 2026-10-01：Chinese 原本是独立的 chineseNames 布尔开关，勾上会覆盖上面四档。
-  // 两个表示同一件事，界面与闸门都得各写一份规则，故并入本枚举。旧存档与 CLI
-  // 的 --chinese-names 已不再识别（见 options-meta 的旧值迁移）。
+  // 后缀 `-props`（如 `Hexadecimal-props`）= 连属性名/对象键一起改，改的是成员访问
+  // obj.foo、对象键 {foo:1}、方法名、类方法与类属性名。只改「程序内定义 ∩ 访问」的
+  // 属性，叠加高风险名白名单；与外部代码共享的属性可能被破坏（safe 模式固有局限）。
+  // 属性名走与标识符同一个名池，所以选哪档属性名就是哪档形状。
+  //
+  // 为什么写进档位而不留一个独立布尔项（2026-10-09）：属性名重命名原本是独立的
+  // renameProperties 开关，而它的实现只对 Chinese 档认 nameStyle、其余一律发
+  // `_0x` 随机名——也就是说选了 Hexadecimal 之后属性名完全不受影响，那一档对属性
+  // 而言是假的。写进档位后属性名真正跟随档位，选一次就够，不必再勾第二个开关。
+  //
+  // 2026-10-01：Chinese 原本也是独立布尔开关 chineseNames，同样并入本枚举。
+  // 这两次都属破坏性变更：旧存档与 CLI 的 --chinese-names / --rename-properties
+  // 不再识别（选项系统保留未知键但没人读，所以是静默失效而非报错）。
   "nameStyle": "Mangled",
-  // Dictionary 档的自定义词表。留空用内置的 64 词表（见 passes/mangle.js 的
+  // Dictionary 档的自定义词表。留空用内置的 64 词表（见 utils/naming.js 的
   // DICTIONARY_WORDS）。逗号/空白/换行分隔，逐词校验后去重：非法标识符、关键字、
   // 重复词会被丢掉，全部非法时回落到内置词表。词越长产物越大，且这一档词表本来
   // 就可枚举（认的人拿同一份词表就能把改名批量还原），所以定位是调试/审计而非发布。
+  // 只在 nameStyle 是 Dictionary / Dictionary-props 时被读。
   "nameDictionary": "",
-  // 属性名重命名（renameProperties，safe 模式）：改成员访问 obj.foo / 对象键
-  // {foo:1} / 方法名 / 类方法·类属性名的属性名。只改「程序内定义 ∩ 访问」的
-  // 属性，叠加高风险名白名单。与外部代码共享属性可能被破坏（safe 模式固有局限）。
-  // Paid 档（plus+）可用；free 档闸门锁死 false。
-  "renameProperties": false,
   // 汉字字典。留空用内置默认字典（1024 字，起手甲乙丙丁戊己庚辛壬癸）。
   // 自定义时逐构建打乱后发名，所以顺序只影响"哪些字会被用到"，不影响可复现性。
   // 只在 nameStyle = Chinese 时被读。

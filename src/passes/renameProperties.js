@@ -1,9 +1,16 @@
 import t from '../ast/types.js';
 import rand from '../utils/rand.js';
-import { cjkNames, uniqueCJKName, isChineseNaming } from '../utils/cjk.js';
+import { uniqueCJKName } from '../utils/cjk.js';
+import {
+  createNamePool, isChineseNaming, wantsPropertyRename,
+} from '../utils/naming.js';
 const { uniqueName } = rand;
 /**
- * 属性名重命名（renameProperties，对标 obfuscator.io 的 safe 模式）。
+ * 属性名重命名（对标 obfuscator.io 的 safe 模式）。
+ *
+ * 开不开由 `nameStyle` 的档位决定：带 `-props` 后缀的那几档才跑本 pass（判定见
+ * utils/naming.js 的 wantsPropertyRename）。原先它是个独立的 `renameProperties`
+ * 布尔项，2026-10-09 并入档位。
  *
  * 与 mangle 的区别：mangle 改的是「绑定名」（变量/函数），本 pass 改的是「属性名」
  * ——成员访问 `obj.foo`、对象键 `{foo: 1}`、方法名 `{foo(){}}`、类方法/属性名。
@@ -130,17 +137,24 @@ function rewrite(node, parent, map) {
 }
 
 export default function renameProperties(ast, options, ctx) {
-  if (!options.renameProperties) return { renamed: 0 };
+  if (!wantsPropertyRename(options)) return { renamed: 0 };
   const used = new Set(ctx.usedNames);
   const prefix = options.identifierPrefix || '_0x';
-  // 中文属性名与 mangle 共用同一个汉字池与字典，且两边都用同一个 used 集合防撞，
-  // 因此同一构建里"变量叫甲"与"属性也叫甲"不会互相冲突。
-  const pool = isChineseNaming(options) ? cjkNames(options.chineseDictionary || '') : null;
+  // 属性名与标识符走**同一个名池**（utils/naming.js 的 createNamePool）。此前这里
+  // 只对 Chinese 档认 nameStyle、其余一律发 `_0x` 随机名，于是「选了
+  // Hexadecimal、属性名却是 _0x 形状」——那一档对属性而言是假的。现在选什么档，
+  // 属性名就是什么形状。
+  //
+  // 名池是有状态的迭代器，所以这里另要一条流：与 mangle 共用一条会让两边的发放
+  // 顺序互相踩。防撞靠的是两边都把新名写回 ctx.usedNames（见本函数末尾），因此
+  // 同一构建里"变量叫甲"与"属性也叫甲"不会冲突。
+  const pool = createNamePool(options);
+  const chinese = isChineseNaming(options);
   const nextName = () => {
-    if (!pool) return uniqueName(used, prefix);
     for (;;) {
       const it = pool.next();
-      if (it.done) return uniqueCJKName(used, options.chineseDictionary || '');
+      if (it.done) return chinese ? uniqueCJKName(used, options.chineseDictionary || '')
+        : uniqueName(used, prefix);
       if (used.has(it.value)) continue;
       used.add(it.value);
       return it.value;

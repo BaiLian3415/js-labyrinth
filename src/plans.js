@@ -27,16 +27,20 @@ export default {
       "antiCDP": false,
       "domainLock": [""],
       "simplify": false,
-      // 命名风格。free 档锁死在 Mangled，其余四档（Mangled-shuffled / Hexadecimal /
-      // Dictionary / Chinese）都是 plus+ 才放行。Chinese 原先是独立的
-      // chineseNames 布尔项、单独挂了一条 "chineseNames": false 闸门；并入 nameStyle
-      // 枚举后那条闸门是多余的——上面这个白名单已经把 Chinese 挡在 free 之外，
-      // 同一件事不必写两遍（两处规则漂移过一次就会让 free 意外拿到某一档）。
+      // 命名风格。free 档锁死在 Mangled，其余九档（Mangled-props / Mangled-shuffled /
+      // Mangled-shuffled-props / Hexadecimal / Hexadecimal-props / Dictionary /
+      // Dictionary-props / Chinese / Chinese-props）都是 plus+ 才放行。
+      //
+      // 属性名重命名原本是独立布尔项 renameProperties、单独挂了一条
+      // "renameProperties": false 闸门；2026-10-09 并入 nameStyle 枚举后那条闸门是
+      // 多余的——上面这个白名单已经把全部 *-props 档挡在 free 之外，同一件事不必写
+      // 两遍（两处规则漂移过一次就会让 free 意外拿到某一档）。
+      // 关键是这个白名单必须只列**不带 -props 的**那一档：档位一旦自带属性名重命名，
+      // 白名单就是唯一拦住 free 的地方，误列一个 *-props 就等于把付费能力白送。
       // 放开与否是套餐策略决定，这里按现状对齐，不擅自给 free 扩能力。
       "nameStyle": [
         "Mangled"
       ],
-      "renameProperties": false,
       "debugPoison": false,
       "selfDefending": false,
       "envFingerprint": false,

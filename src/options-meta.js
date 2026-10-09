@@ -22,24 +22,31 @@ export const VALUE_OPTIONS = {
     hintEn: 'Language of CLI messages and error text; does not affect the artifact.' },
   preset: { kind: 'enum', values: PRESET_NAMES, caseInsensitive: true, group: 'basic', zh: '混淆强度预设', en: 'Strength preset', hintZh: '一键选择 low/medium/high/max 四档强度组合，选档后各项仍可单独覆盖。', hintEn: 'One-click strength tier (low/medium/high/max); individual options can still be overridden.' },
   identifierPrefix: { kind: 'string', group: 'basic', zh: '标识符前缀', en: 'Identifier prefix', hintZh: '生成名的前缀，默认 _0x，须以字母或 _/$ 开头。', hintEn: 'Prefix for generated names (default _0x); must start with a letter, _ or $.' },
-  nameStyle: { kind: 'enum', values: ['Mangled', 'Mangled-shuffled', 'Hexadecimal', 'Dictionary', 'Chinese'], group: 'structure', zh: '命名策略', en: 'Naming style', hintZh: 'Mangled=a/b/c…（最短、可复现、指纹最强，默认）；Mangled-shuffled 同形状但字母表每次构建打乱（**发布用这档**）；Hexadecimal 字母+十六进制（一样短但无规律）；Dictionary 固定词表（好调试、产物更大、词表可枚举）；Chinese 把变量名函数名改成汉字（甲乙丙丁…）。改属性名还要另勾「属性名重命名」。Chinese 档汉字原样写出不做转义，产物需按 UTF-8 提供。前四档与 obfuscator.io 的 identifierNamesGenerator 一致。', hintEn: 'Shape of generated names. Mangled = a/b/c… (shortest, reproducible, strongest fingerprint; default); Mangled-shuffled = same shape, alphabet reshuffled per build (**use this for release**); Hexadecimal = letter + hex digits (as short, fully irregular); Dictionary = fixed word list (debuggable, larger, enumerable); Chinese = rename variables and functions to Han characters (甲乙丙丁…). Renaming properties needs the separate renameProperties option. Under Chinese, Han characters are written literally without escaping, so serve the artifact as UTF-8. The first four match obfuscator.io identifierNamesGenerator.' },
+  nameStyle: { kind: 'enum', values: ['Mangled', 'Mangled-props', 'Mangled-shuffled', 'Mangled-shuffled-props', 'Hexadecimal', 'Hexadecimal-props', 'Dictionary', 'Dictionary-props', 'Chinese', 'Chinese-props'], group: 'structure', zh: '命名策略', en: 'Naming style', hintZh: '选一次就够：带「+属性名」的那几档连属性名/对象键一起改，且属性名与标识符同形状（属性名重命名原是独立开关，但它只对 Chinese 档认本项、其余一律发 _0x 随机名，选了 Hexadecimal 对属性名其实无效）。不带后缀=Mangled a/b/c…（最短、可复现、指纹最强，默认）；Mangled-shuffled 同形状但字母表每次构建打乱（**发布用这档**）；Hexadecimal 字母+十六进制（一样短但无规律）；Dictionary 固定词表（好调试、产物更大、词表可枚举）；Chinese 改成汉字（甲乙丙丁…）。中文档汉字原样写出不做转义，产物需按 UTF-8 提供。属性名只改「程序内定义且被访问」的，与外部共享的属性可能破（safe 模式固有局限）。前四个基础档与 obfuscator.io 的 identifierNamesGenerator 一致。', hintEn: 'One choice covers everything: the "+属性名" variants also rename properties and object keys, using the same name shape as identifiers (property renaming used to be a separate switch, but it honoured this setting only for the Chinese style and emitted random _0x names otherwise, so picking Hexadecimal did nothing for properties). Without the suffix: Mangled = a/b/c… (shortest, reproducible, strongest fingerprint; default); Mangled-shuffled = same shape, alphabet reshuffled per build (**use this for release**); Hexadecimal = letter + hex digits (as short, fully irregular); Dictionary = fixed word list (debuggable, larger, enumerable); Chinese = Han characters (甲乙丙丁…). Under Chinese, Han characters are written literally without escaping, so serve the artifact as UTF-8. Property renaming is safe-mode: only properties defined and accessed inside the program are touched, so properties shared with external code may break. The first four base styles match obfuscator.io identifierNamesGenerator.' },
   chineseDictionary: { kind: 'string', group: 'structure', zh: '汉字字典', en: 'Chinese dictionary',
     // 显隐规则：只在命名策略选中 Chinese 档时这一项才被读（mangle 与
     // renameProperties 都改走汉字池），摆出来只会让人以为填了有用。规则写在
     // 元数据里而非散在界面代码中，这样 CLI 帮助、Worker API 与网页三端看到的
     // 是同一份判断。
-    showWhen: { key: 'nameStyle', equals: 'Chinese' },
+    // 显隐规则：只在命名策略选中 Chinese 档时这一项才被读（mangle 与
+    // renameProperties 都改走汉字池），摆出来只会让人以为填了有用。规则写在
+    // 元数据里而非散在界面代码中，这样 CLI 帮助、Worker API 与网页三端看到的
+    // 是同一份判断。
+    //
+    // 用 oneOf 而不是 equals：档位扩到十档后，汉字档有两个（Chinese 与
+    // Chinese-props），equals 只能写一个，写死另一个就把该显示的输入框藏了。
+    showWhen: { key: 'nameStyle', oneOf: ['Chinese', 'Chinese-props'] },
     // 1024 个字塞进单行输入框没法看也没法逐个校对，渲染成多行文本框。
     multiline: true,
-    hintZh: '留空用内置默认字典（1024 字，起手甲乙丙丁戊己庚辛壬癸）。自定义时逐构建打乱后发名，所以顺序只影响哪些字会被用到，不影响可复现性。',
+    hintZh: '仅「命名策略」为 Chinese 或 Chinese-props 时生效。留空用内置默认字典（1024 字，起手甲乙丙丁戊己庚辛壬癸）。自定义时逐构建打乱后发名，所以顺序只影响哪些字会被用到，不影响可复现性。',
     hintEn: 'Empty uses the built-in 1024-character dictionary. Custom text is shuffled per build, so order affects which characters are used, not reproducibility.' },
   nameDictionary: { kind: 'string', group: 'structure', zh: '词典词表', en: 'Dictionary words',
-    // 同上：只有命名策略选中 Dictionary 档时词表才被读。
-    showWhen: { key: 'nameStyle', equals: 'Dictionary' },
+    // 同上：只有命名策略选中 Dictionary 档时词表才被读（含带属性名的那一档）。
+    showWhen: { key: 'nameStyle', oneOf: ['Dictionary', 'Dictionary-props'] },
     // 词表常有几十个词，单行只能看到头几个。
     multiline: true,
-    hintZh: '仅「命名策略 = Dictionary」时生效。留空用内置 64 词表（value/index/result…）。逗号、空白或换行分隔，逐词校验后去重：不是合法标识符、是关键字、或重复的词会被丢掉；全部非法时回落到内置词表。词越长产物越大。',
-    hintEn: 'Only applies when Naming style is Dictionary. Empty uses the built-in 64-word list (value/index/result…). Separate with commas, spaces or newlines; each word is validated and deduplicated — anything that is not a valid identifier, is a keyword, or repeats is dropped. If every word is rejected the built-in list is used. Longer words mean a larger artifact.' },
+    hintZh: '仅「命名策略」为 Dictionary 或 Dictionary-props 时生效。留空用内置 64 词表（value/index/result…）。逗号、空白或换行分隔，逐词校验后去重：不是合法标识符、是关键字、或重复的词会被丢掉；全部非法时回落到内置词表。词越长产物越大。',
+    hintEn: 'Only applies when Naming style is Dictionary or Dictionary-props. Empty uses the built-in 64-word list (value/index/result…). Separate with commas, spaces or newlines; each word is validated and deduplicated — anything that is not a valid identifier, is a keyword, or repeats is dropped. If every word is rejected the built-in list is used. Longer words mean a larger artifact.' },
   extraGlobals: { kind: 'string', group: 'basic', zh: '宿主全局白名单', en: 'Extra host globals', hintZh: '逗号分隔的宿主全局名（如 WebSocketPair），自校验时视为已定义、不改名。', hintEn: 'Comma-separated host globals (e.g. WebSocketPair) treated as defined and left unrenamed.' },
   reservedNames: { kind: 'string', group: 'basic', zh: '保留名（正则）', en: 'Reserved names', hintZh: '逗号分隔的正则；匹配的变量/函数名不改名（如 ^__webpack）。', hintEn: 'Comma-separated regexes; matching identifiers are never renamed (e.g. ^__webpack).' },
   htmle: { kind: 'bool', group: 'defense', zh: 'HTML Encrypt', en: 'HTML Encrypt', hintZh: '**Plus 及以上可用。**把页面正文与属性值加密成密文，产物里只留密文与还原 loader，运行期还原回 DOM。view-source、grep、爬虫都拿不到原文。注意：这是**混淆不是保密**——密钥与解密逻辑都在产物里。页面在 loader 执行前**没有正文**，无 JS 环境与爬虫看到的是空页。href、src、integrity、nonce 等需在 HTML 解析阶段就被浏览器读走的属性保持原样。', hintEn: 'Requires Plus or above. Encrypts body text and attribute values into ciphertext, leaving only the ciphertext plus a restore loader that rebuilds the DOM at runtime, so view-source, grep and crawlers get nothing. Note this is obfuscation, not secrecy: the key and the decrypt logic are in the artifact. The page has no body text until the loader runs, so no-JS environments and crawlers see a blank page. Attributes the browser reads during HTML parsing (href, src, integrity, nonce) stay as-is.' },
@@ -151,7 +158,6 @@ export const FLAG_CANDIDATES = [
 
 const BOOL_LABELS = {
   mangle: ['标识符重命名', 'Identifier renaming'],
-  renameProperties: ['属性名重命名', 'Property renaming'],
   esmFold: ['ESM 模块折叠', 'ESM module folding'],
   functionWrapper: ['函数包装（IIFE）', 'Function wrapper (IIFE)'],
   callProxy: ['动态调用层', 'Call proxy dispatch'],
@@ -208,7 +214,7 @@ const BOOL_LABELS = {
 };
 
 const BOOL_GROUPS = {
-  mangle: 'structure', renameProperties: 'structure', esmFold: 'structure', functionWrapper: 'structure', callProxy: 'structure',
+  mangle: 'structure', esmFold: 'structure', functionWrapper: 'structure', callProxy: 'structure',
   templateToConcat: 'structure', objectKeyEncoding: 'structure',
   stringArray: 'strings', stringArrayRotate: 'strings', stringArrayCache: 'strings',
   stringArrayMixedEncoding: 'strings', stringIndexMask: 'strings', honeyStrings: 'strings',
@@ -244,7 +250,6 @@ export const CARD_ICONS = {
 /** 布尔项的说明文案。CLI 旗标名由 flagLabel() 补进提示，不必在这里重复。 */
 const BOOL_HINTS = {
   mangle: ['把局部/全局标识符改名为随机名，压缩体积并抹掉语义。', 'Renames identifiers to random names, shrinking output and erasing meaning.'],
-  renameProperties: ['重命名程序内定义并访问的属性名（safe 模式）；与外部共享的属性可能被破坏。', 'Renames properties defined and accessed inside the program (safe mode); properties shared with external code may break.'],
   esmFold: ['把 ESM 载荷的模块结构折叠掉：静态 import/export 改为动态 import 加单个出口，模块体搬进 IIFE（无顶层 await 时走同步内层，可进 VM 字节码），顶层只剩 TLA 赋值与出口名。仅对 ESM 载荷生效；带 source 的活再导出（export * from）保留原语句。', 'Collapses the module structure of ESM payloads: static import/export becomes dynamic import plus a single export facade, and the module body moves into an IIFE (sync inner layer without top-level await, so it can be VM-compiled). Only the TLA assignment and export names remain at top level. ESM payloads only; live re-exports (export * from) keep their statements.'],
   functionWrapper: ['把顶层语句包进 IIFE，隐藏全局变量与初始化顺序。', 'Wraps top-level statements in an IIFE, hiding globals and init order.'],
   callProxy: ['顶层函数之间的调用改经运行期重排的派发表转发，静态调用图消失。', 'Routes top-level calls through a runtime-shuffled dispatch table, erasing the static call graph.'],

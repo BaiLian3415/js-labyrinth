@@ -14,6 +14,7 @@ import obfuscateMod from '../src/obfuscate.js';
 import plan from '../src/plan.js';
 import optionsMeta from '../src/options-meta.js';
 import platform from '../src/platform.js';
+import * as naming from '../src/utils/naming.js';
 import hostLimits from '../src/host-limits.js';
 import i18n from '../src/i18n.js';
 import secret from '../src/license-secret.js';
@@ -243,7 +244,8 @@ section('命名策略（nameStyle）与动态 import');
   // 界面选项表里查一项。显隐规则在元数据上，用的是 guiOptions() 那份拷贝，
   // 所以断言要查它而不是查 VALUE_OPTIONS 本身。
   const guiOpt = (key) => optionsMeta.guiOptions().find((o) => o.key === key) || null;
-  const normalizeNameDict = (await import('../src/passes/mangle.js')).normalizeNameDict;
+  // normalizeNameDict 已搬到 utils/naming.js（名池实现与 renameProperties 共用一份）
+const normalizeNameDict = (await import('../src/utils/naming.js')).normalizeNameDict;
   {
     // Hexadecimal：字母 + 十六进制位，从 2 字符起步
     const want = runNode(shapeSrc, 'namestyle-shape-raw.js').trim();
@@ -310,14 +312,22 @@ section('命名策略（nameStyle）与动态 import');
       mine(cjk.code, ['zebra', 'quokka']).join(' '));
     // 元数据：显隐规则 + 闸门口径。free 档锁死 nameStyle=Dictionary 不可选，
     // 词表随之没有意义，所以与 chineseDictionary 一样不加闸门（与 htmleKey 同一口径）
-    ok(optionsMeta.VALUE_OPTIONS.nameDictionary.showWhen
+    //
+    // 显隐规则用 oneOf 而不是 equals：档位扩到十档后，Dictionary/Chinese 各有两个
+    // （带不带 -props），写死一个就把另一种下的输入框藏了——而那种情况是真实存在的
+    // （选了 Dictionary-props 也要能填词表）。
+    ok(Array.isArray(optionsMeta.VALUE_OPTIONS.nameDictionary.showWhen?.oneOf)
       && optionsMeta.VALUE_OPTIONS.nameDictionary.showWhen.key === 'nameStyle'
-      && optionsMeta.VALUE_OPTIONS.nameDictionary.showWhen.equals === 'Dictionary',
-    'nameDictionary 只在 nameStyle=Dictionary 时显示', JSON.stringify(optionsMeta.VALUE_OPTIONS.nameDictionary.showWhen));
-    ok(optionsMeta.VALUE_OPTIONS.chineseDictionary.showWhen
+      && optionsMeta.VALUE_OPTIONS.nameDictionary.showWhen.oneOf.includes('Dictionary')
+      && optionsMeta.VALUE_OPTIONS.nameDictionary.showWhen.oneOf.includes('Dictionary-props'),
+    'nameDictionary 在 Dictionary 与 Dictionary-props 两档都显示',
+    JSON.stringify(optionsMeta.VALUE_OPTIONS.nameDictionary.showWhen));
+    ok(Array.isArray(optionsMeta.VALUE_OPTIONS.chineseDictionary.showWhen?.oneOf)
       && optionsMeta.VALUE_OPTIONS.chineseDictionary.showWhen.key === 'nameStyle'
-      && optionsMeta.VALUE_OPTIONS.chineseDictionary.showWhen.equals === 'Chinese',
-    'chineseDictionary 只在 nameStyle=Chinese 时显示', JSON.stringify(optionsMeta.VALUE_OPTIONS.chineseDictionary.showWhen));
+      && optionsMeta.VALUE_OPTIONS.chineseDictionary.showWhen.oneOf.includes('Chinese')
+      && optionsMeta.VALUE_OPTIONS.chineseDictionary.showWhen.oneOf.includes('Chinese-props'),
+    'chineseDictionary 在 Chinese 与 Chinese-props 两档都显示',
+    JSON.stringify(optionsMeta.VALUE_OPTIONS.chineseDictionary.showWhen));
     ok(optionsMeta.KNOWN_OPTION_KEYS.has('nameDictionary'), 'nameDictionary 是已知选项（GUI/CLI 都能识别）');
     ok(guiOpt('nameDictionary') !== null, 'nameDictionary 出现在界面选项表里');
     // 词表渲染成多行文本框：1024 字的汉字字典与几十词的词典表塞进单行输入框没法看。
@@ -491,16 +501,34 @@ section('命名策略（nameStyle）与动态 import');
       '闸门 ' + style + '：free ' + (v === 0 ? '放行' : '锁死') + ' / plus 放行', 'free=' + v + ' plus=' + p);
   }
   // 元数据枚举与实际实现必须同步：界面上能选、闸门放行，但 mangle 里没有对应池的档位
-  // 会静默回落到默认档（选项存在但无效），这类漂移要有断言兜住
-  ok(optionsMeta.VALUE_OPTIONS.nameStyle.values.join(',') === 'Mangled,Mangled-shuffled,Hexadecimal,Dictionary,Chinese',
-    'nameStyle 枚举与实现同步', optionsMeta.VALUE_OPTIONS.nameStyle.values.join(','));
+  // 会静默回落到默认档（选项存在但无效），这类漂移要有断言兜住。
+  // 枚举不再写死字符串，改为与实现侧的 NAME_STYLES 对拍——写死的话下次加档位
+  // 就会漏改其中一处，而这种漂移的表征是"选项能选但没效果"，极难从产物看出。
+  ok(optionsMeta.VALUE_OPTIONS.nameStyle.values.join(',') === naming.NAME_STYLES.join(','),
+    'nameStyle 枚举与实现（utils/naming.js 的 NAME_STYLES）同步',
+    optionsMeta.VALUE_OPTIONS.nameStyle.values.join(','));
+  ok(naming.NAME_STYLES.length === 10, 'nameStyle 共 10 档（5 基础 × 带/不带属性名）',
+    String(naming.NAME_STYLES.length));
   for (const style of optionsMeta.VALUE_OPTIONS.nameStyle.values) {
     const r = obfuscate(namey, { preset: 'low', shell: false, nameStyle: style, seed: 9 });
     ok(typeof r.code === 'string' && r.code.length > 0, '枚举里的 ' + style + ' 档确实生效', r.code.length + ' 字节');
   }
+  // 档位解析：后缀只影响「要不要改属性名」，不影响名池形状；不认识的值回落默认档。
+  ok(naming.parseNameStyle('Dictionary-props').base === 'Dictionary'
+    && naming.parseNameStyle('Dictionary-props').props === true,
+  'parseNameStyle 拆出基础档与属性名开关');
+  ok(naming.parseNameStyle('Dictionary').props === false, '不带后缀即不改属性名');
+  ok(naming.parseNameStyle('dictionary-props').base === 'Dictionary',
+    '档位匹配大小写不敏感（API 传小写也能认）');
+  ok(naming.parseNameStyle('nope').base === 'Mangled' && naming.parseNameStyle('nope').known === false,
+    '不认识的档位回落到默认档且 known=false');
+  // 属性名重命名已并入档位（2026-10-09）：旧开关不再是已知选项
+  ok(!optionsMeta.KNOWN_OPTION_KEYS.has('renameProperties'),
+    'renameProperties 布尔项已移除（并入 nameStyle 的 -props 档）');
+  ok(obfuscateMod.DEFAULTS.renameProperties === undefined, 'DEFAULTS 里不再有 renameProperties');
 }
 
-section('属性名重命名（renameProperties）与保留名单（reservedNames/reservedStrings）');
+section('属性名重命名（nameStyle 的 -props 档）与保留名单（reservedNames/reservedStrings）');
 {
   // 内部契约属性（定义 + 访问）：foo/bar/baz 三处同步改名；o2 走点号与字面量键两条路
   const rpSrc = `var obj = { foo: 1, bar: 2, baz: 3 };
@@ -512,40 +540,86 @@ process.stdout.write(get() + '|' + o2.foo + '\\n');`;
 
   // 改名生效 + 语义等价（文本探针会被 objectKeyEncoding/vm 改写，改用 stats 计数）
   {
-    const on = obfuscate(rpSrc, { preset: 'low', shell: false, renameProperties: true, seed: 1 });
-    const off = obfuscate(rpSrc, { preset: 'low', shell: false, renameProperties: false, seed: 1 });
+    const on = obfuscate(rpSrc, { preset: 'low', shell: false, nameStyle: 'Hexadecimal-props', seed: 1 });
+    const off = obfuscate(rpSrc, { preset: 'low', shell: false, nameStyle: 'Hexadecimal', seed: 1 });
     const st = on.stats.find((s) => s.pass === 'renameProperties');
-    ok(st && st.result && st.result.renamed >= 3, 'renameProperties 开启时三处属性名同步改名',
+    ok(st && st.result && st.result.renamed >= 3, '-props 档开启时三处属性名同步改名',
       JSON.stringify(st && st.result));
-    ok(!off.stats.some((s) => s.pass === 'renameProperties'), 'renameProperties 关闭时 pass 不出现');
-    ok(on.code !== off.code, 'renameProperties 开启确实改动了产物');
+    ok(!off.stats.some((s) => s.pass === 'renameProperties'), '不带 -props 的同档位下 pass 不出现');
+    ok(on.code !== off.code, '-props 档确实改动了产物');
     ok(runNode(on.code, 'rp-on') === rpWant && runNode(off.code, 'rp-off') === rpWant,
-      'renameProperties 开/关语义一致');
+      '属性名开/关语义一致');
   }
 
   // 白名单：body 在保留名单不改，len 不在则改（定义 ∩ 访问均命中）
   {
     const bodySrc = `var o = { body: 1, len: 2 };
 process.stdout.write(String(o.body + o.len) + '\\n');`;
-    const r = obfuscate(bodySrc, { preset: 'low', shell: false, renameProperties: true, seed: 1 });
+    const r = obfuscate(bodySrc, { preset: 'low', shell: false, nameStyle: 'Hexadecimal-props', seed: 1 });
     const st = r.stats.find((s) => s.pass === 'renameProperties');
     ok(st && st.result && st.result.renamed === 1, '白名单属性（body）不改、非白名单（len）改',
       JSON.stringify(st && st.result));
     ok(runNode(r.code, 'rp-body') === '3\n', '白名单样例语义正确');
   }
 
-  // 组合：high 预设 + renameProperties 全链路语义不变（2 seed）
+  // 本次改动的核心：属性名必须跟随档位形状。此前它只对 Chinese 认 nameStyle、其余一律
+  // 发 `_0x` 随机名，所以「选了 Hexadecimal 但属性名不是十六进制形状」——那一档对属性
+  // 而言是假的。
+  {
+    const shapeSrc = `var o = { alpha: 1, beta: 2, gamma: 3, delta: 4 };
+process.stdout.write(String(o.alpha + o.beta + o.gamma + o.delta));`;
+    const want = '10';
+    // 关掉 objectKeyEncoding：它会把属性名拆成计算键（["k"+"e"+"y"] 这类），那样产物
+    // 里就看不到点号形态的名字，探针无从下手。这里要验的是"名字的形状"，不是"名字
+    // 有没有被藏起来"。
+    const base = {
+      preset: 'low', shell: false, stringArray: false, objectKeyEncoding: false, seed: 9,
+    };
+    const rProps = obfuscate(shapeSrc, { ...base, nameStyle: 'Dictionary-props' });
+    const rPlain = obfuscate(shapeSrc, { ...base, nameStyle: 'Dictionary' });
+
+    // 用自定义词表做精确探针：填进去的四个词必须原样出现在产物里。比"看起来像词表
+    // 词"强得多——不会被 process.stdout.write 之类的内建名干扰。
+    const WORDS = ['zebra', 'quokka', 'numbat', 'dugong'];
+    const rCustom = obfuscate(shapeSrc, {
+      ...base, nameStyle: 'Dictionary-props', nameDictionary: WORDS.join(','),
+    });
+    for (const w of WORDS) {
+      ok(new RegExp('\\.' + w + '\\b').test(rCustom.code),
+        '自定义词表里的 "' + w + '" 真的做成了属性名', '产物里没有 .' + w);
+    }
+    ok(!rCustom.code.includes('o.alpha'), '原属性名 alpha 不再出现在产物里');
+
+    // 关键对照：带 -props 与不带 -props 必须产出**不同**的产物。若两者相同，说明档位
+    // 对属性名毫无影响——那正是本次要修的病。
+    ok(rProps.code !== rPlain.code, 'Dictionary-props 与 Dictionary 产物不同（属性名确实被改）');
+    ok(!rPlain.stats.some((s) => s.pass === 'renameProperties'),
+      '不带 -props 的 Dictionary 档不跑属性名改名');
+    ok(rProps.stats.some((s) => s.pass === 'renameProperties'),
+      'Dictionary-props 跑属性名改名');
+
+    // 逐档抽一遍：每个 -props 档都要真的改名，且语义不变
+    for (const style of naming.NAME_STYLES.filter((s) => s.endsWith('-props'))) {
+      const r = obfuscate(shapeSrc, { ...base, nameStyle: style });
+      const st = r.stats.find((s) => s.pass === 'renameProperties');
+      ok(st && st.result && st.result.renamed >= 4, style + ' 档改名四个属性',
+        JSON.stringify(st && st.result));
+      ok(runNode(r.code, 'rp-' + style) === want, style + ' 档语义正确');
+    }
+  }
+
+  // 组合：high 预设 + 属性名改名全链路语义不变（2 seed）
   {
     let comboBad = '';
     for (let seed = 1; seed <= 2 && !comboBad; seed++) {
-      for (const rp of [false, true]) {
-        const code = obfuscate(rpSrc, { preset: 'high', shell: false, renameProperties: rp, seed }).code;
+      for (const style of ['Mangled', 'Mangled-props']) {
+        const code = obfuscate(rpSrc, { preset: 'high', shell: false, nameStyle: style, seed }).code;
         let got;
-        try { got = runNode(code, 'rp-combo-' + seed + '-' + rp); } catch (e) { got = 'THREW'; }
-        if (got !== rpWant) { comboBad = 'seed=' + seed + ' rp=' + rp + ' → ' + got.slice(0, 40); break; }
+        try { got = runNode(code, 'rp-combo-' + seed + '-' + style); } catch (e) { got = 'THREW'; }
+        if (got !== rpWant) { comboBad = 'seed=' + seed + ' style=' + style + ' → ' + got.slice(0, 40); break; }
       }
     }
-    ok(comboBad === '', 'high 预设 + renameProperties 全链路语义不变', comboBad);
+    ok(comboBad === '', 'high 预设 + 属性名改名全链路语义不变', comboBad);
   }
 
   // reservedNames：匹配名不改，其余照常改
@@ -570,16 +644,26 @@ process.stdout.write(a + '|' + b + '\\n');`;
       'reservedStrings 保留匹配串、其余进池');
   }
 
-  // 门控：free 锁死 renameProperties（reservedNames/reservedStrings 是减混淆兼容功能，不门控）
-  ok(plan.violations({ renameProperties: true }, 'free').length === 1, 'free 档 renameProperties 锁死');
-  ok(plan.violations({ renameProperties: false }, 'free').length === 0, 'free 档关闭放行');
-  ok(plan.violations({ renameProperties: true }, 'plus').length === 0, 'plus 档 renameProperties 放行');
-  ok(obfuscateMod.DEFAULTS.renameProperties === false, 'renameProperties 默认关闭');
+  // 门控：free 锁死全部 *-props 档（属性名重命名是付费能力，现在由档位承载）。
+  // 关键：白名单必须只列不带 -props 的那档——误列一个就把付费能力白送，且
+  // violations() 不会报错，只会说"free 也能用这档"，所以这里逐档钉。
+  for (const style of naming.NAME_STYLES) {
+    const v = plan.violations({ nameStyle: style }, 'free').length;
+    const p = plan.violations({ nameStyle: style }, 'plus').length;
+    const wantFree = style === 'Mangled' ? 0 : 1;
+    ok(v === wantFree && p === 0,
+      '闸门 ' + style + '：free ' + (v === 0 ? '放行' : '锁死') + ' / plus 放行', 'free=' + v + ' plus=' + p);
+  }
+  ok(plan.violations({ nameStyle: 'Mangled-props' }, 'free').length === 1,
+    'free 档拿不到属性名重命名（Mangled-props 被锁死）');
+  // reservedNames/reservedStrings 是减混淆兼容功能，不门控
+  ok(plan.violations({ reservedNames: ['^x'] }, 'free').length === 0, 'free 档 reservedNames 不门控');
+  ok(plan.violations({ reservedStrings: ['x'] }, 'free').length === 0, 'free 档 reservedStrings 不门控');
 
   // 可复现
-  ok(obfuscate(rpSrc, { preset: 'high', shell: false, renameProperties: true, seed: 97 }).code ===
-    obfuscate(rpSrc, { preset: 'high', shell: false, renameProperties: true, seed: 97 }).code,
-    'renameProperties 固定 seed 可复现');
+  ok(obfuscate(rpSrc, { preset: 'high', shell: false, nameStyle: 'Hexadecimal-props', seed: 97 }).code ===
+    obfuscate(rpSrc, { preset: 'high', shell: false, nameStyle: 'Hexadecimal-props', seed: 97 }).code,
+    '属性名改名固定 seed 可复现');
 }
 
 section('其他');

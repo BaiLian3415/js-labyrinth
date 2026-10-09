@@ -37,6 +37,10 @@ npm run build:web:cloud  # 云端执行形态（核心不进产物，Vercel 部�
    字符串字面量保留的场景由 `__noPool` 标记处理。`test/minify.js` 有对应断言。
 3. **选项必须三处同步**：`src/options.js`（默认值）、`src/options-meta.js`
    （UI 元数据）、`src/i18n.js`（错误文案/说明）。漏一处界面即报 undefined 或抛错。
+   **删选项还要多看两处**：`src/presets.js`（四个预设各写一遍）与 `src/plans.js`
+   （套餐闸门白名单）。删布尔项时 `BOOL_OPTIONS` 由 `DEFAULTS` 自动派生，不用手改。
+   **未知选项键会被静默保留**（`resolveOptions` 不报错、也不警告），所以删键/改键名是
+   静默失效而非报错——改名或删键必须在 README 写迁移说明并加回归断言。
 4. **逐字节可复现是特性**：同一种子同选项必须产出同一份产物。新增随机性要走
    `src/utils/rand.js` 的 `randInt`/`shuffle`/`uniqueName`，不要直接 `Math.random()`；
    固定指纹用的常量逐构建随机化，见各 pass 的注释。
@@ -45,6 +49,35 @@ npm run build:web:cloud  # 云端执行形态（核心不进产物，Vercel 部�
 6. **JIT/热路径零开销原则**：解释器之外不留每指令都走的额外逻辑；护栏类
    检查（如 vmStepLimit）放解释器体内、按需可关。
 7. 注释用中文、说清"为什么"（尤其静默算错/假失败这类教训），不只写"是什么"。
+
+## 命名策略（2026-10-09 重构后）
+
+- **一个选项管全部重命名**：`nameStyle` 是唯一入口，10 档 = 5 个基础档（Mangled /
+  Mangled-shuffled / Hexadecimal / Dictionary / Chinese）× 带/不带 `-props` 后缀。
+  合法值以 `src/utils/naming.js` 的 `NAME_STYLES` 为**唯一真源**，`options-meta.js`
+  的枚举与它对拍（`test/minify.js` 有断言）——写死字符串的话下次加档必然漏改一处，
+  而那种漂移表征是"选项能选但没效果"，从产物里看不出来。
+- **档位解析只认一处**：`naming.js` 的 `parseNameStyle` / `baseNameStyle` /
+  `wantsPropertyRename` / `isChineseNaming`。消费方五处（`mangle`、`renameProperties`、
+  `obfuscate` 调度、`integrityCheck` 重算哈希、`options-meta` 枚举与文案），
+  谁也不许自己判 `nameStyle`。前后两次同类事故：`chineseNames` 布尔项时期三处各判一遍，
+  漂移出"名字是汉字却被转义成 \uXXXX"，产物被自己的完整性校验投毒。
+- **名池实现在 `naming.js`，标识符与属性名共用**（`createNamePool`）。原先四个生成器
+  私住在 `passes/mangle.js`，`renameProperties` 拿不到 → 它对非 Chinese 档一律发
+  `_0x` 随机名，**选了 Hexadecimal 对属性名毫无影响，那一档对属性是假的**。名池是有状态
+  的迭代器，两个 pass 各 `createNamePool()` 拿独立的一条流；防撞靠两边都把新名写回
+  `ctx.usedNames`。
+- **`renameProperties` 布尔项已删除**（并入 `-props` 档）。套餐闸门随之从
+  `plans.js` 的一条独立规则改成 `nameStyle` 白名单：free 档白名单**只能列不带
+  `-props` 的那一档**，误列一个就把付费能力白送，且 `violations()` 不报错。档位匹配大小写不敏感（`options-meta` 导出了 `toCamel`，但
+  **仓库内没有消费方**，不存在「CLI 自动转驼峰」这回事，别照着假设）。
+- `identifierPrefix`（默认 `_0x`）**不是**风格选项：它是 8 个文件里机器代码名
+  （rtlib/rtgen/shell/banner/esmFold/antiLLM/…）的前缀，以及 `mangle` 名池耗尽时的
+  兜底生成器。别把它和 `Hexadecimal` 当成同一件事的两条路。
+- 探针要验"名字形状"时记得关 `objectKeyEncoding`：它把属性名拆成计算键
+  （`["k"+"e"+"y"]`、`["n","a","m","e"].join("")`），产物里就看不到点号形态的名字。
+  另有一坑：`obfuscateDocument` 在 `info.obfuscated === 0`（文档无内联 `<script>`）时
+  `html` 返回 **null**，不是产物。
 
 ## VM 架构现状（2026-10 重构后）
 

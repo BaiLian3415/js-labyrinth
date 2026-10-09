@@ -1,11 +1,10 @@
 import t from '../ast/types.js';
 import rand from '../utils/rand.js';
-import DEFAULTS from '../options.js';
-import { cjkNames, uniqueCJKName, isChineseNaming } from '../utils/cjk.js';
-const { uniqueName, shuffle, RESERVED, HEXD } = rand;
-
-/** 未指定或指定了不存在的 nameStyle 时的兜底，与 options.js 的默认值同源。 */
-const DEFAULT_NAME_STYLE = DEFAULTS.nameStyle;
+import { uniqueCJKName } from '../utils/cjk.js';
+import {
+  createNamePool, parseNameStyle, isChineseNaming,
+} from '../utils/naming.js';
+const { uniqueName, RESERVED } = rand;
 
 /**
  * 标识符重命名。
@@ -23,153 +22,18 @@ const DEFAULT_NAME_STYLE = DEFAULTS.nameStyle;
  * arguments、import 的模块绑定以及被 export 的本地名字一律跳过，对外接口保持
  * 不变。
  *
- * 命名策略由 `nameStyle` 选，共四档（与 obfuscator.io 的 identifierNamesGenerator
+ * 命名策略由 `nameStyle` 选，共五档（与 obfuscator.io 的 identifierNamesGenerator
  * 同一套命名，便于横向对比产物）：`Mangled`、`Mangled-shuffled`、`Hexadecimal`、
- * `Dictionary`。四档共用下面的"命名池"机制——长度递增、按引用次数从多到少发放、
+ * `Dictionary`，外加本项目扩展的 `Chinese`。名池实现（四个拉丁/十六进制/词表生成器
+ * 与汉字池的接入）都在 utils/naming.js，属性名重命名共用同一份——见那里的说明。
+ * 各档共用"命名池"机制——长度递增、按引用次数从多到少发放、
  * 跳过已占用名与关键字、池空退回随机名，区别只在池子里装的是什么、以及发名顺序
  * 固不固定。
  */
 
-/**
- * 规范短名池（`nameStyle: 'Mangled'`）。
- *
- * `a…Z$_` → `aa…` → `aaa…` 的固定顺序发名，54 个单字符起步，小文件全用单字符。
- * 这是 terser 等 minifier 的经典取法，也是本项目体积最小的档。
- *
- * 关键性质：字母表不打乱。同一个输入永远得到同一份名字，与 seed 无关——好处是
- * 两次构建可以逐字节 diff、跨机器结果一致；代价是产物里必然出现 a、b、c… 的发名
- * 顺序，指纹极强。想要短名但不留这个指纹，用 `Mangled-shuffled`。
- */
-const MANGLED_ALPHA = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ$_';
-
-function* mangledNames() {
-  const a1 = MANGLED_ALPHA.split('');
-  const a2 = [a1, a1];
-  const a3 = [a1, a1, a1];
-  yield* a1;
-  for (const x of a2[0]) for (const y of a2[1]) yield x + y;
-  for (const x of a3[0]) for (const y of a3[1]) for (const z of a3[2]) yield x + y + z;
-}
-
-/**
- * 乱序短名池（`nameStyle: 'Mangled-shuffled'`）——上面那档把字母表逐构建打乱。
- *
- * 形状、长度、按引用次数发名的策略完全一样，只多一条：每档字母顺序由 seed 决定，
- * 同 seed 可复现、换 seed 换一套字母。这是"体积与 Mangled 相当、但产物里没有一套
- * 可辨识字母表"的档，混淆发布时的默认选择。
- */
-function* mangledShuffledNames() {
-  const tier = () => shuffle(MANGLED_ALPHA.split(''));
-  const a1 = tier();
-  const a2 = [tier(), tier()];
-  const a3 = [tier(), tier(), tier()];
-  yield* a1;
-  for (const x of a2[0]) for (const y of a2[1]) yield x + y;
-  for (const x of a3[0]) for (const y of a3[1]) for (const z of a3[2]) yield x + y + z;
-}
-
-/**
- * 十六进制名池（`nameStyle: 'Hexadecimal'`）。
- *
- * 形状是"头一个字母 + 若干位十六进制"（a7 / f30 / 0e91…），逐构建打乱。从
- * 2 字符起步而不是 1 字符：单字符起步会退回 Mangled 那种 a/b/c 序列感，2 字符
- * 起每个名字都长得像摘要片段，肉眼看不出发放顺序。`if`（i+f）这类正好落在
- * "字母+十六进制"形状里的关键字由 RESERVED 跳过。
- *
- * 长度与 Mangled 相当，抗指纹定位接近乱序档：想要"一样短但完全无规律"就用它。
- */
-const HEX_HEAD = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ';
-
-function* hexadecimalNames() {
-  const head = shuffle(HEX_HEAD.split(''));
-  const tier = () => shuffle(HEXD.split(''));
-  const b1 = tier();
-  const b2 = [tier(), tier()];
-  const b3 = [tier(), tier(), tier()];
-  for (const h of head) for (const b of b1) yield h + b;
-  for (const h of head) for (const b of b2[0]) for (const c of b2[1]) yield h + b + c;
-  for (const h of head) for (const b of b3[0]) for (const c of b3[1]) for (const d of b3[2]) yield h + b + c + d;
-}
-
-/**
- * 词典名池（`nameStyle: 'Dictionary'`）。
- *
- * 从固定词表里逐构建打乱地发词名（value / index / result…），一轮发完接"词+序号"。
- * 这是四档里唯一"看名字还能认出量级"的一档：抛错栈、断点单步、跨版本 AST diff
- * 里不至于全是 a/b/c，调试成本最低。
- *
- * 代价有两条，都写在这里免得误用：产物比 Mangled 大（词平均 5 字符对 1 字符），而且
- * 词表是可枚举的，认的人只要拿同一份词表比对就能把改名批量还原。定位是"调试/审计
- * 时用"，不是"发布时用"。逐构建打乱保证同 seed 复现、换 seed 换一套词。
- */
-const DICTIONARY_WORDS = [
-  'value', 'index', 'count', 'total', 'result', 'output', 'input', 'target',
-  'source', 'buffer', 'cursor', 'offset', 'length', 'factor', 'weight', 'limit',
-  'start', 'range', 'field', 'group', 'batch', 'chunk', 'block', 'entry',
-  'record', 'item', 'label', 'flag', 'state', 'store', 'cache', 'queue',
-  'stack', 'frame', 'node', 'leaf', 'root', 'base', 'seed', 'salt',
-  'token', 'key', 'name', 'text', 'line', 'path', 'step', 'phase',
-  'mode', 'level', 'depth', 'width', 'scale', 'ratio', 'delta', 'sum',
-  'avg', 'temp', 'aux', 'part', 'area', 'span', 'rank', 'gap',
-];
-
-/**
- * 解析用户给的词典：逗号/空白/换行分隔，逐个校验后去重。
- *
- * 校验不能省——词表里的名字会直接写成产物里的标识符，一个不合法词就足以让产物
- * 无法解析。这里按四条过滤：必须是合法 JS 标识符（首字符 ID_Start，其余
- * ID_Continue）、不能是关键字或保留字（见 rand.js 的 RESERVED）、不能与前面已
- * 收的词重复、长度上限 64 字符（词表本身就是"可读名"档，超长名字与该档定位相悖）。
- *
- * 全部被过滤光时回落到内置词表，而不是交出一个空池——空池会让整份代码退回
- * uniqueName 随机名，用户看到的是"我填的词一个都没用上"，且没有任何提示。
- *
- * @param {string} raw 用户填的词表文本
- * @returns {string[]} 合法、不重复的词
- */
-export function normalizeNameDict(raw) {
-  const s = typeof raw === 'string' ? raw : '';
-  if (!s.trim()) return DICTIONARY_WORDS;
-  // 词表本身以字母开头，所以分隔符两侧的空白不会粘进词里；用非标识符字符统一切分，
-  // 顺带让 "foo,bar"、"foo bar"、"foo\nbar"、"foo、bar" 四种写法都能用。
-  const seen = new Set();
-  const out = [];
-  for (const w of s.split(/[^A-Za-z0-9_$]+/)) {
-    if (!w || out.length >= 256) continue;
-    if (w.length > 64) continue;
-    if (RESERVED.has(w)) continue;
-    // 标识符合法性用正则判，不用 `new Function('var ' + w)` 实测——核心里禁止
-    // 字符串代码生成（浏览器的 CSP 与不少函数运行时直接禁 eval / new Function，
-    // 核心里出现就是产物在那边抛 EvalError，见 test/minify.js 的守卫与 README
-    // 「核心模块图里不能有字符串代码生成」）。test/chinese-names.js 里能用
-    // new Function，因为那是测试文件、不进产物依赖图。
-    if (!/^[A-Za-z_$][A-Za-z0-9_$]*$/.test(w)) continue;
-    if (seen.has(w)) continue;
-    seen.add(w);
-    out.push(w);
-  }
-  return out.length ? out : DICTIONARY_WORDS;
-}
-
-function* dictionaryNames(dict) {
-  const words = shuffle(normalizeNameDict(dict).slice());
-  const n = words.length;
-  // 上限 n*64（约四千个名字）后交回调用方退回随机名，不静默复用名字
-  for (let i = 0; i < n * 64; i++) {
-    yield words[i % n] + (i < n ? '' : String(Math.floor(i / n)));
-  }
-}
-
-/**
- * nameStyle → 命名池生成器。用 Map 而不是对象字面量：nameStyle 由调用方给，
- * `POOLS['constructor']` 会命中 Object.prototype 上的构造函数，不是生成器。
- */
-const NAME_POOLS = new Map([
-  ['Mangled', mangledNames],
-  ['Mangled-shuffled', mangledShuffledNames],
-  ['Hexadecimal', hexadecimalNames],
-  ['Dictionary', dictionaryNames],
-]);
+// 名池实现（四个生成器 + normalizeNameDict + Dictionary 词表）已搬到 utils/naming.js：
+// renameProperties 要用同一份，否则「选了 Hexadecimal、属性名却是 _0x 随机名」那种
+// 自相矛盾会再次出现（那一档对属性而言曾是假的）。
 
 function collectExportedFromProgram(path, exported) {
   const node = path.node;
@@ -394,25 +258,11 @@ export default function mangle(ast, options, ctx) {
 
   traverse(ast, visitors);
 
-  // 命名策略：四档都从命名池按序发放，池空时退回随机名。档名不存在（拼错、大小写
+  // 命名策略：各档都从命名池按序发放，池空时退回随机名。档名不存在（拼错、大小写
   // 不对、还是旧档名 random/short）一律回落到默认值，而不是抛异常或静默出一份
-  // 没有约定的产物。
-  //
-  // chineseNames 打开时改用汉字池，取代 nameStyle 的四档：用户要的就是"名字是
-  // 中文"，再从 a/b/c… 那几档里挑没有意义。escapeNonAscii 对本档无效——生成器
-  // 那侧单独放行（见 generator 的 _escapeIdent），否则四个预设默认开的
-  // escapeNonAscii 会把汉字写成 \uXXXX，产物里根本看不到中文。
-  // Chinese 档接汉字池，取代其余四档的拉丁/十六进制/词表命名——要的就是"名字是
-  // 中文"，再从 a/b/c… 里挑没意义。escapeNonAscii 对本档无效——生成器那侧单独
-  // 放行（见 generator 的 _escapeIdent），否则四个预设默认开的 escapeNonAscii 会
-  // 把汉字写成 \uXXXX，产物里根本看不到中文。
-  const pool = isChineseNaming(options)
-    ? cjkNames(options.chineseDictionary || '')
-    // 词典档接用户自定义词表；其余三档的生成器不收参数，多传一个也无副作用，
-    // 但显式只在 Dictionary 档传，免得"参数被静默吞掉"这类漂移看不出来。
-    : (NAME_POOLS.get(options.nameStyle) || NAME_POOLS.get(DEFAULT_NAME_STYLE))(
-      options.nameStyle === 'Dictionary' ? (options.nameDictionary || '') : undefined,
-    );
+  // 没有约定的产物。档位的解析与名池的挑选都在 utils/naming.js（属性名重命名共用
+  // 同一份，见那里的说明），这里不再自己判 chineseNames / Dictionary。
+  const pool = createNamePool(options);
   const nextName = () => {
     for (;;) {
       const it = pool.next();

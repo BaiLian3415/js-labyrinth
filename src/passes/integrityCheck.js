@@ -4,7 +4,7 @@ import parser from '../ast/parser.js';
 const { parse } = parser;
 import rand from '../utils/rand.js';
 import morph from '../utils/morph.js';
-import { isChineseNaming } from '../utils/cjk.js';
+import { isChineseNaming } from '../utils/naming.js';
 const { randInt, randHex, uniqueName } = rand;
 import vm from './vm.js';
 const { isVMCompiled } = vm;
@@ -142,8 +142,10 @@ export default function integrityCheck(ast, options, ctx) {
 //       T / T  -> 抛错          F / T  -> 正常（wasmInterpreter:false）
 //       T / F  -> 正常          F / F  -> 正常
 //   叠加：vmProtection:false -> 正常；vmThreshold=1e9（无函数搬进 VM）-> 正常；
-//        debugProtection / renameProperties / stringScatter /
+//        debugProtection / stringScatter /
 //        stringArrayCallsTransform 都不影响。
+//        （当时还逐个试过 renameProperties；该布尔项已于 2026-10-09 并入 nameStyle 的
+//         -props 档位，现在要复现这一项请用 nameStyle: '<档>-props'。）
 //
 // 机制推断：vm 先跑（obfuscate.js:286）把函数体换成字节码 + 桥接桩，objectKeys
 // 后跑（:296）把 obj.log 改成 obj["l"+"og"]——改的是宿主侧那具桩，而字节码里记

@@ -8,7 +8,7 @@ const { t: msg } = i18n;
 import DEFAULTS from './options.js';
 import PRESETS from './presets.js';
 import randUtil from './utils/rand.js';
-import { isChineseNaming } from './utils/cjk.js';
+import { isChineseNaming, wantsPropertyRename } from './utils/naming.js';
 const { setSeed, rand, randInt } = randUtil;
 import rtlib from './passes/rtlib.js';
 import simplify from './passes/simplify.js';
@@ -473,10 +473,12 @@ function obfuscate(code, userOptions) {
   // 必须在 rtlib 之前、任何注入发生之前跑，此时 AST 只有用户代码。
   if (options.simplify) timePass('simplify', () => simplify(ast, options, ctx));
 
-  // 属性名重命名（renameProperties，safe 模式）：同样在最前，只作用于用户代码。
+  // 属性名重命名（safe 模式）：同样在最前，只作用于用户代码。
   // 必须在 objectKeys / stringArray 之前：那时属性名还是干净的 Identifier /
-  // StringLiteral，还没被改写成计算键 + 字符串池形态
-  if (options.renameProperties) timePass('renameProperties', () => renameProperties(ast, options, ctx));
+  // StringLiteral，还没被改写成计算键 + 字符串池形态。
+  // 开不开由 nameStyle 的档位决定（带 `-props` 后缀那几档），不再是独立开关——
+  // 判定在 utils/naming.js，与 renameProperties pass 内那处同源。
+  if (wantsPropertyRename(options)) timePass('renameProperties', () => renameProperties(ast, options, ctx));
 
   if (options.rtlib !== false) timePass('rtlib', () => rtlib(ast, options, ctx));
 
