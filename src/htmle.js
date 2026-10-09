@@ -1,5 +1,5 @@
 /**
- * HTML2MEM：把 HTML 的文本节点与属性值加密成一段密文，页面里只留密文 + 一个
+ * HTMLE：把 HTML 的文本节点与属性值加密成一段密文，页面里只留密文 + 一个
  * 还原 loader。运行期 loader 把密文解进内存，按占位标记把 DOM 还原成与原文逐字
  * 相同的形态。
  *
@@ -352,17 +352,17 @@ if(document.readyState==="loading")document.addEventListener("DOMContentLoaded",
  * 入口：把 HTML 的文本与属性值加密成密文 + loader。
  *
  * @param {string} html
- * @param {object} options 已归一化的选项（只读 html2mem / html2memKey）
+ * @param {object} options 已归一化的选项（只读 htmle / htmleKey）
  * @returns {{html:string, values:number, bytes:number}}
  */
-export function html2mem(html, options) {
+export function htmle(html, options) {
   const mk = pickMarkers(html);
   if (!mk) return { html, values: 0, bytes: 0, skipped: 'no-marker-free-chars' };
 
   const { html: scrambled, values } = scramble(html, mk);
   if (!values.length) return { html, values: 0, bytes: 0, skipped: 'no-values' };
 
-  const key = (options.html2memKey >>> 0) || ((randInt(0, 0xffffffff) >>> 0) || 1);
+  const key = (options.htmleKey >>> 0) || ((randInt(0, 0xffffffff) >>> 0) || 1);
   const packed = packValues(values);
   const cipher = untransform(packed, key);
   const b64 = btoa(cipher);   // cipher 是 latin1 串，btoa 正好吃这种输入
@@ -386,6 +386,6 @@ export function html2mem(html, options) {
 }
 
 export default {
-  html2mem, packValues, unpackValues, crypt, transform, untransform,
+  htmle, packValues, unpackValues, crypt, transform, untransform,
   decodeEntities, scramble, pickMarkers,
 };

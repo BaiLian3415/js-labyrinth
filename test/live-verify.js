@@ -10,7 +10,7 @@ import path from 'node:path';
 import { cleanTmp, counters, ok, report, runNode, section } from './_harness.js';
 import obfuscateMod from '../src/obfuscate.js';
 import htmlMod from '../src/html.js';
-import html2memMod from '../src/html2mem.js';
+import htmleMod from '../src/htmle.js';
 import codec from '../src/license-codec.js';
 import plan from '../src/plan.js';
 import gate from '../src/options-gate.js';
@@ -31,7 +31,7 @@ if (wantLive) ensureProxy('live-verify.js');
 
 const { obfuscate } = obfuscateMod;
 const { obfuscateDocument } = htmlMod;
-const h2mMod = html2memMod.default || html2memMod;
+const heMod = htmleMod.default || htmleMod;
 
 // 测试专用签发密钥对。
 //
@@ -260,10 +260,10 @@ if (process.env.JSLB_SKIP_LIVE === '1') {
   }
 }
 
-  // HTML2MEM：文本节点与属性值加密成密文 + 还原 loader
-  section('HTML2MEM（HTML 文本加密）');
+  // HTMLE：文本节点与属性值加密成密文 + 还原 loader
+  section('HTMLE（HTML 文本加密）');
   {
-    const h2mSrc = '<!DOCTYPE html>\n'
+    const heSrc = '<!DOCTYPE html>\n'
       + '<html lang="zh"><head><meta charset="utf-8"><title>测试页 &amp; 标题</title>'
       + '<style>.a{color:red}</style></head>\n'
       + '<body>\n'
@@ -276,42 +276,42 @@ if (process.env.JSLB_SKIP_LIVE === '1') {
       + '</body></html>';
 
     // 关闭时产物不含任何加密痕迹
-    const offH = obfuscateDocument(h2mSrc, obfuscateMod.resolveOptions({ preset: 'low', seed: 5 }));
-    ok(!/atob\(/.test(offH.html), 'html2mem 关闭时不注入 loader');
-    ok(offH.html.includes('可见文本'), 'html2mem 关闭时文本保持明文（行为与改动前一致）');
-    ok(offH.html2mem === null || offH.html2mem === undefined, 'html2mem 关闭时统计为空');
+    const offH = obfuscateDocument(heSrc, obfuscateMod.resolveOptions({ preset: 'low', seed: 5 }));
+    ok(!/atob\(/.test(offH.html), 'htmle 关闭时不注入 loader');
+    ok(offH.html.includes('可见文本'), 'htmle 关闭时文本保持明文（行为与改动前一致）');
+    ok(offH.htmle === null || offH.htmle === undefined, 'htmle 关闭时统计为空');
 
     // 开启后：明文消失、代码与样式不动、loader 就位
-    const onH = obfuscateDocument(h2mSrc, obfuscateMod.resolveOptions({
-      preset: 'low', seed: 5, html2mem: true, html2memKey: 424242,
+    const onH = obfuscateDocument(heSrc, obfuscateMod.resolveOptions({
+      preset: 'low', seed: 5, htmle: true, htmleKey: 424242,
     }));
     const gone = ['可见文本：你好世界', 'secret-value-123', '链接文字', '输入框默认值', '占位提示', '测试页']
       .filter((s) => onH.html.includes(s));
     ok(gone.length === 0, '文本节点与属性值明文全部消失', gone.join(' | '));
-    // script 块不在此列：内联脚本本来就会被混淆（既有功能），HTML2MEM 不负责还原它
+    // script 块不在此列：内联脚本本来就会被混淆（既有功能），HTMLE 不负责还原它
     const kept = ['<style>.a{color:red}</style>', '/path?a=1&amp;b=2', 'disabled']
       .filter((s) => !onH.html.includes(s));
     ok(kept.length === 0, '样式/href/无值属性保持原样（script 块照常被混淆）', kept.join(' | '));
     ok(/atob\(/.test(onH.html) && /createTreeWalker/.test(onH.html), 'loader 脚本已注入且含解密与 DOM 遍历');
-    ok(!!onH.html2mem && onH.html2mem.values > 0 && onH.html2mem.bytes > 0,
-      'html2mem 统计报告了值数与密文字节数', JSON.stringify(onH.html2mem));
-    ok(onH.html2mem && onH.html2mem.key === 424242, 'html2memKey 固定密钥被采用', JSON.stringify(onH.html2mem));
+    ok(!!onH.htmle && onH.htmle.values > 0 && onH.htmle.bytes > 0,
+      'htmle 统计报告了值数与密文字节数', JSON.stringify(onH.htmle));
+    ok(onH.htmle && onH.htmle.key === 424242, 'htmleKey 固定密钥被采用', JSON.stringify(onH.htmle));
 
     // 固定密钥 → 逐字节可复现
-    const again = obfuscateDocument(h2mSrc, obfuscateMod.resolveOptions({
-      preset: 'low', seed: 5, html2mem: true, html2memKey: 424242,
+    const again = obfuscateDocument(heSrc, obfuscateMod.resolveOptions({
+      preset: 'low', seed: 5, htmle: true, htmleKey: 424242,
     }));
     ok(again.html === onH.html, '同 seed + 同密钥 → 产物逐字节可复现');
 
-    // html2memKey=0 是「由 seed 决定」而不是「每次真随机」：同 seed 必须可复现（与项目里
+    // htmleKey=0 是「由 seed 决定」而不是「每次真随机」：同 seed 必须可复现（与项目里
     // 其它随机量的口径一致），不同 seed 才换密钥。
-    const rnd1 = obfuscateDocument(h2mSrc, obfuscateMod.resolveOptions({ preset: 'low', seed: 5, html2mem: true }));
-    const rnd2 = obfuscateDocument(h2mSrc, obfuscateMod.resolveOptions({ preset: 'low', seed: 5, html2mem: true }));
-    const rnd3 = obfuscateDocument(h2mSrc, obfuscateMod.resolveOptions({ preset: 'low', seed: 11, html2mem: true }));
-    ok(rnd1.html2mem.key === rnd2.html2mem.key && rnd1.html === rnd2.html,
-      'html2memKey=0：同 seed 密钥与产物都相同（可复现构建）');
-    ok(rnd1.html2mem.key !== rnd3.html2mem.key && rnd1.html !== rnd3.html,
-      'html2memKey=0：不同 seed 密钥与产物都不同');
+    const rnd1 = obfuscateDocument(heSrc, obfuscateMod.resolveOptions({ preset: 'low', seed: 5, htmle: true }));
+    const rnd2 = obfuscateDocument(heSrc, obfuscateMod.resolveOptions({ preset: 'low', seed: 5, htmle: true }));
+    const rnd3 = obfuscateDocument(heSrc, obfuscateMod.resolveOptions({ preset: 'low', seed: 11, htmle: true }));
+    ok(rnd1.htmle.key === rnd2.htmle.key && rnd1.html === rnd2.html,
+      'htmleKey=0：同 seed 密钥与产物都相同（可复现构建）');
+    ok(rnd1.htmle.key !== rnd3.htmle.key && rnd1.html !== rnd3.html,
+      'htmleKey=0：不同 seed 密钥与产物都不同');
 
     // 往返：用 loader 的同一套算法解回，语义应与原文一致（DOM 值层面，不是逐字节）
     {
@@ -319,8 +319,8 @@ if (process.env.JSLB_SKIP_LIVE === '1') {
       const key = Number(/,K=(\d+),/.exec(onH.html)[1]);
       const open = Number(/,O=(\d+),/.exec(onH.html)[1]);
       const close = Number(/,C=(\d+)/.exec(onH.html)[1]);
-      const packed = h2mMod.untransform(Buffer.from(b64, 'base64').toString('binary'), key);
-      const vals = h2mMod.unpackValues(packed);
+      const packed = heMod.untransform(Buffer.from(b64, 'base64').toString('binary'), key);
+      const vals = heMod.unpackValues(packed);
       const re = new RegExp(String.fromCharCode(open) + '(\\d+)' + String.fromCharCode(close), 'g');
       // 值级往返：解出的值表必须与「原文里真正会出现在 DOM 中的值」逐项相等。
       // 不拿整份文档比——内联脚本本来就被混淆了，还原标记不会把它变回源码，那是既有功能、
@@ -344,31 +344,58 @@ if (process.env.JSLB_SKIP_LIVE === '1') {
     // pack/unpack 与 transform/untransform 自洽
     {
       const vals = ['a', '你好', '', 'x:y:z', '长'.repeat(200)];
-      ok(h2mMod.unpackValues(h2mMod.packValues(vals)).every((v, i) => v === vals[i]),
+      ok(heMod.unpackValues(heMod.packValues(vals)).every((v, i) => v === vals[i]),
         'packValues/unpackValues 往返一致（含空串与多字节）');
-      ok(h2mMod.untransform(h2mMod.transform('abc 你好 123', 0x9e3779b9), 0x9e3779b9) === 'abc 你好 123',
+      ok(heMod.untransform(heMod.transform('abc 你好 123', 0x9e3779b9), 0x9e3779b9) === 'abc 你好 123',
         'transform/untransform 互逆');
     }
 
     // 实体解码：未知实体与越界数值原样保留（不能猜错）
-    ok(h2mMod.decodeEntities('&amp;&#65;&#x4e2d;') === '&A中', '实体解码：命名/十进制/十六进制');
-    ok(h2mMod.decodeEntities('&unknownthing;') === '&unknownthing;', '未知实体原样保留');
-    ok(h2mMod.decodeEntities('&#999999999;') === '&#999999999;', '越界数值实体原样保留');
+    ok(heMod.decodeEntities('&amp;&#65;&#x4e2d;') === '&A中', '实体解码：命名/十进制/十六进制');
+    ok(heMod.decodeEntities('&unknownthing;') === '&unknownthing;', '未知实体原样保留');
+    ok(heMod.decodeEntities('&#999999999;') === '&#999999999;', '越界数值实体原样保留');
 
     // 全页只有标签与属性、没有可加密内容时，产物不变并给出提示
     {
       // 注意：属性同样会被加密，所以「无可加密内容」必须用连属性都没有的文档
       const bare = '<html><body><div></div><script>var q=1;</script></body></html>';
-      const r = obfuscateDocument(bare, obfuscateMod.resolveOptions({ preset: 'low', seed: 5, html2mem: true }));
+      const r = obfuscateDocument(bare, obfuscateMod.resolveOptions({ preset: 'low', seed: 5, htmle: true }));
       ok(!/atob\(/.test(r.html), '无可加密内容时不注入 loader');
-      ok(r.warnings.some((w) => /html2mem/.test(String(w))), '并给出「无可加密内容」提示', JSON.stringify(r.warnings));
+      ok(r.warnings.some((w) => /htmle/.test(String(w))), '并给出「无可加密内容」提示', JSON.stringify(r.warnings));
+    }
+
+    // 改名回归：2026-10-08 html2mem → htmle。旧名已被彻底移除，且**失效是静默的**
+    // （选项系统原样保留未知键、只是没人再读它，既不报错也无警告）。没有断言钉住的
+    // 后果是老调用方以为加密还开着，实际明文全在页面里——第二行更阴险：新开关配旧
+    // 密钥名，页面**确实加密了**，但密钥退回"由 seed 决定"，要跨种子稳定同一份密文
+    // 的人会拿到逐构建不同的密文。所以三种组合都要钉死。
+    {
+      const plain = '可见文本：你好世界';
+      const mk = (extra) => obfuscateDocument(heSrc, obfuscateMod.resolveOptions({
+        preset: 'low', seed: 5, ...extra,
+      }));
+
+      const oldOnly = mk({ html2mem: true, html2memKey: 424242 });
+      ok(oldOnly.html.includes(plain) && !oldOnly.htmle,
+        '旧名 html2mem 全用旧名 → 静默不生效（未加密、统计为空）',
+        'htmle=' + JSON.stringify(oldOnly.htmle));
+
+      const mixed = mk({ htmle: true, html2memKey: 424242 });
+      ok(mixed.htmle && mixed.htmle.key !== 424242,
+        '新开关配旧密钥名 → 加密生效但密钥退回由 seed 决定（不是填的 424242）',
+        'key=' + JSON.stringify(mixed.htmle && mixed.htmle.key));
+
+      const both = mk({ htmle: true, htmleKey: 424242 });
+      ok(both.htmle && both.htmle.key === 424242,
+        '新名 htmle + htmleKey → 固定密钥被采用',
+        'key=' + JSON.stringify(both.htmle && both.htmle.key));
     }
 
     // JS 输入（不是 HTML）不受影响
     {
-      const jsR = obfuscate('var a = 1; process.stdout.write(String(a));', { preset: 'low', seed: 5, html2mem: true });
-      ok(!/atob\(/.test(jsR.code), 'JS 输入不受 html2mem 影响');
-      ok(runNode(jsR.code, 'h2m-js.js').trim() === '1', 'JS 输入语义不变');
+      const jsR = obfuscate('var a = 1; process.stdout.write(String(a));', { preset: 'low', seed: 5, htmle: true });
+      ok(!/atob\(/.test(jsR.code), 'JS 输入不受 htmle 影响');
+      ok(runNode(jsR.code, 'he-js.js').trim() === '1', 'JS 输入语义不变');
     }
 
 
@@ -395,7 +422,7 @@ if (process.env.JSLB_SKIP_LIVE === '1') {
       ];
       for (const [label, src] of docs) {
         const r = obfuscateDocument(src, obfuscateMod.resolveOptions({
-          preset: 'low', seed: 5, html2mem: true, html2memKey: 424242,
+          preset: 'low', seed: 5, htmle: true, htmleKey: 424242,
         }));
         const out = r.html || '';
         const openS = tagCount(out, /<script>/g);
@@ -421,8 +448,8 @@ if (process.env.JSLB_SKIP_LIVE === '1') {
     // 界面元数据：guiOptions() 有两条来源（VALUE_OPTIONS 与 DEFAULTS+BOOL_OPTIONS 的旧表），
     // BOOL_OPTIONS 又是「DEFAULTS 里所有布尔」，所以任何既是布尔默认值又登记进
     // VALUE_OPTIONS 的选项都会被推两遍 → 界面上两个同名开关，其中一个显示原始键名、
-    // 还落在 BOOL_GROUPS 的默认组。html2mem 踩了这个坑（numberObfuscationMBA 早就在里面，
-    // 一直显示为原始键名没人当 bug 报）。这里钉住：键必须唯一，且 html2mem 要在 defense 组、
+    // 还落在 BOOL_GROUPS 的默认组。htmle 踩了这个坑（numberObfuscationMBA 早就在里面，
+    // 一直显示为原始键名没人当 bug 报）。这里钉住：键必须唯一，且 htmle 要在 defense 组、
     // 带中文标签与提示。
     {
       const opts = optionsMeta.guiOptions();
@@ -432,21 +459,21 @@ if (process.env.JSLB_SKIP_LIVE === '1') {
       ok(dupKeys.length === 0, 'guiOptions() 无重复键（界面不会渲染出两个同名控件）', dupKeys.join(', '));
       ok(counts.size === opts.length, '选项数 == 唯一键数', counts.size + ' vs ' + opts.length);
 
-      const h2mUi = opts.filter((o) => o.key === 'html2mem');
-      ok(h2mUi.length === 1, 'html2mem 在界面元数据里恰好一条', String(h2mUi.length));
-      ok(h2mUi[0] && h2mUi[0].group === 'defense', 'html2mem 归在 defense 组', h2mUi[0] ? h2mUi[0].group : '缺失');
-      ok(h2mUi[0] && h2mUi[0].kind === 'bool', 'html2mem 是布尔开关');
-      ok(h2mUi[0] && h2mUi[0].zh && h2mUi[0].zh !== 'html2mem', 'html2mem 有中文标签而非原始键名', h2mUi[0] ? h2mUi[0].zh : '');
-      ok(h2mUi[0] && h2mUi[0].en && h2mUi[0].en !== 'html2mem', 'html2mem 有英文标签');
+      const heUi = opts.filter((o) => o.key === 'htmle');
+      ok(heUi.length === 1, 'htmle 在界面元数据里恰好一条', String(heUi.length));
+      ok(heUi[0] && heUi[0].group === 'defense', 'htmle 归在 defense 组', heUi[0] ? heUi[0].group : '缺失');
+      ok(heUi[0] && heUi[0].kind === 'bool', 'htmle 是布尔开关');
+      ok(heUi[0] && heUi[0].zh && heUi[0].zh !== 'htmle', 'htmle 有中文标签而非原始键名', heUi[0] ? heUi[0].zh : '');
+      ok(heUi[0] && heUi[0].en && heUi[0].en !== 'htmle', 'htmle 有英文标签');
       // 提示里必须留着那几条诚实说明，不能被后来的人「精简」掉
-      ok(h2mUi[0] && /混淆不是保密/.test(h2mUi[0].hintZh || ''), '提示写明「混淆不是保密」');
-      ok(h2mUi[0] && /混淆不是保密|obfuscation, not secrecy/.test(h2mUi[0].hintEn || ''), '英文提示同样写明不是保密');
-      ok(h2mUi[0] && /没有正文|blank page/.test(h2mUi[0].hintZh || ''), '提示写明 loader 执行前没有正文');
-      ok(h2mUi[0] && /href/.test(h2mUi[0].hintZh || '') && /src/.test(h2mUi[0].hintZh || ''), '提示写明 href/src 等例外');
+      ok(heUi[0] && /混淆不是保密/.test(heUi[0].hintZh || ''), '提示写明「混淆不是保密」');
+      ok(heUi[0] && /混淆不是保密|obfuscation, not secrecy/.test(heUi[0].hintEn || ''), '英文提示同样写明不是保密');
+      ok(heUi[0] && /没有正文|blank page/.test(heUi[0].hintZh || ''), '提示写明 loader 执行前没有正文');
+      ok(heUi[0] && /href/.test(heUi[0].hintZh || '') && /src/.test(heUi[0].hintZh || ''), '提示写明 href/src 等例外');
 
-      const keyUi = opts.filter((o) => o.key === 'html2memKey');
-      ok(keyUi.length === 1, 'html2memKey 在界面元数据里恰好一条', String(keyUi.length));
-      ok(keyUi[0] && keyUi[0].kind === 'int' && keyUi[0].group === 'defense', 'html2memKey 是 defense 组的整数项');
+      const keyUi = opts.filter((o) => o.key === 'htmleKey');
+      ok(keyUi.length === 1, 'htmleKey 在界面元数据里恰好一条', String(keyUi.length));
+      ok(keyUi[0] && keyUi[0].kind === 'int' && keyUi[0].group === 'defense', 'htmleKey 是 defense 组的整数项');
 
       // 旧表那条分支不能把 VALUE_OPTIONS 里的键再吐一遍
       const stillLegacy = opts.filter((o) => o.key === 'numberObfuscationMBA');
@@ -454,18 +481,18 @@ if (process.env.JSLB_SKIP_LIVE === '1') {
         '既有的 numberObfuscationMBA 重复也消了（此前一直显示原始键名）',
         stillLegacy.map((o) => o.group + '/' + o.zh).join(', '));
     }
-// HTML2MEM 的 JS 侧：嵌在 JS 里的 HTML 字面量。
+// HTMLE 的 JS 侧：嵌在 JS 里的 HTML 字面量。
     //
     // 与上面文档模式那节是两回事：那边改的是整篇 HTML 的文本与属性值、靠 loader 遍历
     // DOM 还原；这边改的是代码里的字符串/模板字面量，靠注入的解码器拼回字符串。
     // 关键差别：这边**不需要 DOM**，所以产物在 Node / worker 里照样能跑。
-    section('HTML2MEM（JS 内嵌 HTML）');
+    section('HTMLE（JS 内嵌 HTML）');
     {
       const lit = (src, extra) => {
         const r = obfuscate(src, Object.assign(
-          { preset: 'low', seed: 5, html2mem: true, html2memKey: 424242, selfCheck: false },
+          { preset: 'low', seed: 5, htmle: true, htmleKey: 424242, selfCheck: false },
           extra || {}));
-        const st = r.stats.find((x) => x.pass === 'html2memJs');
+        const st = r.stats.find((x) => x.pass === 'htmleJs');
         return { r, pass: st ? st.result : null };
       };
       const touched = (src, extra) => {
@@ -481,13 +508,13 @@ if (process.env.JSLB_SKIP_LIVE === '1') {
           'globalThis.__b = `<p>机密模板文本 ${u.name} 结尾</p>`;',
         ].join('\n');
         const r = obfuscate(src, {
-          preset: 'low', seed: 5, html2mem: true, html2memKey: 424242, selfCheck: false,
+          preset: 'low', seed: 5, htmle: true, htmleKey: 424242, selfCheck: false,
         });
         ok(!r.code.includes('机密正文内容'), 'JS 侧：HTML 文本不留明文');
         ok(!r.code.includes('secret-value-123'), 'JS 侧：HTML 属性值不留明文');
         ok(!r.code.includes('机密模板文本'), 'JS 侧：模板里的 HTML 文本不留明文');
         ok(/TextDecoder/.test(r.code) && /atob\(/.test(r.code), 'JS 侧：注入了解码器');
-        const st = r.stats.find((x) => x.pass === 'html2memJs');
+        const st = r.stats.find((x) => x.pass === 'htmleJs');
         ok(!!st && st.result && st.result.templates > 0, 'JS 侧：pass 报告了模板与值数',
           JSON.stringify(st && st.result));
       }
@@ -530,7 +557,7 @@ if (process.env.JSLB_SKIP_LIVE === '1') {
         const leak = [];
         for (const [n, s] of IS_HTML) {
           const r = obfuscate(s, {
-            preset: 'low', seed: 5, html2mem: true, html2memKey: 424242, selfCheck: false,
+            preset: 'low', seed: 5, htmle: true, htmleKey: 424242, selfCheck: false,
           });
           if (r.code.includes('内容') || r.code.includes('粗体') || r.code.includes('段落')) {
             leak.push(n);
@@ -569,7 +596,7 @@ if (process.env.JSLB_SKIP_LIVE === '1') {
           '<ul><li>a</li><li>b</li></ul>',
         ];
         const r = obfuscate(src, {
-          preset: 'low', seed: 5, html2mem: true, html2memKey: 424242, selfCheck: false,
+          preset: 'low', seed: 5, htmle: true, htmleKey: 424242, selfCheck: false,
         });
         // harness 里 document 在 Node 下不存在，补个最小桩
         const out = runNode('var document={getElementById:function(){return {};}};\n'
@@ -595,26 +622,26 @@ if (process.env.JSLB_SKIP_LIVE === '1') {
 
       // --- 带标签的模板：项目既有缺陷，不因本功能而恶化 ---
       {
-        // 实测 `html\`…\`` 在开不开 html2mem 时都抛同一个错（generator._taggedTemplate
+        // 实测 `html\`…\`` 在开不开 htmle 时都抛同一个错（generator._taggedTemplate
         // 读 node.quasis 时 undefined），是混淆器本来就有的问题，不在这里顺手修。
         const src = 'var t = html`<div class="a">x</div>`;';
         let offErr = null;
         let onErr = null;
         try { obfuscate(src, { preset: 'low', seed: 5, selfCheck: false }); } catch (e) { offErr = e; }
         try {
-          obfuscate(src, { preset: 'low', seed: 5, html2mem: true, selfCheck: false });
+          obfuscate(src, { preset: 'low', seed: 5, htmle: true, selfCheck: false });
         } catch (e) { onErr = e; }
-        ok(!!offErr, 'JS 侧：带标签模板的崩溃是既有的（不开 html2mem 也一样）');
+        ok(!!offErr, 'JS 侧：带标签模板的崩溃是既有的（不开 htmle 也一样）');
         ok(!!onErr && !!offErr && String(onErr.message) === String(offErr.message),
-          'JS 侧：开 html2mem 抛的是同一个错（未引入新问题）',
+          'JS 侧：开 htmle 抛的是同一个错（未引入新问题）',
           onErr ? String(onErr.message).slice(0, 70) : '没抛');
       }
     }
-// 档位闸门：html2mem 是 Plus 及以上的能力（Free 不给）。
+// 档位闸门：htmle 是 Plus 及以上的能力（Free 不给）。
     // 三个容易踩的点，这里都钉住：
     //   ① 闸门约束的选项必须存在于**每个**预设里，否则 plan.js 的 assertConsistent()
-    //      在加载期就抛「预设 low 达不到闸门要求项 html2mem」；
-    //   ② html2memKey 刻意**不**加闸门——它是附属项，没 html2mem 时本就不起作用，
+    //      在加载期就抛「预设 low 达不到闸门要求项 htmle」；
+    //   ② htmleKey 刻意**不**加闸门——它是附属项，没 htmle 时本就不起作用，
     //      单独拦它会让人以为能单独用；
     //   ③ 闸门在 free 上是 false（挡），plus 及以上**不设**该键（放行），与 antiLLM 同写法。
     {
@@ -634,24 +661,24 @@ if (process.env.JSLB_SKIP_LIVE === '1') {
       // 这个字段名不一致是既有的（describe 用 name、gate 读 plan），不是本次引入的。
       const ent = (n) => Object.assign(plan2.describe(n), { plan: n });
 
-      // ① 四个预设都含 html2mem，且默认 false（新功能不改变默认产物形态）
+      // ① 四个预设都含 htmle，且默认 false（新功能不改变默认产物形态）
       {
-        const missing = Object.keys(PRESETS2).filter((k) => !Object.prototype.hasOwnProperty.call(PRESETS2[k], 'html2mem'));
-        ok(missing.length === 0, '所有预设都定义了 html2mem（否则加载期断言会抛）', missing.join(', '));
-        const notFalse = Object.keys(PRESETS2).filter((k) => PRESETS2[k].html2mem !== false);
-        ok(notFalse.length === 0, '所有预设默认 html2mem=false', notFalse.join(', '));
+        const missing = Object.keys(PRESETS2).filter((k) => !Object.prototype.hasOwnProperty.call(PRESETS2[k], 'htmle'));
+        ok(missing.length === 0, '所有预设都定义了 htmle（否则加载期断言会抛）', missing.join(', '));
+        const notFalse = Object.keys(PRESETS2).filter((k) => PRESETS2[k].htmle !== false);
+        ok(notFalse.length === 0, '所有预设默认 htmle=false', notFalse.join(', '));
       }
 
       // ② Free 挡住
       {
       const free = ent('free');
-        const r = gate2.checkOptions({ html2mem: true }, free);
-        ok(!r.ok, 'Free 开启 html2mem 被拒');
+        const r = gate2.checkOptions({ htmle: true }, free);
+        ok(!r.ok, 'Free 开启 htmle 被拒');
         ok(r.kind === 'options', '拒绝原因是 options 而非预设档', r.kind);
-        ok(r.hits && r.hits[0] && r.hits[0].key === 'html2mem', '命中的键是 html2mem',
+        ok(r.hits && r.hits[0] && r.hits[0].key === 'htmle', '命中的键是 htmle',
           r.hits && r.hits[0] ? r.hits[0].key : '无');
         ok(r.hits && r.hits[0] && r.hits[0].kind === 'bool', '按布尔项判定');
-        ok(gate2.checkOptions({ html2mem: false }, free).ok, 'Free 关闭 html2mem 不受影响');
+        ok(gate2.checkOptions({ htmle: false }, free).ok, 'Free 关闭 htmle 不受影响');
         ok(gate2.checkOptions({}, free).ok, 'Free 不传该选项也不受影响');
       }
 
@@ -661,11 +688,11 @@ if (process.env.JSLB_SKIP_LIVE === '1') {
         const blocked = [];
         for (const n of order) {
           if (n === 'free') continue;
-          if (!gate2.checkOptions({ html2mem: true }, ent(n)).ok) blocked.push(n);
+          if (!gate2.checkOptions({ htmle: true }, ent(n)).ok) blocked.push(n);
         }
-        ok(blocked.length === 0, 'Plus 及以上每一档都可开启 html2mem', blocked.join(', '));
-        ok(gate2.checkOptions({ html2memKey: 12345 }, ent('free')).ok,
-          'html2memKey 不设闸门（附属项，单独限制无意义）');
+        ok(blocked.length === 0, 'Plus 及以上每一档都可开启 htmle', blocked.join(', '));
+        ok(gate2.checkOptions({ htmleKey: 12345 }, ent('free')).ok,
+          'htmleKey 不设闸门（附属项，单独限制无意义）');
       }
 
       // ④ 闸门方向：低档不比高档宽
@@ -675,8 +702,8 @@ if (process.env.JSLB_SKIP_LIVE === '1') {
         for (let i = 0; i < order.length - 1; i++) {
           const lo = PLANS2[order[i]];
           const hi = PLANS2[order[i + 1]];
-          if (plan2.gateAllows(hi.gates.html2mem, true) === false
-            && plan2.gateAllows(lo.gates.html2mem, true) === true) {
+          if (plan2.gateAllows(hi.gates.htmle, true) === false
+            && plan2.gateAllows(lo.gates.htmle, true) === true) {
             wrong.push(order[i] + '→' + order[i + 1]);
           }
         }
@@ -686,10 +713,10 @@ if (process.env.JSLB_SKIP_LIVE === '1') {
       // ⑤ 拦截文案要带选项名与升级方向
       {
         const free = ent('free');
-        const hit = gate2.violationsOf({ html2mem: true }, free)[0];
+        const hit = gate2.violationsOf({ htmle: true }, free)[0];
         ok(!!hit, 'violationsOf 能列出该违规项');
         const text = hit ? gate2.violationText(hit, free) : '';
-        ok(/html2mem/.test(text), '拦截文案含选项名', text.slice(0, 60));
+        ok(/htmle/.test(text), '拦截文案含选项名', text.slice(0, 60));
         const hint = gate2.upgradeHint(free);
         ok(typeof hint === 'string' && hint.length > 0, '给出升级提示', hint.slice(0, 60));
       }

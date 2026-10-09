@@ -61,17 +61,17 @@ export default {
       "wasmInterpreter": false,
       "stringScatter": false,
       "antiLLM": false,
-      // HTML2MEM（HTML 文本加密 / JS 内嵌 HTML）：Plus 及以上可用。
+      // HTMLE（HTML 文本加密 / JS 内嵌 HTML）：Plus 及以上可用。
       //
       // 为什么门槛设在 Plus 而不是更低：它要把产物内容换成密文并注入运行期解码器，
       // 属于「会明显改变产物形态」的功能，与 antiLLM / debugProtection 同级；
       // Free 档只给 low 预设与基础防护，不开这一档。
       //
-      // html2memKey（固定密钥）刻意不加闸门：它是 html2mem 的附属项，单独限制没有
-      // 意义（没有 html2mem 时它本来就不起作用），加了反而会让人以为能单独用。
-      // 注意闸门只挂在 html2mem 这一个键上，Plus 及以上没设这个键 = 全放行，
+      // htmleKey（固定密钥）刻意不加闸门：它是 htmle 的附属项，单独限制没有
+      // 意义（没有 htmle 时它本来就不起作用），加了反而会让人以为能单独用。
+      // 注意闸门只挂在 htmle 这一个键上，Plus 及以上没设这个键 = 全放行，
       // 与 antiLLM 的写法一致。
-      "html2mem": false,
+      "htmle": false,
       "rtDepth": 1,
       "shellDepth": 1,
       "shellForm": [

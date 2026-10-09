@@ -20,7 +20,7 @@ import controlFlow from './passes/controlFlow.js';
 import objectKeys from './passes/objectKeys.js';
 import numberObf from './passes/numberObf.js';
 import templateToConcat from './passes/templateToConcat.js';
-import html2memJs from './passes/html2memJs.js';
+import htmleJs from './passes/htmleJs.js';
 import stringArray from './passes/stringArray.js';
 import logicalExpr from './passes/logicalExpr.js';
 import conditionObf from './passes/conditionObf.js';
@@ -512,13 +512,13 @@ function obfuscate(code, userOptions) {
   // 对象键编码
   if (options.objectKeyEncoding) applyPass(objectKeys, 'objectKeys');
 
-  // HTML2MEM（JS 侧）：把嵌在 JS 里的 HTML 字面量加密成密文 + 注入解码器。
+  // HTMLE（JS 侧）：把嵌在 JS 里的 HTML 字面量加密成密文 + 注入解码器。
   //
   // 必须排在 templateToConcat 与 stringArray 之前，两个原因：
   //   - stringArray 会把字符串字面量收进池并换成池访问调用，本 pass 就认不出 HTML 了；
   //   - templateToConcat 会把模板拆成 `"a"+x+"b"`，插值模板的片段边界也就没了。
   // 排在它俩前面，模板还保持原样，片段边界完整。
-  if (options.html2mem) applyPass(html2memJs, 'html2memJs');
+  if (options.htmle) applyPass(htmleJs, 'htmleJs');
 
   // 模板串降级，先拆开，片段才能进 stringArray
   if (options.templateToConcat) applyPass(templateToConcat, 'templateToConcat');
@@ -806,7 +806,7 @@ function obfuscate(code, userOptions) {
     stats.push({ pass: 'guard', result: { salt: bw.salt, wrapped: bw.wrapped } });
   }
 
-  // HTML2MEM（JS 侧）的解码器：源码级前插，放在引导层之后、载荷之前。
+  // HTMLE（JS 侧）的解码器：源码级前插，放在引导层之后、载荷之前。
   //
   // 为什么不在 pass 里就地往 AST 顶部插变量：那样子树会跟着 mangle 一起被改名，而这里
   // 前插的是已生成的源码字符串、不经过 AST，两边会对不上。所以走和 guardLayer 一样
@@ -816,9 +816,9 @@ function obfuscate(code, userOptions) {
   // 位置必须在 selfCheck 之后：前插的是源码、AST 里没有对应声明，此刻再跑绑定检查
   // 会把解码器的调用点判成「未绑定引用」而误报失败（pass 内已把它登记进
   // options.extraGlobals 供 validateReferences 放行，两处缺一不可）。
-  if (ctx.html2memJsSource) {
-    finalCode = ctx.html2memJsSource + '\n' + finalCode;
-    stats.push({ pass: '·html2memJs', result: ctx.html2memJs });
+  if (ctx.htmleJsSource) {
+    finalCode = ctx.htmleJsSource + '\n' + finalCode;
+    stats.push({ pass: '·htmleJs', result: ctx.htmleJs });
   }
 
   // hashbang 必须晚于套壳（eval 里出现 #! 会 SyntaxError）

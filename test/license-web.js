@@ -70,7 +70,7 @@ section('端到端激活（v5 卡密）');
 //
 // 背景（2026-10-01 线上实测）：存储键按请求设备码隔离（scopedKey），无设备头时
 // 回落到裸键。暖实例上 restore() 会读到别的租户激活过的记录——实测匿名请求拿到了
-// pack100 权益，Free 卡的闸门全被绕过（Free+html2mem 照样 200）。
+// pack100 权益，Free 卡的闸门全被绕过（Free+htmle 照样 200）。
 //
 // 本节钉住两道防线（都是 server/handler.js handleObfuscate 在用）：
 //   ① restoredMatchesKey：复用的记录必须与出示的卡密是同一张卡（比卡密编号）；

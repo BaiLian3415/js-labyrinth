@@ -285,13 +285,13 @@ export default {
   // 构建期会改写成绝对地址。形如 'file:///D:/app/' 或 'https://cdn/app/'。
   // 只对 ESM 载荷有意义；非 ESM 忽略。
   "moduleBase": "",
-  // HTML2MEM：把 HTML 的文本节点与属性值加密成密文，运行期由 loader 解回 DOM。
+  // HTMLE：把 HTML 的文本节点与属性值加密成密文，运行期由 loader 解回 DOM。
   // 只在 HTML 输入时起作用（JS 输入没有这一步）。这是混淆不是保密——密钥和
   // 解密逻辑都在页面里，打开开发者工具的人照样能 dump 出还原后的 DOM。
-  "html2mem": false,
+  "htmle": false,
   // 固定密钥。0 = 由种子决定，所以同 seed 天然可复现；填具体值则无视种子，
   // 适合需要跨种子保持同一份密文形态的场景。
-  "html2memKey": 0,
+  "htmleKey": 0,
   "stringScatter": false,
   "antiLLM": false
 };

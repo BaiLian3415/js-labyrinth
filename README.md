@@ -236,7 +236,7 @@ curl -s -X POST https://<host>/api/obfuscate \
 
 ### JS 内嵌 HTML（同一个开关）
 
-同一个 `html2mem` 也管**嵌在 JS 代码里的 HTML**：`innerHTML = "<div>…"`、`document.write`、
+同一个 `htmle` 也管**嵌在 JS 代码里的 HTML**：`innerHTML = "<div>…"`、`document.write`、
 `insertAdjacentHTML`、`$(`…`)` 这些位置的字符串，以及带插值的模板 `<div>${x}</div>`，都会被换成
 一个运行期解码调用，产物里只剩密文。
 
@@ -252,7 +252,7 @@ curl -s -X POST https://<host>/api/obfuscate \
 执行顺序上它排在 `templateToConcat` 与 `stringArray` **之前**：`stringArray` 会把字面量收进池、
 `templateToConcat` 会把模板拆成 `"a"+x+"b"`，两者都会让 HTML 认不出来。
 
-### HTML Encrypt（`html2mem`）
+### HTML Encrypt（`htmle`）
 
 把 HTML 的**文本节点与属性值**（`href` / `src` / `integrity` / `nonce` 除外）加密成一段密文，页面里只留密文 + 一个还原 loader。
 运行期 loader 解密进内存，按占位标记把 DOM 还原成与原文语义相同的样子。产物里不再有
@@ -260,12 +260,39 @@ curl -s -X POST https://<host>/api/obfuscate \
 
 | 项 | 说明 |
 | --- | --- |
-| 选项 | `html2mem`（开关）、`html2memKey`（0 = 由 seed 决定 / 填值 = 无视 seed） |
+| 选项 | `htmle`（开关）、`htmleKey`（0 = 由 seed 决定 / 填值 = 无视 seed） |
 | 作用面 | **文本节点 + 属性值**；`script` / `style` / `noscript` / `template` 的内容不碰 |
 | 保留原样 | `href` / `src` / `integrity` / `nonce`、无值属性（`disabled`）、`<style>` 内容、注释、doctype |
 | 保留原因 | 上面这几个属性在 **HTML 解析阶段**就被浏览器读走（发起请求、校验哈希、对照 CSP），加密会让资源加载失败；`<style>` 内容是样式表，混淆它没有意义（内联脚本本来就照常混淆） |
 | 产物新增 | `</body>` 前一段 `<script>` loader（约 1 KB）+ 一段 base64 密文 |
-| 统计 | 返回值的 `html2mem`：`values` 值数、`bytes` 密文字节、`key` 本次密钥 |
+| 统计 | 返回值的 `htmle`：`values` 值数、`bytes` 密文字节、`key` 本次密钥 |
+
+> **2026-10-08 改名（旧名 `html2mem` 已移除）**：`html2mem` → `htmle`、`html2memKey` →
+> `htmleKey`，统计键 `html2mem` → `htmle`，JS 侧 pass 名 `html2memJs` → `htmleJs`，
+> 源码文件 `src/html2mem.js` → `src/htmle.js`、`src/passes/html2memJs.js` →
+> `src/passes/htmleJs.js`。改名动的是**文件名与选项名**，功能与密文格式一字未改。
+> 动机是**文件名**：`html2mem` 会原样出现在 `dist/src/` 的文件列表里，`html2mem.js`
+> 这个名字自解释程度极高，枚举一下静态资源就能认出工具家族；`htmle.js` 明显弱得多。
+> 改完全量核对：`dist/` 里 `html2mem` 零残留（文件名与内容都是）。
+>
+> 但要说清**这次改名没做到什么**：选项键 `htmle` 在 `dist/` 里仍是**明文**——
+> `options.js` / `presets.js` / `plans.js` / `options-meta.js` 属于故意公开的模块
+> （未激活界面要靠它们渲染激活表单，见 `tools/build/gate-policy.js` 的说明），它们的
+> `export default {...}` 是明文，所以 `htmle` / `htmleKey` 照样读得到。受保护的
+> `htmle.js` 只以 stub 形式下发（487 字节，导出名单明文、实现体在加密载荷里）。
+> 这一项本来就有约一百个同类暴露（`stringArrayRotate`、`antiCDP`…），不是新问题，
+> 也不是这次改动引入的；要根治得把选项元数据也纳入 materialize 机制，是另一件事。
+>
+> **这是破坏性变更，且失效是静默的**（选项系统会原样保留未知键、只是没人再读它，
+> 所以既不报错也没有警告）。实测三种漏改组合：
+>
+> | 漏改 | 表现 |
+> | --- | --- |
+> | `html2mem: true`（全用旧名） | 开关失效，页面**完全没加密**、明文照旧。页面上看不出异常 |
+> | `htmle: true` + 旧 `html2memKey` | **页面加密了，但密钥变成"由 seed 决定"**，不是你要的固定密钥。要跨种子稳定同一份密文的人会拿到逐构建不同的密文 |
+> | 只读 `result.htmle` 统计 | 恒为 `null`，"看起来像没加密过" |
+>
+> 沿用旧名的地方请自行改键名。若要留一层兼容，得先给选项系统加别名映射（当前没有）。
 
 **这是混淆，不是保密。** 密钥与解密逻辑都在页面里，打开开发者工具的人照样能 dump 出还原后
 的 DOM。它挡的是「随手看源码 / 静态扫描」，不是「有决心的人」。要真保密只能放服务端。
@@ -274,7 +301,7 @@ curl -s -X POST https://<host>/api/obfuscate \
 的 HTML 与源码不是逐字节相同（因为加密的是**解码后的值**，`&amp;` 还原成 `&`），
 渲染结果一致。
 
-实现上有两个容易做错的地方，`src/html2mem.js` 都处理了并有断言：
+实现上有两个容易做错的地方，`src/htmle.js` 都处理了并有断言：
 
 1. **加密的是解码后的值**。源码写 `&amp;`、DOM 里是 `&`；加密 `&amp;` 再用
    `textContent` 写回，页面就会显示字面的 `&amp;`。所以取值时先解实体，写回时用
@@ -587,10 +614,10 @@ parser 与 generator 也不拦。
 `random`、关掉碎片化与 Anti-LLM；Plus 可以把外壳形态切成 `jsfuck`、
 把命名策略切成 `short`、开碎片化与 Anti-LLM；碎片化与 Anti-LLM 之外的更高强度
 组合留给 Team/Business。
-**HTML Encrypt**（`html2mem`）同样受闸门约束：**Free 不可用，Plus 及以上可用**。它会把产物内容换成密文
+**HTML Encrypt**（`htmle`）同样受闸门约束：**Free 不可用，Plus 及以上可用**。它会把产物内容换成密文
 并注入运行期解码器，明显改变产物形态，与 `antiLLM`、`debugProtection` 同级。配套的
-`html2memKey`（固定密钥）**刻意不加闸门**——它是 `html2mem` 的附属项，没有 `html2mem` 时本就不起作用，
-单独限制反而会让人以为能单独用。四个预设里 `html2mem` 都默认 `false`，新功能不改变默认产物形态。
+`htmleKey`（固定密钥）**刻意不加闸门**——它是 `htmle` 的附属项，没有 `htmle` 时本就不起作用，
+单独限制反而会让人以为能单独用。四个预设里 `htmle` 都默认 `false`，新功能不改变默认产物形态。
 注意：加闸门必须先让该选项存在于**所有**预设里，否则 `plan.js` 的 `assertConsistent()` 在加载期
 就会抛「预设 low 达不到闸门要求项」——这条是硬拦的，写闸门时先改 `presets.js`。
 

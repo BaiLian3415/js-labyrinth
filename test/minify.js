@@ -309,7 +309,7 @@ section('命名策略（nameStyle）与动态 import');
     ok(!mine(cjk.code, ['zebra', 'quokka']).length, '中文命名打开时词表不参与改名',
       mine(cjk.code, ['zebra', 'quokka']).join(' '));
     // 元数据：显隐规则 + 闸门口径。free 档锁死 nameStyle=Dictionary 不可选，
-    // 词表随之没有意义，所以与 chineseDictionary 一样不加闸门（与 html2memKey 同一口径）
+    // 词表随之没有意义，所以与 chineseDictionary 一样不加闸门（与 htmleKey 同一口径）
     ok(optionsMeta.VALUE_OPTIONS.nameDictionary.showWhen
       && optionsMeta.VALUE_OPTIONS.nameDictionary.showWhen.key === 'nameStyle'
       && optionsMeta.VALUE_OPTIONS.nameDictionary.showWhen.equals === 'Dictionary',

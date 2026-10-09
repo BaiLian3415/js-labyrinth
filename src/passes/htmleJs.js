@@ -1,10 +1,11 @@
 /**
- * HTML2MEM（JS 侧）：把嵌在 JS 里的 HTML 也加密成密文，运行期由注入的解码器还原。
+ * HTMLE（JS 侧）：把嵌在 JS 里的 HTML 也加密成密文，运行期由注入的解码器还原。
  *
- * 与文档模式（src/html2mem.js，改的是整篇 HTML 的文本节点与属性值）的分工：
+ * 与文档模式（src/htmle.js，改的是整篇 HTML 的文本节点与属性值）的分工：
  *   - 文档模式：输入本身是 HTML，加密文本节点 + 属性值，还原靠 loader 遍历 DOM。
  *   - 本 pass：输入是 JS，HTML 以字符串/模板字面量存在于代码里。把这样的字面量换成
- *     一个运行期解码调用 `_h2m(N)`，N 指向本文件专属的密文表。
+ *     一个运行期解码调用 `DEC(N)`，N 指向本文件专属的密文表。DEC 是**占位写法**：
+ *     注入名逐构建随机（见阶段三的取名循环），产物里从不出现 `DEC` 这个串。
  *
  * 这里不需要 DOM：解码器只做一件事——按标记把模板里的占位换回值、返回字符串。它不
  * 碰 document，所以产物在 Node / worker / ServiceWorker 里照样能跑。这一点与文档模式
@@ -27,7 +28,8 @@
  * 字面量），那是另一种改法，不在这里顺手做。用普通模板 + innerHTML 赋值同样能覆盖
  * 绝大多数写法。
  *
- * 插值模板（`<div>${x}</div>`）逐个静态片段加密，重建成 `_h2m(0)+x+_h2m(1)` 的拼接。
+ * 插值模板（`<div>${x}</div>`）逐个静态片段加密，重建成 `DEC(0)+x+DEC(1)` 的拼接（DEC
+ * 同上，是随机注入名的占位写法）。
  * 片段本身加密不出东西的（纯空白、单个闭合标签）保持原样，不为了统一而套一层空调用。
  *
  * 必须排在 stringArray 之前（obfuscate.js 里有注释说明）：它把字面量整个换掉，
@@ -40,9 +42,9 @@
 import t from '../ast/types.js';
 import randUtil from '../utils/rand.js';
 const { randInt, randHex } = randUtil;
-import h2m from '../html2mem.js';
+import he from '../htmle.js';
 
-const { scramble, pickMarkers, packValues, crypt } = h2m;
+const { scramble, pickMarkers, packValues, crypt } = he;
 
 /**
  * 认得的 HTML 标签。刻意只收标准标签：自定义元素走「DOM 赋值处」那条路，
@@ -182,8 +184,8 @@ function buildDecoder({ name, blob, key, open, close, templateCount }) {
  * @param {object} ctx
  * @returns {{literals:number,values:number,bytes:number}|{skipped:string}}
  */
-export default function html2memJs(ast, options, ctx) {
-  if (!options.html2mem) return { skipped: 'off' };
+export default function htmleJs(ast, options, ctx) {
+  if (!options.htmle) return { skipped: 'off' };
 
   const { traverse } = ctx;
   const used = ctx.usedNames || (ctx.usedNames = new Set());
@@ -329,7 +331,7 @@ export default function html2memJs(ast, options, ctx) {
   // ---- 打包与注入 ----
   // 模板在前、值在后，解码端靠 N 切分
   const packed = packValues(templates.concat(values));
-  const key = (options.html2memKey >>> 0) || ((randInt(0, 0xffffffff) >>> 0) || 1);
+  const key = (options.htmleKey >>> 0) || ((randInt(0, 0xffffffff) >>> 0) || 1);
   const cipher = crypt(packed, key);
   const blob = btoa(cipher);
 
@@ -340,10 +342,10 @@ export default function html2memJs(ast, options, ctx) {
   if (!Array.isArray(options.extraGlobals)) options.extraGlobals = [];
   if (options.extraGlobals.indexOf(name) < 0) options.extraGlobals.push(name);
 
-  ctx.html2memJs = {
+  ctx.htmleJs = {
     name, literals, templates: templates.length, values: values.length, bytes: cipher.length,
   };
-  ctx.html2memJsSource = buildDecoder({
+  ctx.htmleJsSource = buildDecoder({
     name, blob, key, open: mk.open.charCodeAt(0), close: mk.close.charCodeAt(0),
     templateCount: templates.length,
   });
