@@ -1,6 +1,16 @@
 export default {
   "compact": true,
   "escapeNonAscii": true,
+  // 产物最终跑在什么宿主里。'auto'（默认）按源码结构特征判断；判不准时用显式值。
+  //
+  // 为什么要显式存在：`auto` 认 Cloudflare Worker 靠的是 `export default {fetch}`
+  // 这类**结构性**特征，自定义写法（把 handler 拼出来、或用别的框架约定）会认不出，
+  // 于是壳照套、产物在 workerd 上部署即抛。显式声明是这类场景的兜底。
+  //
+  // 认成受限目标时会**强制关掉跑不了的形态并告警**（不是默默关）：壳（eval 与
+  // 动态 import 双双被禁）、两个 wasm 档（instantiate(buffer) 被禁）、以及
+  // debugProtection / antiCDP（该宿主时钟冻结，时序哨兵静默失效）。见 target-runtime.js。
+  "target": "auto",
   // AST 简化（simplify）：混淆前对用户代码做常量折叠 / 死代码消除 / 空语句
   // 清除 / 声明合并，缩小产物。默认关（预设不动，避免改既有产物基线），
   // Paid 档（plus+）可显式开启；free 档闸门锁死 false。

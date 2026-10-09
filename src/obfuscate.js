@@ -39,6 +39,9 @@ import integrityCheck from './passes/integrityCheck.js';
 import shellWrap from './passes/shell.js';
 import bannerMod from './passes/banner.js';
 import platform from './platform.js';
+import {
+  resolveTarget, forbiddenShapes, isClockFrozen, profileOf,
+} from './target-runtime.js';
 import builtinLower from './ast/builtin-lower.js';
 import builtinUpper from './ast/builtin-upper.js';
 /**
@@ -411,6 +414,34 @@ function obfuscate(code, userOptions) {
   // 解析后的 AST 还没被任何 pass 碰过，是唯一可靠的判定时机。
   const sourceIsModule = detectModuleSource(ast, traverse);
 
+  // 目标运行时定档与「禁用什么」的处理。必须在任何 pass 之前——壳与 wasm 都是
+  // 靠选项开关生效的，等它们跑完再想关就来不及了。
+  //
+  // 为什么不能默默关：这些形态在受限宿主里是**抛错**级别的（workerd 禁用 eval 与
+  // new Function、只允许部署期静态 import）。默默关掉等于用户以为保护着、实际没有；
+  // 更糟的是今天的状态——根本不关，于是 Worker 用户拿到一份 434 KB、部署即抛的产物。
+  // 所以两条一起做：关掉 + 在 warnings 里点名说清关了什么、为什么。
+  const target = resolveTarget(options.target, code);
+  const forbidden = forbiddenShapes(target);
+  const suppressedByTarget = [];
+  if (forbidden.some((f) => f.key === 'runtimeEval') && options.shell) {
+    options.shell = false;
+    suppressedByTarget.push('shell');
+  }
+  if (forbidden.some((f) => f.key === 'wasmFromBuffer')) {
+    // 两个 wasm 档都从 buffer 编译，一律关。内核档也一样：它把字节码搬进模块，
+    // 模块仍是 buffer 编译出来的。
+    if (options.wasm) { options.wasm = false; suppressedByTarget.push('wasm'); }
+    if (options.wasmInterpreter) { options.wasmInterpreter = false; suppressedByTarget.push('wasmInterpreter'); }
+  }
+  // 时钟冻结：基于 Date.now() 差值的哨兵会**静默失效**（差值恒 0，阈值永不成立）。
+  // 不是崩溃，是保护悄悄消失，所以也要点名。
+  const clockFrozen = isClockFrozen(target);
+  if (clockFrozen) {
+    if (options.debugProtection) { options.debugProtection = false; suppressedByTarget.push('debugProtection'); }
+    if (options.antiCDP) { options.antiCDP = false; suppressedByTarget.push('antiCDP'); }
+  }
+
   const tNames = platform.nowMs();
   const usedNames = new Set();
   traverse(ast, {
@@ -461,6 +492,19 @@ function obfuscate(code, userOptions) {
   // 构建期警示（不阻断流程，但要传到界面/CLI）。目前只有一条：外壳与不混淆名单
   // 互锁时点名跳过原因，避免用户以为名单没生效。
   const warnings = [];
+
+  // 目标受限导致的降级：逐项点名，别让用户以为保护着。这里必须**说清关了什么、
+  // 为什么**，否则用户只会看到"我的保护怎么没了"，而真正的原因（宿主不支持）
+  // 是最有价值的那部分信息。
+  if (suppressedByTarget.length > 0) {
+    const why = forbidden.map((f) => f.why);
+    const clockWhy = '该宿主的 Date.now()/performance.now() 不随代码执行推进，基于时间差值的哨兵会静默失效';
+    warnings.push(msg('warnTargetSuppressed', {
+      target: profileOf(target).display,
+      list: suppressedByTarget.join(', '),
+      why: Array.from(new Set([...why, ...(clockFrozen ? [clockWhy] : [])])).join('；'),
+    }));
+  }
 
   const timePass = (name, fn) => {
     const t0 = platform.nowMs();

@@ -69,6 +69,11 @@ const STRINGS = {
     warnEsmRelative: '产物里有 {n} 个相对模块说明符（{shown}），套壳后无法解析：' +
       '外壳把载荷放进 blob:/data: URL 再 import()，这两种地址没有目录上下文，' +
       '"./x.js" 找不到。填 moduleBase（产物所在目录的 URL）即可在构建期改写成绝对地址。',
+    warnTargetSuppressed: '目标宿主判定为 {target}，已强制关闭：{list}。原因：{why}。' +
+      '这些限制在目标宿主上是抛错或静默失效级别的，硬套会得到一份跑不起来、' +
+      '或者保护形同虚设的产物——所以宁可关掉并明确告诉你。' +
+      '想要更强的保护，可以把载荷改写成目标宿主支持的形态（例如把运行期动态加载' +
+      '换成部署期静态模块）。自动判断认不准时（自定义 handler 写法）请显式设置 target。',
     badIdentifierPrefix: 'identifierPrefix 非法："{p}" 不是合法标识符前缀' +
       '（不得以数字开头、不得含标识符字符集以外的符号）。' +
       '正确的十六进制风格前缀是 "_0x"（下划线开头），而非 "0x"。',
@@ -403,6 +408,12 @@ const STRINGS = {
       'resolve once shelled: the shell loads the payload through a blob:/data: URL, which has no ' +
       'directory context, so "./x.js" is not found. Set moduleBase to the artifact\'s directory URL ' +
       'to rewrite them to absolute at build time.',
+    warnTargetSuppressed: 'Target runtime detected as {target}; these were force-disabled: {list}. ' +
+      'Reason: {why}. On that host these limits are throw-level or fail silently, so keeping them ' +
+      'would yield an artifact that cannot run, or whose protection is nominal only — hence they ' +
+      'are turned off and reported rather than gambled on. For stronger protection, reshape the ' +
+      'payload into a form the host supports (e.g. swap runtime dynamic loading for a deploy-time ' +
+      'static module). Set target explicitly when the automatic guess misses (custom handler shapes).',
     badIdentifierPrefix: 'invalid identifierPrefix: "{p}" is not a legal identifier prefix ' +
       '(must not start with a digit and must contain only identifier characters). ' +
       'The correct hex-style prefix is "_0x" (underscore first), not "0x".',

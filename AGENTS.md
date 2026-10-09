@@ -50,6 +50,30 @@ npm run build:web:cloud  # 云端执行形态（核心不进产物，Vercel 部�
    检查（如 vmStepLimit）放解释器体内、按需可关。
 7. 注释用中文、说清"为什么"（尤其静默算错/假失败这类教训），不只写"是什么"。
 
+## 目标宿主约束（2026-10-09 新增）
+
+- `src/target-runtime.js` 是**产物目标运行时**的唯一事实源。注意与
+  `src/host-limits.js` 区分：后者讲的是**部署方**（Vercel 函数）的包络，与产物跑在哪
+  是两件事。
+- workerd 的硬限制（Cloudflare 官方文档 "Web standards"，2026-04-23 版）：
+  禁 `eval()`、禁 `new Function`、禁 `WebAssembly.compile` / `instantiate(buffer)` /
+  `compileStreaming` / `instantiateStreaming`；`Date.now()` 与 `performance.now()`
+  **冻结**在最后一次 I/O、不随代码执行推进；URL 只支持 http/https；timers 只在
+  Request Context 内可用；开了 `global_navigator` 时 `navigator.userAgent ===
+  'Cloudflare-Workers'`。
+- **受限目标下强制关掉 + 告警，绝不默默关**（`obfuscate.js` 里 `suppressedByTarget`）：
+  关掉 shell、wasm 两档、debugProtection、antiCDP。前三个是抛错级别；后两个是
+  **静默失效**（时钟冻结 → 差值恒 0 → 阈值永不成立）。统一在 `i18n.js` 的
+  `warnTargetSuppressed` 里说清"关了哪些、为什么"。
+- 识别只看**结构性**特征（`export default {fetch|scheduled|queue|email}`、
+  `addEventListener('fetch'|'scheduled')`、`env.X` + `ctx.waitUntil` 且是模块），
+  不看字符串字面量——否则代码里写个 `'cloudflare'` 就被误判。判不准靠
+  `target: 'cloudflare-worker'` 显式兜底。
+- 改动壳/wasm/时序哨兵时要问一句"这在 workerd 上能跑吗"。今天的教训：Worker 脚本走
+  ESM 壳（`createObjectURL` + 动态 `import()`），workerd 两条都不通，产物
+  **434 KB 且部署即抛**；关掉壳后 42 KB 且能正常跑。"保护层看着有、产物不可用"比没有
+  保护更糟。
+
 ## 命名策略（2026-10-09 重构后）
 
 - **一个选项管全部重命名**：`nameStyle` 是唯一入口，10 档 = 5 个基础档（Mangled /

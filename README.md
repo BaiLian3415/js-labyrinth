@@ -612,6 +612,44 @@ parser 与 generator 也不拦。
 变更。2026-09-30 起**引导层不再写文件头注释**，于是全档产物都去掉了开头那段
 `/*! … */`——这是本节记录的第二次全档字节变更。
 
+### 目标宿主（`target`）与 Cloudflare Workers
+
+`target` 决定产物最终跑在什么宿主里。`auto`（默认）按源码的**结构特征**判断，判断不了
+就手动指定。
+
+识别成 **Cloudflare Workers** 时，下列形态会被**强制关掉**并给出告警——因为它们在
+workerd 上是抛错或静默失效级别的，不是"效果差一点"：
+
+| 被关 | 原因（Cloudflare 官方文档 "Web standards"） |
+| --- | --- |
+| **外壳** `shell` | workerd 禁用 `eval()` 与 `new Function`，且只允许**部署期静态**的 ESM import。壳的整个前提是"运行期解密出代码再执行"，在那里必挂 |
+| **`wasm`** / **`wasmInterpreter`** | 禁用 `WebAssembly.compile` / `instantiate(buffer)`；wasm 必须是部署期静态导入 |
+| **`debugProtection`** / **`antiCDP`** | workerd 的 `Date.now()` 与 `performance.now()` 返回**最后一次 I/O 的时间，不随代码执行推进**。基于时间差值的哨兵差值恒 0、阈值永不成立——**静默失效**，不崩不报，保护悄悄消失 |
+
+告警会逐项列明"关了什么、为什么"，而不是默默关掉。
+
+> **为什么以前会出事**：Worker 脚本是 ESM，此前走的是 ESM 壳（`URL.createObjectURL` +
+> 动态 `import()`）。workerd 的 URL 只支持 http/https 方案，这条路同样不通——于是
+> CF Worker 用户拿到的是一份**部署即抛**的产物（实测 high 档 434 KB，而壳是空的，
+> 关掉后 42 KB 且能正常跑）。"保护层看着有、产物直接不可用"比没有保护更糟。
+
+```bash
+# 自动判断（典型 module worker 能认出）
+echo 'export default { async fetch(r,e,c){ return new Response("x"); } };' \
+  | node tools/cli.js --preset high
+
+# 自定义 handler 写法认不出时，显式声明
+... --target cloudflare-worker
+```
+
+**防误伤**：识别只看结构性特征（`export default { fetch/scheduled }`、
+`addEventListener('fetch')`、`env.X` + `ctx.waitUntil` 且是模块），**不看字符串字面量**——
+否则代码里随便写个 `'cloudflare'` 就被误判，用户要的保护会被无谓砍掉。判不准时用显式值。
+
+`test/target-runtime.js` 覆盖全部上述判定，含一条"产物真作为 ESM 模块加载并调用 handler"
+的端到端用例——本机上 Node 恰好能跑 `data:` URL 的 import，所以"壳还在"在本地**看起来
+正常**，只有 workerd 上才炸，光比对形态不够。
+
 ## 授权
 
 套餐（`src/plans.js`）决定可用的选项范围、强度上限与配额，由卡密携带，命令行与界面都改不了。

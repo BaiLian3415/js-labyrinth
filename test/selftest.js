@@ -29,6 +29,7 @@
  *   anti-analysis    Anti-CDP 与域名锁定
  *   minify           AST 简化、DCE、命名策略、属性名重命名、杂项
  *   shell-wasm       JSFuck 壳形态与 WASM 档位
+ *   target-runtime   目标宿主识别与受限降级（Cloudflare Workers：壳 / WASM / 时序哨兵）
  *   vmp              VMP 覆盖率 / 深度 / stats 口径
  *   live-verify      线上验收（打已部署站点）
  *
@@ -66,6 +67,7 @@ const FILES = [
   'anti-analysis.js',
   'minify.js',
   'shell-wasm.js',
+  'target-runtime.js',
   'vmp.js',
   'live-verify.js',
 ];
