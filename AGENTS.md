@@ -65,8 +65,24 @@ npm run build:web:cloud  # 云端执行形态（核心不进产物，Vercel 部�
   可能一致地错（IR 写错一个符号，两边一起错，对拍照样全绿）。
 - `emitVm` 内置 `verifyVm` 构建期自检：顺字流模拟栈深、核对槽位与跳转目标越界。
   这道检查的价值在于把"运行期读到 undefined"提前成"emitVm 返回前就炸，并指出 pc"。
-- **还没接进 shell.js**：`classic` / `jsfuck` 两个形态一字未动，`shellForm` 也没有
-  新档位。IR 目前只被自测消费。接线时要保证 classic 产物逐字节不变（默认档不能动）。
+- **已接进 shell.js**（2026-10-10）：`shellForm: 'bytecode'` 走这条路，接线点在
+  `makeShellLayer` 的解码链分支——`if (bytecode) {…} else { classic 的 A/B/C 三段 }`，
+  「字节→字符串」与「eval/import 交付」两段仍在 `else` 之后，两种形态共用。
+  `shellWrap` 里传 `{ bytecode: true }` 作 variant（其余变体字段留 undefined 继续随机）。
+- **classic 必须逐字节不变**：接线前后在 36 组配置（3 源码 × 4 预设 × 3 seed）上比对
+  sha256，零差异。改默认形态的任何一行都是在破坏可复现性承诺，比收益大得多。
+- **与 jsfuck 互斥**：`jsfuck` 改的正是「密钥流 + 校验尾」那段**明文**，bytecode 形态
+  里那段已经不在明文里。同时指定时以 bytecode 为准（`jsfuck && !useBytecode`）。
+- 新固定名 `_0bv`（解释器）/`_0bw`（密文字节码）/`_0bt`（原语表）/`_0bc`（常量池）/
+  `_0bl`（局部表）**必须**进 `banner.js` 的 randomizeNames 名单。解释器内部的短名
+  （`_w`/`_t`/`_c`/`_k`/`_x`/`_p`）刻意不带 `_0` 前缀——`\b` 词边界匹配不到，且它们属于
+  「通用解释器」这一固定形态，变化由操作码表逐构建随机承担。
+- **局部表要一次性给全长度并把非输入槽填 0**：留洞的话万一读到是 `undefined` 而不是 0，
+  是静默算错的典型来源。接线时最容易漏的两处是**变量名映射**（IR 槽位 ↔ `_0xx`）与
+  **原语表顺序**（`xs32/mix/ipos/mul32/_0cc` 与 IR 里 `PRIM` 下标对齐），两处错了 IR
+  层的三路对拍完全看不出来，只在运行期表现为解出乱码——所以必须另有端到端用例。
+- `stats.form` 要逐个点名（classic/jsfuck/bytecode），把 bytecode 归到 classic 会让
+  「这份产物外层能不能被顺着读」这个唯一在意的信息失效。
 
 ### 这两天踩的坑（都是"手写栈序"的账单，与算法无关）
 

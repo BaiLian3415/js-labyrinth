@@ -15,6 +15,8 @@ import rand from '../utils/rand.js';
 const { randInt, randHex, rand: randFn } = rand;
 import i18n from '../i18n.js';
 import { jsfuckProgram, decodeStrExpr } from './jsfuck.js';
+import { buildDecodeChain } from './shellir.js';
+import { encryptWords, emitInterpreter, emitVm, shuffleOpCodes } from './shellemit.js';
 
 const B64_ALPHA = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
 
@@ -440,6 +442,14 @@ function makeShellLayer(payload, variant, mode) {
   // forEach 助手（每段独立解、外层拼回）。编码侧（分段/乱序）一字不动，三种解码
   // 算出的字节流逐位一致：段长按 4 对齐使跨段无进位残留，坏字符计数累加方式一致。
   const decStyle = v.decStyle !== undefined ? v.decStyle : randInt(0, 2);
+  // 字节码壳形态：解码链（A/B/C 三段）整体搬进密文字节码，外层只留一个通用栈式解释器。
+  // 与 decStyle 正交但**互斥**：decStyle 是「明文解码链里的 base64 解码有几种写法」，
+  // 字节码形态里根本没有那段明文可变形。三者取一：
+  //   classic  —— 明文解码链（默认，产物基线，动它就是破坏可复现性）
+  //   jsfuck   —— 同一条明文链，但密钥流+校验那段编成 JSFuck 表达式
+  //   bytecode —— 解码链进字节码，外层不可读
+  // 与 jsfuck 互斥（jsfuck 改的正是那段明文），见 shellWrap 里的分流。
+  const bytecode = !!v.bytecode;
   // jsfuck 壳形式：密钥流 + 校验那段换成对全局 JSFuck 核心的一次调用，
   // 预置（var <name>=<表达式>）由调用方拼在流水线之外，见 jsfuckPrelude
   const jsfuckName = mode && mode.jsfuck ? mode.jsfuckName : null;
@@ -653,101 +663,153 @@ function makeShellLayer(payload, variant, mode) {
     'var _0d=_0Ar(_0SG);for(_0i=0;_0SG>_0i;_0i+=1){_0d[_0i]=_0i;}',
   ]));
   put('_0d=shfl(_0d,_0S[2]);');
-  if (decStyle === 0) {
-    put(P(['var _0r=new _0U8(_0N);var _0n=0;var _0acc=0;var _0pc=0;var _0bd2=0;',
-      'var _0r=new _0U8(_0N),_0n=0,_0acc=0,_0pc=0,_0bd2=0;']));
-    put(P(['for(var _0j2=0;_0j2<_0SG;_0j2++){var _0sg=_0g[_0d[_0j2]];',
-      'for(var _0j2=0;_0SG>_0j2;_0j2+=1){var _0sg=_0g[_0d[_0j2]];']));
-    // 注意：内层 for 在此行不闭合（与原版同位），闭合在下面 `}}}` 行。
-    // 查表经 _0cc 别名（直接点调用会把 charCodeAt 计数顶到 3，见棘轮注释）。
-    put(P(['for(var _0q2=0;_0q2<_0sg.length;_0q2++){var _0c=_0m2[_0cc(_0sg,_0q2)];',
-      'for(var _0q2=0;_0sg.length>_0q2;_0q2+=1){var _0c=_0m2[_0cc(_0sg,_0q2)];']));
-    put(P(['if(_0c<0){_0bd2++;continue;}', 'if(0>_0c){_0bd2+=1;continue;}']));
-    // 加法交换律只用于纯数字累加（_0acc/_0pc/_0c 全是数字，无拼接语义）
-    put(P(['_0acc=_0acc*64+_0c;_0pc=_0pc+6;',
-      '_0acc=_0c+_0acc*64;_0pc=6+_0pc;',
-      '_0acc=_0c+64*_0acc;_0pc=_0pc+6;']));
-    put(P(['if(_0pc>7){_0pc=_0pc-8;_0r[_0n]=(_0acc>>>_0pc)&255;_0n++;_0acc=_0acc&((1<<_0pc)-1);}}}',
-      'if(7<_0pc){_0pc=_0pc-8;_0r[_0n]=(_0acc>>>_0pc)&255;_0n+=1;_0acc=_0acc&((1<<_0pc)-1);}}}']));
+  if (bytecode) {
+    // ================= 解码链 → 密文字节码 =================
+    //
+    // 这一支整体接管下面 else 里的解码链 A/B/C 三段（段装载+base64+交织落位、
+    // 密钥流+校验尾差量、防篡改判定+投毒）。产物里这一段变成「一个通用栈式解释器
+    // + 一堆不透明数字」：读代码看不出怎么解 base64、怎么交织、密钥流怎么算——
+    // 那是 classic 形态下最薄的一环。外层解释器不认识 base64/交织/密钥流这些概念，
+    // 只认识 PUSH/ADD/JMP；字节码还要靠那张逐构建随机的操作码表才能解码。
+    //
+    // 「字节→字符串」与「eval/import 交付」两段保持原样（下面 else 的后半段共用）——
+    // 它们不是算法本体，改它们只会放大风险面。
+    //
+    // 正确性由 test/shell-bytecode.js 的三路对拍保证：手写参考 ⟷ 朴素 JS ⟷ 字节码。
+    // 本函数只负责把「算好的输入灌进局部槽、调解释器取回 q」这一步接上。
+    const vmInputs = ['N', 'L', 'SG', 'P1', 'P2', 'HB', 'E', 'G', 'D', 'M2', 'SB', 'P_EVAL', 'P_FN'];
+    const ir = buildDecodeChain({
+      tailOrder,
+      probeFunction: evalStyle === 1,
+      junkMult: JUNK_MULT,
+      posHash: ph,
+    });
+    const bcOp = shuffleOpCodes(randInt);
+    const vm = emitVm(ir, { inputs: vmInputs, output: 'q', opmap: bcOp });
+    const bcEnc = encryptWords(vm.words, randInt);
+    // 新固定名必须进 banner.js 的 randomizeNames 名单，否则留成字面量指纹。
+    // 解释器内部的短名（_w/_t/_c/_k/_x/_p）刻意不带 _0 前缀，随机化按 \b 词边界走，
+    // 不会误伤；但也正因如此它们不随机化——它们属于「通用解释器」这一固定形态，
+    // 而非本工具的标识符，变化由操作码表逐构建随机承担。
+    const bcEval = evalStyle === 0 ? '(0,eval)' : 'Function("return eval")()';
+    put('var _0bv=' + emitInterpreter({
+      opmap: bcOp, key: bcEnc.key, k2: bcEnc.k2, outSlot: vm.outSlot,
+    }) + ';');
+    put('var _0bw=[' + bcEnc.data.join(',') + '];');
+    // 原语表：前五项是引导器已声明的原语，后两项是原生探针对象。
+    // 第 6 项（Function）在 probeFunction 为假时永不被读，放 Function 只是占位，
+    // 比放个占位常量少一处可搜的字面量。
+    put('var _0bt=[xs32,mix,ipos,mul32,_0cc,' + bcEval + ',Function];');
+    // 常量池：原生性探针的针脚。走 _0fc 现拼，与 classic 形态同一口径，不留 'native' 明文。
+    put('var _0bc=[' + NATIVE + '];');
+    // 局部表：一次性给全长度并把非输入槽填 0。不填的话那些槽是「洞」，万一读到
+    // 就是 undefined 而不是 0——静默算错的典型来源。输入槽直接填对应引导器变量。
+    const vmLit = {
+      N: '_0N', L: '_0L', SG: '_0SG', P1: '_0P1', P2: '_0P2', HB: '_0HB', E: '_0e',
+      G: '_0g', D: '_0d', M2: '_0m2', SB: '_0sb', P_EVAL: bcEval, P_FN: 'Function',
+    };
+    const byIdx = new Array(vm.slotCount).fill('0');
+    for (const k of vmInputs) byIdx[vm.slots[k]] = vmLit[k];
+    put('var _0bl=[' + byIdx.join(',') + '];');
+    put('var _0q=_0bv(_0bw,_0bt,_0bc,_0bl);');
   } else {
-    // 分段解码助手：每段独立解成（字节, 个数, 坏字符数），外层按原段序拼回。
-    // 与内联版逐位一致：段长按 4 对齐使跨段无进位残留，坏字符分段计数再累加，
-    // 掩码折叠式与内联版同一条（(1<<p)-1，p=0 时归零）。
-    // 助手两形态：1 是 for 下标版，2 是 forEach 回调版（continue 在回调里非法，
-    // 改成 if/else 嵌套，语义逐位一致；回调逐字符顺序执行，与下标版同序）。
-    // split("") 按码元切分，段内容全是 ASCII base64，无代理对，切分与下标版一致。
-    if (decStyle === 1) {
-      put('var _0ds=function(_0s){var _0o=new _0U8(_0s.length);var _0da=0,_0dp=0,_0dc=0,_0de=0;'
-        // 别名只替调用点，查表不能丢：_0cc 给的是码点，还要经 _0m2 映成 6 位值
-        + 'for(var _0dk=0;_0dk<_0s.length;_0dk++){var _0dv=_0m2[_0cc(_0s,_0dk)];'
-        + 'if(_0dv<0){_0de++;continue;}_0da=_0da*64+_0dv;_0dp+=6;'
-        + 'if(_0dp>7){_0dp-=8;_0o[_0dc++]=(_0da>>>_0dp)&255;_0da&=(1<<_0dp)-1;}}'
-        + 'return [_0o,_0dc,_0de];};');
+    if (decStyle === 0) {
+      put(P(['var _0r=new _0U8(_0N);var _0n=0;var _0acc=0;var _0pc=0;var _0bd2=0;',
+        'var _0r=new _0U8(_0N),_0n=0,_0acc=0,_0pc=0,_0bd2=0;']));
+      put(P(['for(var _0j2=0;_0j2<_0SG;_0j2++){var _0sg=_0g[_0d[_0j2]];',
+        'for(var _0j2=0;_0SG>_0j2;_0j2+=1){var _0sg=_0g[_0d[_0j2]];']));
+      // 注意：内层 for 在此行不闭合（与原版同位），闭合在下面 `}}}` 行。
+      // 查表经 _0cc 别名（直接点调用会把 charCodeAt 计数顶到 3，见棘轮注释）。
+      put(P(['for(var _0q2=0;_0q2<_0sg.length;_0q2++){var _0c=_0m2[_0cc(_0sg,_0q2)];',
+        'for(var _0q2=0;_0sg.length>_0q2;_0q2+=1){var _0c=_0m2[_0cc(_0sg,_0q2)];']));
+      put(P(['if(_0c<0){_0bd2++;continue;}', 'if(0>_0c){_0bd2+=1;continue;}']));
+      // 加法交换律只用于纯数字累加（_0acc/_0pc/_0c 全是数字，无拼接语义）
+      put(P(['_0acc=_0acc*64+_0c;_0pc=_0pc+6;',
+        '_0acc=_0c+_0acc*64;_0pc=6+_0pc;',
+        '_0acc=_0c+64*_0acc;_0pc=_0pc+6;']));
+      put(P(['if(_0pc>7){_0pc=_0pc-8;_0r[_0n]=(_0acc>>>_0pc)&255;_0n++;_0acc=_0acc&((1<<_0pc)-1);}}}',
+        'if(7<_0pc){_0pc=_0pc-8;_0r[_0n]=(_0acc>>>_0pc)&255;_0n+=1;_0acc=_0acc&((1<<_0pc)-1);}}}']));
     } else {
-      put('var _0ds=function(_0s){var _0o=new _0U8(_0s.length);var _0da=0,_0dp=0,_0dc=0,_0de=0;'
-        + '_0s.split("").forEach(function(_0ch){var _0dv=_0m2[_0cc(_0ch,0)];'
-        + 'if(_0dv<0){_0de++;}else{_0da=_0da*64+_0dv;_0dp+=6;'
-        + 'if(_0dp>7){_0dp-=8;_0o[_0dc++]=(_0da>>>_0dp)&255;_0da&=(1<<_0dp)-1;}}});'
-        + 'return [_0o,_0dc,_0de];};');
+      // 分段解码助手：每段独立解成（字节, 个数, 坏字符数），外层按原段序拼回。
+      // 与内联版逐位一致：段长按 4 对齐使跨段无进位残留，坏字符分段计数再累加，
+      // 掩码折叠式与内联版同一条（(1<<p)-1，p=0 时归零）。
+      // 助手两形态：1 是 for 下标版，2 是 forEach 回调版（continue 在回调里非法，
+      // 改成 if/else 嵌套，语义逐位一致；回调逐字符顺序执行，与下标版同序）。
+      // split("") 按码元切分，段内容全是 ASCII base64，无代理对，切分与下标版一致。
+      if (decStyle === 1) {
+        put('var _0ds=function(_0s){var _0o=new _0U8(_0s.length);var _0da=0,_0dp=0,_0dc=0,_0de=0;'
+          // 别名只替调用点，查表不能丢：_0cc 给的是码点，还要经 _0m2 映成 6 位值
+          + 'for(var _0dk=0;_0dk<_0s.length;_0dk++){var _0dv=_0m2[_0cc(_0s,_0dk)];'
+          + 'if(_0dv<0){_0de++;continue;}_0da=_0da*64+_0dv;_0dp+=6;'
+          + 'if(_0dp>7){_0dp-=8;_0o[_0dc++]=(_0da>>>_0dp)&255;_0da&=(1<<_0dp)-1;}}'
+          + 'return [_0o,_0dc,_0de];};');
+      } else {
+        put('var _0ds=function(_0s){var _0o=new _0U8(_0s.length);var _0da=0,_0dp=0,_0dc=0,_0de=0;'
+          + '_0s.split("").forEach(function(_0ch){var _0dv=_0m2[_0cc(_0ch,0)];'
+          + 'if(_0dv<0){_0de++;}else{_0da=_0da*64+_0dv;_0dp+=6;'
+          + 'if(_0dp>7){_0dp-=8;_0o[_0dc++]=(_0da>>>_0dp)&255;_0da&=(1<<_0dp)-1;}}});'
+          + 'return [_0o,_0dc,_0de];};');
+      }
+      put('var _0r=new _0U8(_0N),_0n=0,_0bd2=0;');
+      if (decStyle === 1) {
+        put(P(['for(var _0j2=0;_0j2<_0SG;_0j2++){var _0dr=_0ds(_0g[_0d[_0j2]]);'
+          + '_0r.set(_0dr[0].subarray(0,_0dr[1]),_0n);_0n+=_0dr[1];_0bd2+=_0dr[2];}',
+          'for(var _0j2=0;_0SG>_0j2;_0j2+=1){var _0dr=_0ds(_0g[_0d[_0j2]]);'
+          + '_0r.set(_0dr[0].subarray(0,_0dr[1]),_0n);_0n+=_0dr[1];_0bd2+=_0dr[2];}']));
+      } else {
+        // C 外层换序：先累加偏移再用（_0n-_0dr[1] 还原段基址），与 B 的
+        // "先拼后累加"逐位一致（同一 _0n 时间线，只是 set 行位置不同）。
+        put(P(['for(var _0j2=0;_0j2<_0SG;_0j2++){var _0dr=_0ds(_0g[_0d[_0j2]]);'
+          + '_0n+=_0dr[1];_0bd2+=_0dr[2];_0r.set(_0dr[0].subarray(0,_0dr[1]),_0n-_0dr[1]);}',
+          'for(var _0j2=0;_0SG>_0j2;_0j2+=1){var _0dr=_0ds(_0g[_0d[_0j2]]);'
+          + '_0bd2+=_0dr[2];_0n+=_0dr[1];_0r.set(_0dr[0].subarray(0,_0dr[1]),_0n-_0dr[1]);}']));
+      }
     }
-    put('var _0r=new _0U8(_0N),_0n=0,_0bd2=0;');
-    if (decStyle === 1) {
-      put(P(['for(var _0j2=0;_0j2<_0SG;_0j2++){var _0dr=_0ds(_0g[_0d[_0j2]]);'
-        + '_0r.set(_0dr[0].subarray(0,_0dr[1]),_0n);_0n+=_0dr[1];_0bd2+=_0dr[2];}',
-        'for(var _0j2=0;_0SG>_0j2;_0j2+=1){var _0dr=_0ds(_0g[_0d[_0j2]]);'
-        + '_0r.set(_0dr[0].subarray(0,_0dr[1]),_0n);_0n+=_0dr[1];_0bd2+=_0dr[2];}']));
+    put('var _0q=new _0U8(_0N);');
+    if (jsfuckName) {
+      // 与 classic 分支逐语句等价，只是整段搬进了 JSFuck 表达式求值出来的函数。
+      // 原语按名传参（引导器作用域里的 xs32/mix/ipos），randomizeNames 会把它们
+      // 与调用点一起改名，两边仍然对得上。
+      put('var _0bd=' + jsfuckName + '(_0q,_0r,_0sb,_0N,_0L,_0P1,_0P2,_0HB,_0e,' + ph + ',' +
+        tailOrder + ',xs32,mix,ipos);');
     } else {
-      // C 外层换序：先累加偏移再用（_0n-_0dr[1] 还原段基址），与 B 的
-      // "先拼后累加"逐位一致（同一 _0n 时间线，只是 set 行位置不同）。
-      put(P(['for(var _0j2=0;_0j2<_0SG;_0j2++){var _0dr=_0ds(_0g[_0d[_0j2]]);'
-        + '_0n+=_0dr[1];_0bd2+=_0dr[2];_0r.set(_0dr[0].subarray(0,_0dr[1]),_0n-_0dr[1]);}',
-        'for(var _0j2=0;_0SG>_0j2;_0j2+=1){var _0dr=_0ds(_0g[_0d[_0j2]]);'
-        + '_0bd2+=_0dr[2];_0n+=_0dr[1];_0r.set(_0dr[0].subarray(0,_0dr[1]),_0n-_0dr[1]);}']));
+      // 三个独立初值，声明合/分/换序逐位一致（右部互不引用）
+      put(P(['var _0u=_0e>>>0;var _0pv=0;var _0h=_0HB>>>0;',
+        'var _0u=_0e>>>0,_0pv=0,_0h=_0HB>>>0;',
+        'var _0h=_0HB>>>0;var _0u=_0e>>>0;var _0pv=0;']));
+      put(P(['for(var _0t2=0;_0t2<_0N;_0t2++){',
+        'for(var _0t2=0;_0N>_0t2;_0t2+=1){']));
+      // 整数加法结合律换括号：三数和 < 2^33，double 精确，>>>0 口径一致
+      put(P(['_0u=xs32(_0u);_0u=(_0u+_0pv+_0t2)>>>0;',
+        '_0u=xs32(_0u);_0u=(_0u+(_0pv+_0t2))>>>0;']));
+      // xor 结合律换括号：int32 逐位一致
+      put(P(['var _0kb=(_0u^(_0u>>>15)^(_0u>>>22))&255;',
+        'var _0kb=(_0u^((_0u>>>15)^(_0u>>>22)))&255;']));
+      put('var _0v=(_0sb[_0r[ipos(_0t2,_0P1,_0P2,_0N)]]^_0kb)&255;');
+      // 链式赋值：右结合，先 _0pv=_0v 再写入槽，值与顺序逐位一致
+      put(P(['_0q[_0t2]=_0v;_0pv=_0v;', '_0q[_0t2]=_0pv=_0v;']));
+      put(P(['if(_0t2<_0L){_0h=mix(_0h,_0v,_0t2,' + ph + ');}}',
+        'if(_0L>_0t2){_0h=mix(_0h,_0v,_0t2,' + ph + ');}}']));
+      put(P(['var _0bd=(_0h^_0e^' + tailExpr + ')>>>0;',
+        'var _0bd=(_0h^(_0e^' + tailExpr + '))>>>0;']));
     }
-  }
-  put('var _0q=new _0U8(_0N);');
-  if (jsfuckName) {
-    // 与 classic 分支逐语句等价，只是整段搬进了 JSFuck 表达式求值出来的函数。
-    // 原语按名传参（引导器作用域里的 xs32/mix/ipos），randomizeNames 会把它们
-    // 与调用点一起改名，两边仍然对得上。
-    put('var _0bd=' + jsfuckName + '(_0q,_0r,_0sb,_0N,_0L,_0P1,_0P2,_0HB,_0e,' + ph + ',' +
-      tailOrder + ',xs32,mix,ipos);');
-  } else {
-    // 三个独立初值，声明合/分/换序逐位一致（右部互不引用）
-    put(P(['var _0u=_0e>>>0;var _0pv=0;var _0h=_0HB>>>0;',
-      'var _0u=_0e>>>0,_0pv=0,_0h=_0HB>>>0;',
-      'var _0h=_0HB>>>0;var _0u=_0e>>>0;var _0pv=0;']));
-    put(P(['for(var _0t2=0;_0t2<_0N;_0t2++){',
-      'for(var _0t2=0;_0N>_0t2;_0t2+=1){']));
-    // 整数加法结合律换括号：三数和 < 2^33，double 精确，>>>0 口径一致
-    put(P(['_0u=xs32(_0u);_0u=(_0u+_0pv+_0t2)>>>0;',
-      '_0u=xs32(_0u);_0u=(_0u+(_0pv+_0t2))>>>0;']));
-    // xor 结合律换括号：int32 逐位一致
-    put(P(['var _0kb=(_0u^(_0u>>>15)^(_0u>>>22))&255;',
-      'var _0kb=(_0u^((_0u>>>15)^(_0u>>>22)))&255;']));
-    put('var _0v=(_0sb[_0r[ipos(_0t2,_0P1,_0P2,_0N)]]^_0kb)&255;');
-    // 链式赋值：右结合，先 _0pv=_0v 再写入槽，值与顺序逐位一致
-    put(P(['_0q[_0t2]=_0v;_0pv=_0v;', '_0q[_0t2]=_0pv=_0v;']));
-    put(P(['if(_0t2<_0L){_0h=mix(_0h,_0v,_0t2,' + ph + ');}}',
-      'if(_0L>_0t2){_0h=mix(_0h,_0v,_0t2,' + ph + ');}}']));
-    put(P(['var _0bd=(_0h^_0e^' + tailExpr + ')>>>0;',
-      'var _0bd=(_0h^(_0e^' + tailExpr + '))>>>0;']));
-  }
-  put('_0bd=(_0bd^mul32(_0bd2,' + JUNK_MULT + '))>>>0;');
-  put(P(['if(_0bd2>0&&_0bd===0){_0bd=1;}',
-    'if(0<_0bd2&&0===_0bd){_0bd=1;}',
-    'if(_0bd2>0&&0===_0bd){_0bd=1;}']));
-  put(P(['if((""+eval).indexOf(' + NATIVE + ')<0){_0bd=(_0bd^(mul32(_0e^_0L,' + JUNK_MULT + ')||1))>>>0;}',
-    'if(0>((""+eval)["indexOf"](' + NATIVE + '))){_0bd=(_0bd^(mul32(_0e^_0L,' + JUNK_MULT + ')||1))>>>0;}']));
-  if (evalStyle === 1) {
-    put(P(['if((""+Function).indexOf(' + NATIVE + ')<0){_0bd=(_0bd^(mul32(_0e^_0N,' + JUNK_MULT + ')||1))>>>0;}',
-      'if(0>((""+Function)["indexOf"](' + NATIVE + '))){_0bd=(_0bd^(mul32(_0e^_0N,' + JUNK_MULT + ')||1))>>>0;}']));
-  }
-  put(P(['if(_0bd!==0){var _0u2=xs32(_0e^_0bd);var _0lim=_0L<8?_0L:8;',
-    // 合并声明但不提前闭合 if：闭合仍由下面的 for 行末 `}}` 完成（与原版同位）
-    'if(0!==_0bd){var _0u2=xs32(_0e^_0bd),_0lim=_0L<8?_0L:8;']));
-  put(P(['for(_0i=0;_0i<_0lim;_0i++){_0u2=xs32(_0u2^_0bd^_0i);_0q[_0i]=(_0q[_0i]^(_0u2>>>11))&255;}}',
-    'for(_0i=0;_0lim>_0i;_0i+=1){_0u2=xs32(_0u2^(_0bd^_0i));_0q[_0i]=(_0q[_0i]^(_0u2>>>11))&255;}}']));
+    put('_0bd=(_0bd^mul32(_0bd2,' + JUNK_MULT + '))>>>0;');
+    put(P(['if(_0bd2>0&&_0bd===0){_0bd=1;}',
+      'if(0<_0bd2&&0===_0bd){_0bd=1;}',
+      'if(_0bd2>0&&0===_0bd){_0bd=1;}']));
+    put(P(['if((""+eval).indexOf(' + NATIVE + ')<0){_0bd=(_0bd^(mul32(_0e^_0L,' + JUNK_MULT + ')||1))>>>0;}',
+      'if(0>((""+eval)["indexOf"](' + NATIVE + '))){_0bd=(_0bd^(mul32(_0e^_0L,' + JUNK_MULT + ')||1))>>>0;}']));
+    if (evalStyle === 1) {
+      put(P(['if((""+Function).indexOf(' + NATIVE + ')<0){_0bd=(_0bd^(mul32(_0e^_0N,' + JUNK_MULT + ')||1))>>>0;}',
+        'if(0>((""+Function)["indexOf"](' + NATIVE + '))){_0bd=(_0bd^(mul32(_0e^_0N,' + JUNK_MULT + ')||1))>>>0;}']));
+    }
+    put(P(['if(_0bd!==0){var _0u2=xs32(_0e^_0bd);var _0lim=_0L<8?_0L:8;',
+      // 合并声明但不提前闭合 if：闭合仍由下面的 for 行末 `}}` 完成（与原版同位）
+      'if(0!==_0bd){var _0u2=xs32(_0e^_0bd),_0lim=_0L<8?_0L:8;']));
+    put(P(['for(_0i=0;_0i<_0lim;_0i++){_0u2=xs32(_0u2^_0bd^_0i);_0q[_0i]=(_0q[_0i]^(_0u2>>>11))&255;}}',
+      'for(_0i=0;_0lim>_0i;_0i+=1){_0u2=xs32(_0u2^(_0bd^_0i));_0q[_0i]=(_0q[_0i]^(_0u2>>>11))&255;}}']));
+    }
+  // ↓↓↓ 以下「字节→字符串」与「eval/import 交付」两段两种形态共用 ↓↓↓
   if (plainIsAscii) {
     // 载荷字节全为 ASCII 时，默认产物经 escapeNonAscii 转义必为 ASCII，
     // UTF-8 解码退化为定长分块 fromCharCode。校验、密钥流、位置交织与投毒
@@ -843,13 +905,17 @@ function shellWrap(code, options, bootObfuscate, cjs, esm) {
     // 源码，它同样需要 import() 才能跑。
     const mode = { cjs: !esm && !!cjs, esm: !!esm };
     let pre = '';
-    if (jsfuck) {
+    // jsfuck 与 bytecode 互斥：jsfuck 改的正是「密钥流 + 校验尾」那段**明文**语句，
+    // 而 bytecode 形态里那段已经不在明文里了。两者同时要时以 bytecode 为准——
+    // 它把整条链都搬走，jsfuck 的预置就无处可作用了。
+    const useBytecode = options.shellForm === 'bytecode';
+    if (jsfuck && !useBytecode) {
       mode.jsfuck = true;
       mode.jsfuckName = jsfuckCoreName(jfUsed, options.identifierPrefix);
       pre = jsfuckPrelude(mode.jsfuckName);
       jsfuckChars += pre.length;
     }
-    const boot = makeShellLayer(cur, undefined, mode);
+    const boot = makeShellLayer(cur, useBytecode ? { bytecode: true } : undefined, mode);
     // 预置留在流水线之外：见 jsfuckPrelude 的说明。它必须先于引导层执行，
     // 否则引导层读到的全局名还是 undefined。
     const out = bootObfuscate ? bootObfuscate(boot, options).code : boot;

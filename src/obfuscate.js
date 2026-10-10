@@ -810,7 +810,10 @@ function obfuscate(code, userOptions) {
         layers: sr.layers,
         cjs,
         esm: isModuleSrc,
-        form: options.shellForm === 'jsfuck' ? 'jsfuck' : 'classic',
+        // 三形态逐个点名，别把 bytecode 归到 classic：形态统计的主要用途就是
+        // 「这份产物外层能不能被顺着读」，归错类会让这个判断失效。
+        form: options.shellForm === 'jsfuck' ? 'jsfuck'
+          : options.shellForm === 'bytecode' ? 'bytecode' : 'classic',
         jsfuckChars: sr.jsfuckChars,
       },
     });

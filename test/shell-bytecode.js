@@ -21,13 +21,16 @@
  *   - 投毒分支里 `(x || 1)`：x 为 0 时取 1，否则取 x
  */
 
-import { cleanTmp, counters, ok, report, section } from './_harness.js';
+import { cleanTmp, counters, ok, report, runNode, section } from './_harness.js';
 import { buildDecodeChain } from '../src/passes/shellir.js';
 import {
   CONSTS, OPCODES, assignSlots, emitInterpreter, emitJs, emitVm,
   encryptWords, shuffleOpCodes,
 } from '../src/passes/shellemit.js';
 import { PRIMITIVES_TEXT } from '../src/passes/shell.js';
+import obfuscateMod from '../src/obfuscate.js';
+
+const { obfuscate } = obfuscateMod;
 
 // 引导器真正下发的那组原语（不是重写一份，那才是真对拍）
 const rt = (0, eval)(PRIMITIVES_TEXT + ';({mul32:mul32,xs32:xs32,ipos:ipos,mix:mix})');
@@ -316,6 +319,55 @@ section('坏字符与 continue：自增仍要执行');
   const want = reference(c);
   ok(sameBytes(want, runJs(c).q), '全坏字符段：emitJs 与参考一致');
   ok(sameBytes(want, runVm(c, 37).q), '全坏字符段：emitVm 与参考一致');
+}
+
+section('端到端：bytecode 形态的产物真能跑');
+{
+  // 前面所有用例都只在 IR 层打转，证明的是「发射器自洽」。这一节证明的是
+  // 「接进 shell.js 之后，产物在宿主里跑得起来、且语义不变」——两件事不能互相替代：
+  // 接线时最容易漏的是**变量名映射**（IR 的槽位 ↔ 引导器的 _0xx 变量）与
+  // **原语表顺序**（xs32/mix/ipos/mul32/_0cc 与 IR 里 PRIM 下标必须对齐），
+  // 这两处错了 IR 层完全看不出来，只在运行期表现为解出乱码或直接抛。
+  const SAMPLE = 'function f(a){var r=0;for(var i=0;i<a;i++){if(i%2===0){r+=i*3;}else{r-=1;}}'
+    + 'return r;}console.log(String(f(9)));';
+  const want = runNode(SAMPLE, 'bc-native.cjs').trim();
+
+  const forms = ['classic', 'jsfuck', 'bytecode'];
+  const outs = {};
+  for (const form of forms) {
+    const r = obfuscate(SAMPLE, { preset: 'high', seed: 7, shell: true, shellForm: form, target: 'node' });
+    outs[form] = { code: r.code, stats: r.stats, warnings: r.warnings || [] };
+  }
+  for (const form of forms) {
+    ok(runNode(outs[form].code, 'bc-' + form + '.cjs').trim() === want,
+      form + ' 形态产物语义不变', runNode(outs[form].code, 'bc-' + form + '-2.cjs').trim());
+  }
+
+  // 形态统计必须逐个点名。把 bytecode 归到 classic 会让「这份产物外层能不能被
+  // 顺着读」这个判断失效——那正是选这个形态的人唯一在意的信息。
+  const st = (outs.bytecode.stats || []).find((x) => x.pass === 'shell');
+  ok(st && st.result.form === 'bytecode', 'stats 报 form=bytecode（没被归到 classic）',
+    st && JSON.stringify(st.result));
+  ok(st && st.result.jsfuckChars === 0, 'bytecode 形态不挂 jsfuck 预置（两者互斥）',
+    st && String(st.result.jsfuckChars));
+  ok(!(outs.bytecode.warnings || []).length, 'bytecode 形态无告警',
+    (outs.bytecode.warnings || []).join(' | '));
+
+  // 三种形态必须是三份不同的产物——若 bytecode 形态实际上没生效（分支没走到），
+  // 产物会与 classic 逐字节相同，那是最危险的失败：看着有保护、其实没有。
+  ok(outs.bytecode.code !== outs.classic.code, 'bytecode 形态与 classic 产物不同（形态确实生效了）');
+  ok(outs.jsfuck.code !== outs.classic.code, 'jsfuck 形态与 classic 产物不同');
+
+  // 外层不该再有明文解码链。逐字节对拍已经证明字节码算得对；这里补一条
+  // 「读不出算法」的正面断言：产物里不应出现 classic 形态那段
+  // 「按段取字符、查 base64 表、累加 6 位」的可读骨架。
+  //
+  // 注意不能直接搜 `_0m2` 之类的名字——banner 的 randomizeNames 会把它们换掉，
+  // 搜了也搜不到（这是好事）。所以改为搜**与名字无关的结构痕迹**。
+  const classicTrace = (outs.classic.code.match(/new Uint8Array\(/g) || []).length;
+  const bcTrace = (outs.bytecode.code.match(/new Uint8Array\(/g) || []).length;
+  ok(bcTrace <= classicTrace, 'bytecode 形态不新增明文缓冲区构造',
+    classicTrace + ' -> ' + bcTrace);
 }
 
 if (process.argv[1] && process.argv[1].endsWith('shell-bytecode.js')) {
