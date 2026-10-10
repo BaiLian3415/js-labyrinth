@@ -101,6 +101,28 @@ npm run build:web:cloud  # 云端执行形态（核心不进产物，Vercel 部�
     报错点与病因隔三层。这也是 `_0bv` 不在 `randomizeNames` 名单里的原因（够不着），
     它的名字由 `makeShellLayer` 自建「前缀 + 9 位 hex」。
 
+## 预设强度与「静默变弱」（2026-10-10 实测）
+
+- **预设漏写一项 = 静默变弱**，因为 `resolveOptions` 会回落 `DEFAULTS`。改预设时必须
+  对着 `DEFAULTS` 逐项问一遍"这一项在低档是什么、在高档是什么"。已经踩到两处：
+  - `debugProtectionInterval`：high 是 `1` ms，max 曾是 `2000` ms —— 强度档越高、
+    反调试自检反而稀了 2000 倍。纯数值笔误，不报错。
+  - `vmMacroOps` / `vmDynOpcodes`：high 开、max 不写。但**max 不需要补**——它们
+    在 `wasmInterpreter` 内核档下本就不生效（实测补进 max 后产物与基线**逐字节相同**，
+    vm stats 恒为 `macros.fused:0` / `dyn.applied:false`）。补了只是安慰剂，还会让
+    读预设的人以为它开着。
+- **`vmLayers >= 3` 是坏值，已钳到 2 并告警**（`obfuscate.js` 的 `clippedVmLayers`，
+  文案 `warnVmLayersClipped`；界面 `min/max` 同步收到 2）。实测三种 wasm 组合全坏：
+  `wasmInterpreter` 开 → WASM `memory access out of bounds`；关（wasm 开或都关）→
+  **一个不含循环的函数 90 s 也跑不完**（是挂死不是慢，与输入规模无关）。
+  钳位而不是默默产出，理由同 target 降级：跑不完的产物最坏，用户会以为是自己代码的问题。
+- `vmLayers: 2` 可用，但代价要记住：约 **+90 KB**、运行时间约 **×2.5**，且在
+  `wasmInterpreter` 下嵌套函数让路 JS（`nestedJs > 0`）。max 档已启用。
+- **实测优先于读配置**。这一轮有三条结论与"看预设文件"的直觉相反（两条"漏写"里一条
+  不用补、一条方向被误判为更弱实为更强：`wasmThreshold` 的 `0` 是**不设限**、
+  `stringSplitThreshold` 降低是**拆得更多**）。凡是给预设提强度，先跑一次对比
+  **产物字节数与 vm stats**，再决定。
+
 ## 选项说明的写法（2026-10-10 定，`src/options-meta.js`）
 
 - 房规：**1~2 句短话**，只说「做什么」与「这个数值/枚举是什么意思」。不写实现细节、

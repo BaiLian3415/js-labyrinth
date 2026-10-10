@@ -404,6 +404,34 @@ section('多层 VM：vmLayers=2 嵌套解释器，语义与层数统计');
   ok(layers2 > 0, 'layers=2 统计生效（vmLayers=2 嵌套成功）', 'layers=' + layers2);
 }
 
+// vmLayers ≥ 3 钳到 2 + 告警。3 层实测跑不出结果（wasmInterpreter 下 wasm 越界崩溃，
+// 关掉则一个不含循环的函数 90 s 也跑不完），所以界面只开放到 2，另有一道钳位兜底
+// 旧配置/直接传参。没有这条断言的话，"钳位"会在某次重构里被顺手删掉，而它的失效
+// 表征是"用户拿到一份永远跑不完的产物"——最难归因的那一类。
+section('vmLayers ≥ 3：钳到 2 并告警，不留坏值');
+{
+  const src = 'function a(n){var s=0;for(var i=0;i<n;i++)s+=i;return s;}\n'
+    + 'process.stdout.write(String(a(9)));';
+  const want = runNode(src, 'layers-clip-want.js').trim();
+
+  for (const asked of [3, 8]) {
+    const r = obfuscate(src, { preset: 'high', seed: 7, shell: false, vmLayers: asked });
+    const st = r.stats.find((x) => x.pass === 'vm');
+    ok(st && st.result && st.result.layers === 2,
+      'vmLayers=' + asked + ' 被钳到 2', 'layers=' + (st && st.result && st.result.layers));
+    const w = (r.warnings || []).map(String).find((x) => /vmLayers/.test(x));
+    ok(!!w && w.includes(String(asked)), 'vmLayers=' + asked + ' 的钳位有告警且点名了请求值',
+      (r.warnings || []).map(String).join(' | ').slice(0, 100));
+    ok(runNode(r.code, 'layers-clip-' + asked + '.js').trim() === want,
+      'vmLayers=' + asked + ' 钳位后产物语义不变');
+  }
+  // 2 层是合法值，不该被钳、也不该告警
+  const r2 = obfuscate(src, { preset: 'high', seed: 7, shell: false, vmLayers: 2 });
+  const st2 = r2.stats.find((x) => x.pass === 'vm');
+  ok(st2 && st2.result && st2.result.layers === 2, 'vmLayers=2 原样生效（不被钳）');
+  ok(!(r2.warnings || []).some((x) => /vmLayers/.test(String(x))), 'vmLayers=2 不产生钳位告警');
+}
+
 // 多层 VM × WASM 解释器内核：要嵌套的函数改走 JS 路径（nestedJs>0），最内层以
 // 桥接形态进模块，layers 统计仍为 2，语义与单层一致。回归防线：此前桥接分支无
 // 条件提前返回，wasm 下嵌套静默失效（layers 恒为 1）。

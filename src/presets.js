@@ -268,6 +268,9 @@ export default {
     "vmThreshold": 1,
     "vmDecoyOps": 1024,
     "vmDispatchEnc": true,
+    // 2 层：把解释器循环本身再编译一次（外层字节码的解释动作由第二份字节码执行）。
+    // 实测可用，代价约 +90 KB 与运行时间 ×2.5；3 层跑不出结果，见 obfuscate.js 的钳位说明。
+    "vmLayers": 2,
     // 2026-10-01 由 true 改为 false。max 档的 wasmInterpreter 为 true，而分块自解密
     // 在 WASM 解释器内核档没有对应物（模块内的解释器按绝对下标硬编码，块边界不存在），
     // 那一处 vm.js 的 `!!opts.vmBlockDecrypt && !ctx.__vmWasmShared && enc` 会把它整项
@@ -299,7 +302,9 @@ export default {
     "decoyFunctions": true,
     "debugProtection": true,
     "antiCDP": true,
-    "debugProtectionInterval": 2000,
+    // 与 high 对齐：high 是 1 ms，max 曾是 2000 ms —— 强度档越高、反调试自检反而稀了
+    // 2000 倍。这是"预设漏写/写错 → 静默变弱"的典型，改回来不需要任何别的改动。
+    "debugProtectionInterval": 1,
     "sentinelRate": 0.6,
     "debugPoison": true,
     "consoleStub": true,

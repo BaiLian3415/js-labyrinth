@@ -69,6 +69,9 @@ const STRINGS = {
     warnEsmRelative: '产物里有 {n} 个相对模块说明符（{shown}），套壳后无法解析：' +
       '外壳把载荷放进 blob:/data: URL 再 import()，这两种地址没有目录上下文，' +
       '"./x.js" 找不到。填 moduleBase（产物所在目录的 URL）即可在构建期改写成绝对地址。',
+    warnVmLayersClipped: 'vmLayers 请求 {want} 层，已钳到 {got} 层。3 层及以上实测**跑不出结果**：' +
+      'wasmInterpreter 开着时 WASM 越界崩溃，关掉时一个不含循环的函数 90 秒也跑不完——' +
+      '三种 wasm 组合都一样，与输入规模无关。与其给一份跑不完的产物，不如退到能用的层数并告诉你。',
     warnTargetSuppressed: '目标宿主判定为 {target}，已强制关闭：{list}。原因：{why}。' +
       '这些限制在目标宿主上是抛错或静默失效级别的，硬套会得到一份跑不起来、' +
       '或者保护形同虚设的产物——所以宁可关掉并明确告诉你。' +
@@ -408,6 +411,11 @@ const STRINGS = {
       'resolve once shelled: the shell loads the payload through a blob:/data: URL, which has no ' +
       'directory context, so "./x.js" is not found. Set moduleBase to the artifact\'s directory URL ' +
       'to rewrite them to absolute at build time.',
+    warnVmLayersClipped: 'vmLayers requested {want} layers; clipped to {got}. Three or more layers ' +
+      'does not produce a working artifact in practice: with wasmInterpreter on the WASM module traps ' +
+      'with an out-of-bounds access, and with it off even a loop-free function fails to finish in 90 s. ' +
+      'All three wasm combinations behave the same, independent of input size. Rather than hand you an ' +
+      'artifact that never finishes, it drops to a usable layer count and tells you.',
     warnTargetSuppressed: 'Target runtime detected as {target}; these were force-disabled: {list}. ' +
       'Reason: {why}. On that host these limits are throw-level or fail silently, so keeping them ' +
       'would yield an artifact that cannot run, or whose protection is nominal only — hence they ' +

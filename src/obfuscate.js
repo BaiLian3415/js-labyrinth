@@ -442,6 +442,16 @@ function obfuscate(code, userOptions) {
     if (options.antiCDP) { options.antiCDP = false; suppressedByTarget.push('antiCDP'); }
   }
 
+  // vmLayers >= 3 钳到 2。界面把这档开放到 3，但 3 层实测**跑不出结果**：
+  //   wasmInterpreter 开 → wasm 越界崩溃（memory access out of bounds）；
+  //   wasmInterpreter 关（wasm 开或都关）→ 一个不含循环的函数 90 s 也跑不完。
+  // 三种组合全坏，且与输入规模无关（无循环函数同样挂），所以不是"慢"，是坏值。
+  //
+  // 按项目铁律「绝不产出半成品」：钳到能用的最大值并**告警**，而不是默默给一份
+  // 跑不完的产物——后者最坏，用户会以为是自己代码的问题。同 target 降级那一套。
+  const clippedVmLayers = options.vmLayers > 2 ? options.vmLayers : 0;
+  if (clippedVmLayers) options.vmLayers = 2;
+
   const tNames = platform.nowMs();
   const usedNames = new Set();
   traverse(ast, {
@@ -504,6 +514,12 @@ function obfuscate(code, userOptions) {
       list: suppressedByTarget.join(', '),
       why: Array.from(new Set([...why, ...(clockFrozen ? [clockWhy] : [])])).join('；'),
     }));
+  }
+
+  // vmLayers 钳位同上一类：说了才能让用户知道"我要的 3 层没生效"，
+  // 否则他只会看到产物跑不起来（或跑得完但保护不如预期）而找不到原因。
+  if (clippedVmLayers) {
+    warnings.push(msg('warnVmLayersClipped', { want: clippedVmLayers, got: options.vmLayers }));
   }
 
   const timePass = (name, fn) => {
