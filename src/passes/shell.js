@@ -677,6 +677,13 @@ function makeShellLayer(payload, variant, mode) {
     //
     // 正确性由 test/shell-bytecode.js 的三路对拍保证：手写参考 ⟷ 朴素 JS ⟷ 字节码。
     // 本函数只负责把「算好的输入灌进局部槽、调解释器取回 q」这一步接上。
+    //
+    // **解释器本体不进自混淆流水线**，与 jsfuck 预置同一个理由，但后果更严重：
+    // 流水线会把 case 标签的数字字面量改写成带状态的逗号表达式
+    // （controlFlow 的 assignState：`case M=M*14223+…,…^M^(…)`）。标签值于是依赖可变
+    // 状态 `M`——该 case 执行一次后 M 变了，**第二次**分发到同一操作码时标签算出另一个
+    // 值，落进 default 抛 "vm"。整个产物在跑完第一圈字节码后就死，且报错点（default
+    // 分支）与病因隔了三层。所以解释器走 mode 交给 shellWrap 拼在流水线之外。
     const vmInputs = ['N', 'L', 'SG', 'P1', 'P2', 'HB', 'E', 'G', 'D', 'M2', 'SB', 'P_EVAL', 'P_FN'];
     const ir = buildDecodeChain({
       tailOrder,
@@ -688,13 +695,18 @@ function makeShellLayer(payload, variant, mode) {
     const vm = emitVm(ir, { inputs: vmInputs, output: 'q', opmap: bcOp });
     const bcEnc = encryptWords(vm.words, randInt);
     // 新固定名必须进 banner.js 的 randomizeNames 名单，否则留成字面量指纹。
-    // 解释器内部的短名（_w/_t/_c/_k/_x/_p）刻意不带 _0 前缀，随机化按 \b 词边界走，
-    // 不会误伤；但也正因如此它们不随机化——它们属于「通用解释器」这一固定形态，
-    // 而非本工具的标识符，变化由操作码表逐构建随机承担。
+    // 解释器**整体在流水线之外**，所以 randomizeNames 够不着它，外层名字得自己随机
+    // （前缀 + 9 位 hex，长于 mangle 命名族上界，撞名可忽略）——与 jsfuckCoreName 同法。
+    // 解释器内部的短名（_w/_t/_c/_k/…）刻意不带 _0 前缀、也不随机化：它们属于
+    // 「通用解释器」这一固定形态，变化由名字池与操作码表承担。
     const bcEval = evalStyle === 0 ? '(0,eval)' : 'Function("return eval")()';
-    put('var _0bv=' + emitInterpreter({
-      opmap: bcOp, key: bcEnc.key, k2: bcEnc.k2, outSlot: vm.outSlot,
-    }) + ';');
+    let bcFn;
+    do { bcFn = (mode && mode.identifierPrefix ? mode.identifierPrefix : '_0x') + randHex(9); }
+    while (mode && mode.usedNames && mode.usedNames.has(bcFn));
+    if (mode && mode.usedNames) mode.usedNames.add(bcFn);
+    mode.bytecodePrelude = 'var ' + bcFn + '=' + emitInterpreter({
+      opmap: bcOp, key: bcEnc.key, k2: bcEnc.k2, outSlot: vm.outSlot, randInt,
+    }) + ';';
     put('var _0bw=[' + bcEnc.data.join(',') + '];');
     // 原语表：前五项是引导器已声明的原语，后两项是原生探针对象。
     // 第 6 项（Function）在 probeFunction 为假时永不被读，放 Function 只是占位，
@@ -711,7 +723,7 @@ function makeShellLayer(payload, variant, mode) {
     const byIdx = new Array(vm.slotCount).fill('0');
     for (const k of vmInputs) byIdx[vm.slots[k]] = vmLit[k];
     put('var _0bl=[' + byIdx.join(',') + '];');
-    put('var _0q=_0bv(_0bw,_0bt,_0bc,_0bl);');
+    put('var _0q=' + bcFn + '(_0bw,_0bt,_0bc,_0bl);');
   } else {
     if (decStyle === 0) {
       put(P(['var _0r=new _0U8(_0N);var _0n=0;var _0acc=0;var _0pc=0;var _0bd2=0;',
@@ -903,7 +915,7 @@ function shellWrap(code, options, bootObfuscate, cjs, esm) {
     // esm 与 cjs 互斥：ESM 载荷本来就没有自由 CommonJS 绑定，且 import() 放行
     // 时那几个形参也无从谈起。每一层都继承形态——内层壳解密出来的是外层壳的
     // 源码，它同样需要 import() 才能跑。
-    const mode = { cjs: !esm && !!cjs, esm: !!esm };
+    const mode = { cjs: !esm && !!cjs, esm: !!esm, identifierPrefix: options.identifierPrefix };
     let pre = '';
     // jsfuck 与 bytecode 互斥：jsfuck 改的正是「密钥流 + 校验尾」那段**明文**语句，
     // 而 bytecode 形态里那段已经不在明文里了。两者同时要时以 bytecode 为准——
@@ -916,6 +928,9 @@ function shellWrap(code, options, bootObfuscate, cjs, esm) {
       jsfuckChars += pre.length;
     }
     const boot = makeShellLayer(cur, useBytecode ? { bytecode: true } : undefined, mode);
+    // 字节码解释器预置：与 jsfuck 预置同理拼在流水线之外。理由见 makeShellLayer 里
+    // 那段注释——流水线会把 case 标签的数字改写成带状态的表达式，标签就不再稳定。
+    if (mode.bytecodePrelude) pre = mode.bytecodePrelude + pre;
     // 预置留在流水线之外：见 jsfuckPrelude 的说明。它必须先于引导层执行，
     // 否则引导层读到的全局名还是 undefined。
     const out = bootObfuscate ? bootObfuscate(boot, options).code : boot;

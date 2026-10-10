@@ -24,7 +24,7 @@
 import { cleanTmp, counters, ok, report, runNode, section } from './_harness.js';
 import { buildDecodeChain } from '../src/passes/shellir.js';
 import {
-  CONSTS, OPCODES, assignSlots, emitInterpreter, emitJs, emitVm,
+  CONSTS, NAME_POOLS, OPCODES, assignSlots, emitInterpreter, emitJs, emitVm,
   encryptWords, shuffleOpCodes,
 } from '../src/passes/shellemit.js';
 import { PRIMITIVES_TEXT } from '../src/passes/shell.js';
@@ -244,20 +244,21 @@ section('发射器自身的性质');
     'acc', 'segment', 'shuffle', 'sbox', 'interleave', 'checksum', 'poison'];
   const leaked = forbidden.filter((w) => new RegExp(w, 'i').test(vm.src));
   ok(leaked.length === 0, '解释器源码不出现算法名/原语名（外层读不出语义）', leaked.join(','));
-  // 外层的循环必须只有三个，且都是与算法无关的那三个：字节码就地解密、switch 分发、
-  // CALL 收集参数。任何按段/按字符展开的解码循环都说明算法从字节码漏回了明文。
+  // 外层的循环必须只有与算法无关的那几个：字节码就地解密、分发（for(;;) / while(1) /
+  // for(;1;) 三骨架之一）、CALL 收集参数。任何按段/按字符展开的解码循环都说明算法从
+  // 字节码漏回了明文。
   //
   // 不断言"循环数量 <= N"而逐个核对循环头：数量上限在新增一个合法循环时会误报，
   // 而漏掉一个解码循环时又可能刚好还在上限内——这种断言看着在管事，实际两边都放行。
-  ok(!/\bwhile\s*\(/.test(vm.src), '解释器里没有 while');
   const heads = (vm.src.match(/\bfor\s*\([^)]*\)/g) || []).map((x) => x.replace(/\s+/g, ''));
+  const whiles = (vm.src.match(/\bwhile\s*\([^)]*\)/g) || []).map((x) => x.replace(/\s+/g, ''));
   const known = [
     /^for\(var\w+=\d+;\w+<\w+\.length;\w+\+\+\)/,   // 逐字解密
-    /^for\(;;\)/,                                     // switch 分发
-    /^for\(var\w+=\w+;\w+>0;\w+--\)/,                 // CALL 收集参数
+    /^for\(;;\)$/, /^for\(;1;\)$/, /^while\(1\)$/, // 分发骨架（三形态）
+    /^for\(var\w+=\w+;\w+>0;\w+--\)/,             // CALL 收集参数
   ];
-  const unmatched = heads.filter((h) => !known.some((re) => re.test(h)));
-  ok(unmatched.length === 0, '解释器里的循环只有解密/分发/收参三个', unmatched.join(' | '));
+  const unmatched = heads.concat(whiles).filter((h) => !known.some((re) => re.test(h)));
+  ok(unmatched.length === 0, '解释器里的循环只有解密/分发/收参', unmatched.join(' | '));
   ok(!/\.forEach\(|\.map\(|\.reduce\(/.test(vm.src), '解释器里没有数组高阶遍历');
 
   // 逐构建随机：操作码表与字节码都该变，否则外壳成了固定指纹
@@ -368,6 +369,91 @@ section('端到端：bytecode 形态的产物真能跑');
   const bcTrace = (outs.bytecode.code.match(/new Uint8Array\(/g) || []).length;
   ok(bcTrace <= classicTrace, 'bytecode 形态不新增明文缓冲区构造',
     classicTrace + ' -> ' + bcTrace);
+}
+
+section('解释器多态：形状逐构建变化，语义逐位不变');
+{
+  // 只随机化 case 标签的话，形状匹配照样能认出"这是个 switch 分发的栈式 VM"——
+  // 搜一下 switch + case + 一串算术就命中。多态化让**形状本身**逐构建变化：
+  // 分发形态 3 种 × 循环骨架 3 种 × 局部短名 4 组。
+  //
+  // 这组用例穷举全部 36 种组合，逐一与基准比对解码结果。多态化最危险的失败是
+  // "某种形态算错了"——而那种错误只在特定形态下出现，随机抽样很容易漏。
+  const N = 200, SG = 3;
+  const raw = new Uint8Array(N);
+  for (let i = 0; i < N; i++) raw[i] = (i * 29 + 5) & 255;
+  const b64 = Buffer.from(raw).toString('base64');
+  const per = Math.ceil(b64.length / SG);
+  const G = []; for (let i = 0; i < b64.length; i += per) G.push(b64.slice(i, i + per));
+  const D = []; for (let i = 0; i < SG; i++) D[i] = i;
+  const cfg = {
+    N, L: N - 4, SG, P1: 7919, P2: 104729, HB: 0x12345678, E: 0x9e3779b9,
+    G, D, M2: mkM2(), SB: mkSB(), tailOrder: 0, junkMult: 0x45d9f3b, posHash: 1,
+    badCount: 0, probeFunction: false,
+  };
+
+  const runAs = (seed, forced) => {
+    const ir = buildDecodeChain(cfg);
+    let st = seed >>> 0;
+    const ri0 = (lo, hi) => { st = (Math.imul(st, 1103515245) + 12345) & 0x7fffffff; return lo + (st % (hi - lo + 1)); };
+    const opmap = shuffleOpCodes(ri0);
+    const vm = emitVm(ir, { inputs: INPUTS, output: 'q', opmap });
+    const enc = encryptWords(vm.words, ri0);
+    // forced 非空时，前三次取形态的随机数被替换成指定值（后面的仍随机）
+    let k = 0;
+    const ri = forced ? (lo, hi) => (k < forced.length ? forced[k++] : ri0(lo, hi)) : ri0;
+    const src = emitInterpreter({ opmap, key: enc.key, k2: enc.k2, outSlot: vm.outSlot, randInt: ri });
+    const f = (0, eval)(src);
+    const T = new Array(vm.slotCount).fill(0);
+    const vals = { N, L: N - 4, SG, P1: cfg.P1, P2: cfg.P2, HB: cfg.HB, E: cfg.E,
+      G: cfg.G, D: cfg.D, M2: cfg.M2, SB: cfg.SB, P_EVAL: (0, eval), P_FN: Function };
+    for (const kk of INPUTS) T[vm.slots[kk]] = vals[kk];
+    const tbl = [xs32, mix, ipos, mul32, (s, i) => s.charCodeAt(i), (0, eval), Function];
+    return { q: Array.from(f(enc.data.slice(), tbl, CONSTS, T)), src };
+  };
+
+  const base = runAs(1).q;
+  let bad = [];
+  let shapeSet = new Set();
+  const rawSet = new Set();
+  for (let form = 0; form < 3; form++) {
+    for (let loop = 0; loop < 3; loop++) {
+      for (let np = 0; np < NAME_POOLS; np++) {
+        const r = runAs(7, [form, loop, np]);
+        if (r.q.join() !== base.join()) bad.push(form + '/' + loop + '/' + np);
+        rawSet.add(r.src);
+        // 只归一化**标识符**，数字必须留着——`case 1:` 与 `case 7:` 是不同形状，
+        // 用会吃掉数字的正则会把 30 个 case 标签全压成同一个，形状数虚报到个位数。
+        //
+        // 注意归一化会**抹掉短名池那一轴**（短名本身就是标识符），所以这里量到的是
+        // 「分发形态 × 循环骨架」= 3×3 = 9 种，与名字池无关。名字池的贡献由上面
+        // rawSet（未归一化，应满 36）证明。
+        shapeSet.add(r.src.replace(/([A-Za-z_$][A-Za-z0-9_$]*)/g, '#'));
+      }
+    }
+  }
+  ok(bad.length === 0, '穷举 3×3×4=36 种形态组合，解码结果逐位一致', bad.join(' '));
+  ok(rawSet.size === 36, '36 种组合产出 36 份互不相同的源码', '实得 ' + rawSet.size);
+  ok(shapeSet.size === 9, '去标识符后仍有 9 种形状（分发形态 × 循环骨架）',
+    '实得 ' + shapeSet.size);
+
+  // 三条轴各自都要真的起作用：只变形态、只变循环、只变短名，都该产出不同源码
+  const sameForm = [runAs(9, [0, 0, 0]).src, runAs(9, [0, 0, 1]).src];
+  ok(sameForm[0] !== sameForm[1], '短名池参与形态选择（两组池产出不同源码）');
+  const sameLoop = [runAs(9, [0, 0, 0]).src, runAs(9, [0, 1, 0]).src];
+  ok(sameLoop[0] !== sameLoop[1], '循环骨架参与形态选择');
+  ok(/case \d+:/.test(runAs(9, [0, 0, 0]).src), '形态 0 是 switch 直接分发');
+
+  // 形态 1：case 标签必须是 1..N 的连续值（不是操作码的随机置换）
+  const dense = runAs(11, [1, 0, 0]).src;
+  const labels = (dense.match(/case (\d+):/g) || []).map((x) => Number(x.slice(5, -1)));
+  const isDense = labels.length > 0 && labels.every((x, i) => x === i + 1);
+  ok(isDense, '形态 1 的 case 标签是 1..N 连续值（稠密表）', labels.slice(0, 6).join(','));
+
+  // 形态 2：不该出现 switch
+  const chain = runAs(11, [2, 0, 0]).src;
+  ok(!/switch\(/.test(chain), '形态 2（if-else 链）里没有 switch');
+  ok((chain.match(/else if\(/g) || []).length > 20, '形态 2 是一条长 if-else 链');
 }
 
 if (process.argv[1] && process.argv[1].endsWith('shell-bytecode.js')) {

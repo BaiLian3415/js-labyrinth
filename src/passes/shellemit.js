@@ -385,25 +385,69 @@ export function verifyVm(words, opmap, slotCount) {
 // ================================================================ 解释器发射
 
 /**
+ * 解释器内部的局部短名池。四组，逐构建挑一组。
+ *
+ * **必须连 case 体里的局部名一起参数化**：那些名字（a/b/s/i/o/v/n/t/g…）是函数级
+ * `var`，若短名池与它们相撞，同一个函数里就会声明两次——要么 SyntaxError，要么后
+ * 声明的覆盖先声明的（表现为"某个操作码算错"，与病因隔了两层）。所以这里给 20 个
+ * 槽位一起分配字母，而不是只给入口那 6 个。
+ *
+ * 步长 5 保证同一组内 20 个字母互不相同；组间靠偏移 3 拉开，并给第 1 组及以后加
+ * 数字后缀，彻底避开引导器其余部分的短名。
+ */
+const NAME_SLOTS = ['W', 'T', 'C', 'SK', 'pc', 'sp', 'D',
+  'a', 'b', 's', 'i', 'o', 'v', 'n', 't', 'g', 'j', 'pp', 'cc', 'z'];
+const LETTERS = 'abcdefghijklmnopqrstuvwxyz';
+export const NAME_POOLS = 4;
+
+function namePool(k) {
+  const m = {};
+  NAME_SLOTS.forEach((s, idx) => {
+    m[s] = '_' + LETTERS[(idx * 5 + k * 3) % 26] + (k > 0 ? String(k) : '');
+  });
+  return m;
+}
+
+/**
  * 生成外层解释器源码：`function(words, tbl, C, T)`，返回解出的载荷字节。
  *
  * 刻意写成**通用**形态——它不认识 "base64"、"交织"、"密钥流" 这些概念，只认识
  * PUSH/ADD/JMP。所以外层无论读多少遍都读不出产品语义：算法在密文字节码里，而字节码
  * 要靠那张逐构建随机的操作码表才能解码。
  *
- * 两处容易踩的地方在下面各有注释：取指口径（`W[pc++]` 而不是 `W[++pc]`）与
- * 栈/局部必须两个数组。
+ * ## 为什么要多态
+ *
+ * 只随机化 case 标签的话，**形状匹配**照样能认出"这是个 switch 分发的栈式 VM"——
+ * 搜一下 `switch` 加 `case` 加一串算术就命中了。多态化让**形状本身**逐构建变化：
+ *
+ *   - **分发形态**（3 种）：`switch(操作码)`（case 标签是操作码的随机置换）/
+ *     `switch(稠密表[操作码])`（多一张映射表，标签变成 1..N 的**连续值**，落表顺序
+ *     也逐构建打乱）/ `if-else` 长链（连 switch 与 case 标签都不存在）。
+ *   - **循环骨架**（3 种）：`for(;;)` / `while(1)` / `for(;1;)`。
+ *   - **局部短名**（4 组）：见 namePool。
+ *
+ * 三轴独立组合（36 种），同一份外壳每次构建的形状都不同，两次产物之间无法对照。
+ *
+ * 这是**提高识别成本**，不是让形状不可识别：真要彻底不可识别得做架构级差异（不同
+ * 执行模型、不同字节码格式），那是另一个量级的工作。
  *
  * @param {object} o
  * @param {object} o.opmap 名字 → 编号
  * @param {number} o.key 字节码加密密钥
  * @param {number} o.k2 位置混淆因子
  * @param {number} o.outSlot 返回哪个局部
+ * @param {function} [o.randInt] (lo,hi)=>int；省略时固定取第 0 种形态（保证可复现）
  * @returns {string} 函数表达式源码
  */
-export function emitInterpreter({ opmap, key, k2, outSlot }) {
-  const K = (n) => opmap[n];
-  const W = '_w', T = '_t', C = '_c', SK = '_k', pc = '_x', sp = '_p';
+export function emitInterpreter({ opmap, key, k2, outSlot, randInt }) {
+  const ri = randInt || ((lo) => lo);
+  const form = ri(0, 2);   // 分发形态
+  const loop = ri(0, 2);   // 循环骨架
+  const np = namePool(ri(0, NAME_POOLS - 1));
+  const W = np.W, T = np.T, C = np.C, SK = np.SK, pc = np.pc, sp = np.sp, D = np.D;
+  const a = np.a, b = np.b, s = np.s, i = np.i, o = np.o, v = np.v, n = np.n, t = np.t;
+  const g = np.g, J = np.j, PP = np.pp, CC = np.cc, Z = np.z;
+
   // 弹栈必须是 SK[--sp]，**不是** SK[sp--]。
   //
   // 后缀 `--` 的语义是「取旧值再自减」，所以 SK[sp--] 读到的是「栈顶之上那一格」
@@ -411,63 +455,98 @@ export function emitInterpreter({ opmap, key, k2, outSlot }) {
   // 表达式的操作数都错位——症状是 AGET 读到 undefined[undefined]、ADD 算出 NaN，
   // 与真正的病因隔了两层。
   //
-  // 这个错误值得单独立一条注释：它是"手写栈序"这一整套做法的最终账单。上一轮手写
-  // 字节码栽在"栈与局部共用一个数组"，这一轮栽在"后缀自减当弹出用"，两次都是同一条
-  // 纪律的不同侧面——凡是碰栈指针的地方，都必须先问"这个下标是第几格"。
+  // 这是"手写栈序"这一整套做法的最终账单。上一轮手写字节码栽在"栈与局部共用一个
+  // 数组"，这一轮栽在"后缀自减当弹出用"，两次都是同一条纪律的不同侧面——凡是碰栈
+  // 指针的地方，都必须先问"这个下标是第几格"。
   const pop = () => SK + '[--' + sp + ']';
-  const push = (v) => '(' + SK + '[' + sp + '++]=' + v + ')';
+  const push = (x) => '(' + SK + '[' + sp + '++]=' + x + ')';
   const cases = [];
 
-  const emit = (n, t) => cases.push({ n, t });
+  // case 体**不带 break**——if-else 形态里 break 非法。各形态在装配时自己补。
+  const emit = (nm, code) => cases.push({ nm, code });
   // 二元：栈顶是右操作数，先弹的进 b。顺序写反会让 a-b 变 b-a——加法乘法对称看不出来，
   // 只有减法与移位会暴露，属"错了但大部分用例看不出来"的那类。
-  const bin = (n, e) => emit(n, `{var b=${pop()},a=${pop()};${push(e)};break;}`);
+  const bin = (nm, e) => emit(nm, `{var ${b}=${pop()},${a}=${pop()};${push(e)}}`);
 
-  // 取指口径：`switch(W[pc++])` 执行完 pc 已越过操作码，操作数一律用 `W[pc++]`。
-  // 写成 `W[++pc]` 会多跳一个字——每个操作数都读错，而程序照样跳得起来，只是跳去
-  // 奇怪的地方。
-  emit('PUSH', `{${push(W + '[' + pc + '++]')};break;}`);
-  emit('LD', `{${push(T + '[' + W + '[' + pc + '++]]')};break;}`);
-  emit('ST', `{var s=${W}[${pc}++];${T}[s]=${pop()};break;}`);
+  // 取指口径：`W[pc++]` 执行完 pc 已越过操作码，操作数一律 `W[pc++]`。
+  // 写成 `W[++pc]` 会多跳一个字——每个操作数都读错，而程序照样跳得起来。
+  emit('PUSH', `{${push(W + '[' + pc + '++]')}}`);
+  emit('LD', `{${push(T + '[' + W + '[' + pc + '++]]')}}`);
+  emit('ST', `{var ${s}=${W}[${pc}++];${T}[${s}]=${pop()}}`);
   // 基址也从栈上取（不是操作数），这样索引表达式不必是裸变量
-  emit('AGET', `{var i=${pop()},o=${pop()};${push('o[i]')};break;}`);
-  emit('ASET', `{var v=${pop()},i=${pop()},o=${pop()};o[i]=v;break;}`);
-  emit('LEN', `{var o=${pop()};${push('o.length')};break;}`);
-  // NEWU8 是**表达式**：弹尺寸、压新数组，不带目标槽。目标槽是 set 语句的事，
-// 让它带 operand 就等于让表达式知道自己的去處，破坏"表达式只管压一个值"这条不变量。
-  emit('NEWU8', `{var n=${pop()};${push('new Uint8Array(n)')};break;}`);
-  // DUP / POP：栈深度的显式微调。`ex` 只管"恰好压一个"，凡是需要"多留一份"或
-  // "丢掉一个"的地方（目前只有 or1 的短路）都走这两个，不许在别处手写深度。
-  // DUP 读的是**栈顶**，即 sp-1 那一格。
-  emit('DUP', `{var t=${SK}[${sp}-1];${SK}[${sp}++]=t;break;}`);
-  emit('POP', `{${sp}--;break;}`);
+  emit('AGET', `{var ${i}=${pop()},${o}=${pop()};${push(o + '[' + i + ']')}}`);
+  emit('ASET', `{var ${v}=${pop()},${i}=${pop()},${o}=${pop()};${o}[${i}]=${v}}`);
+  emit('LEN', `{var ${o}=${pop()};${push(o + '.length')}}`);
+  // NEWU8 是**表达式**：弹尺寸、压新数组，不带目标槽。目标槽是 set 语句的事，让它带
+  // operand 就等于让表达式知道自己的去处，破坏"表达式只管压一个值"这条不变量。
+  emit('NEWU8', `{var ${n}=${pop()};${push('new Uint8Array(' + n + ')')}}`);
+  // DUP / POP：栈深度的显式微调。`ex` 只管"恰好压一个"，凡是需要"多留一份"或"丢掉
+  // 一个"的地方（目前只有 or1 的短路）都走这两个，不许在别处手写深度。DUP 读的是栈顶，
+  // 即 sp-1 那一格。
+  emit('DUP', `{var ${t}=${SK}[${sp}-1];${SK}[${sp}++]=${t}}`);
+  emit('POP', `{${sp}--}`);
 
-  bin('ADD', 'a+b'); bin('SUB', 'a-b'); bin('MUL', 'a*b'); bin('AND', 'a&b');
-  bin('OR', 'a|b'); bin('XOR', 'a^b'); bin('SHL', 'a<<b'); bin('SHR', 'a>>b');
-  bin('USHR', 'a>>>b');
-  emit('U32', `{var a=${pop()};${push('a>>>0')};break;}`);
-  bin('LT', 'a<b?1:0'); bin('LE', 'a<=b?1:0'); bin('GT', 'a>b?1:0'); bin('GE', 'a>=b?1:0');
-  bin('EQ', 'a===b?1:0'); bin('NE', 'a!==b?1:0');
+  bin('ADD', `${a}+${b}`); bin('SUB', `${a}-${b}`); bin('MUL', `${a}*${b}`); bin('AND', `${a}&${b}`);
+  bin('OR', `${a}|${b}`); bin('XOR', `${a}^${b}`); bin('SHL', `${a}<<${b}`); bin('SHR', `${a}>>${b}`);
+  bin('USHR', `${a}>>>${b}`);
+  emit('U32', `{var ${a}=${pop()};${push(a + '>>>0')}}`);
+  bin('LT', `${a}<${b}?1:0`); bin('LE', `${a}<=${b}?1:0`); bin('GT', `${a}>${b}?1:0`);
+  bin('GE', `${a}>=${b}?1:0`); bin('EQ', `${a}===${b}?1:0`); bin('NE', `${a}!==${b}?1:0`);
 
-  emit('JMP', `{${pc}=${W}[${pc}++];break;}`);
-  emit('JZ', `{var j=${W}[${pc}++];if(!${pop()})${pc}=j;break;}`);
-
-  emit('CALL', `{var p=${W}[${pc}++],n=${W}[${pc}++],g=[];`
-    + `for(var i=n;i>0;i--)g[i-1]=${pop()};${push('tbl[p].apply(null,g)')};break;}`);
-  emit('NCHK', `{var g=${W}[${pc}++],c=${W}[${pc}++];`
-    + `${push('((""+tbl[g]).indexOf(' + C + '[c])<0)?1:0')};break;}`);
+  emit('JMP', `{${pc}=${W}[${pc}++]}`);
+  emit('JZ', `{var ${J}=${W}[${pc}++];if(!${pop()})${pc}=${J}}`);
+  emit('CALL', `{var ${PP}=${W}[${pc}++],${n}=${W}[${pc}++],${g}=[];`
+    + `for(var ${i}=${n};${i}>0;${i}--)${g}[${i}-1]=${pop()};`
+    + `${push('tbl[' + PP + '].apply(null,' + g + ')')}}`);
+  emit('NCHK', `{var ${g}=${W}[${pc}++],${CC}=${W}[${pc}++];`
+    + `${push('((""+tbl[' + g + ']).indexOf(' + C + '[' + CC + '])<0)?1:0')}}`);
   emit('RET', `{return ${T}[${outSlot}];}`);
 
-  const body = cases.map((c) => 'case ' + K(c.n) + ':' + c.t).join('');
+  const opExpr = W + '[' + pc + '++]';
+  let dispatch;
+  if (form === 1) {
+    // 稠密表：先把操作码映到 1..N，case 标签于是变成连续值、不再是置换。
+    //
+    // 表项的值必须是**该操作码自己在 cases 里的下标 + 1**，因为 case 标签也按这个
+    // 下标发。曾经把表的稠密值和 case 标签按各自的排列发（一个用打乱后的顺序、一个
+    // 用原始顺序），于是两者对不上：执行的是**别的**操作码的代码，表现为跑到某条
+    // CALL 时 `tbl[undefined].apply` —— 离病因隔了三层。
+    // 打乱只用来决定**落表语句的书写顺序**（让表的排列也逐构建不同），不改映射。
+    const order = cases.map((_, k) => k);
+    for (let k = order.length - 1; k > 0; k--) {
+      const q = ri(0, k);
+      const tmp = order[k]; order[k] = order[q]; order[q] = tmp;
+    }
+    const tblPre = 'var ' + D + '=[];' + order
+      .map((idx) => D + '[' + opmap[cases[idx].nm] + ']=' + (idx + 1) + ';').join('');
+    dispatch = tblPre + 'switch(' + D + '[' + opExpr + ']){'
+      + cases.map((c, k) => 'case ' + (k + 1) + ':' + c.code + 'break;').join('')
+      + 'default:throw new Error("vm")}';
+  } else if (form === 2) {
+    // if-else 长链：连 switch 与 case 标签都不存在，形状与另两种完全不同。
+    //
+    // 操作码**必须先取进局部**：`W[pc++]` 写在比较式里会被求值 N 次（一条 case 一
+    // 次），每读一个字 pc 就前移一格——于是从第二个分支起全在拿操作数当操作码比，
+    // 表现为"跑到第几条就抛 vm"。switch 形态没这个问题是因为 switch 的判据只求值一次。
+    dispatch = 'var ' + D + '=' + opExpr + ';'
+      + cases.map((c, k) => (k === 0 ? '' : 'else ')
+        + 'if(' + D + '===' + opmap[c.nm] + '){' + c.code + '}').join('')
+      + 'else{throw new Error("vm")}';
+  } else {
+    dispatch = 'switch(' + opExpr + '){'
+      + cases.map((c) => 'case ' + opmap[c.nm] + ':' + c.code + 'break;').join('')
+      + 'default:throw new Error("vm")}';
+  }
+
   // 栈（SK）与局部表（T）必须**两个数组**。曾经图省事让栈直接用 T：pop 读 T[sp--]、
-  // push 写 T[sp++]=v，而 T 装着 N/L/SG/循环游标——于是每压一个值就覆盖一个局部，
-  // 表现为局部变成栈里的中间量、循环变量被冲成几十。这种 bug 不在任何一条指令里，
-  // 而在"栈和变量表是不是同一个东西"这个整体约定上，逐条读指令看不出来。
+  // push 写 T[sp++]=v，而 T 装着 N/L/SG/循环游标——于是每压一个值就覆盖一个局部。
+  const loopPre = loop === 1 ? 'while(1){' : loop === 2 ? 'for(;1;){' : 'for(;;){';
   return '(function(' + W + ',tbl,' + C + ',' + T + '){'
     + 'var ' + SK + '=[];' + sp + '=0;' + pc + '=0;'
-    + 'for(var i=0;i<' + W + '.length;i++)'
-    + W + '[i]=(' + W + '[i]^' + key + '^(((i+1)*' + k2 + ')&255))|0;'
-    + 'for(;;){switch(' + W + '[' + pc + '++]){' + body + '}}})';
+    // 就地解密：字节码随产物下发，必须先解开才能执行
+    + 'for(var ' + Z + '=0;' + Z + '<' + W + '.length;' + Z + '++)'
+    + W + '[' + Z + ']=(' + W + '[' + Z + ']^' + key + '^(((' + Z + '+1)*' + k2 + ')&255))|0;'
+    + loopPre + dispatch + '}})';
 }
 
 /** 字节码加密：单字节密钥 + 位置混淆。key 与 k2 都要返回——解释器源码里带着这两个

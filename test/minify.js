@@ -882,6 +882,40 @@ section('选项元数据：说明完整性');
   ok(tooShort.length === 0, '没有过短的说明（< 8 字符）', tooShort.join(','));
   const tpl = keys.filter((k) => /\{\{|\}\}|undefined|NaN/.test(V[k].hintZh || ''));
   ok(tpl.length === 0, '说明里没有未替换的占位符', tpl.join(','));
+
+  // 上面那圈只覆盖 VALUE_OPTIONS（52 项）。界面上还有一批布尔项来自 BOOL_LABELS +
+  // BOOL_HINTS，两者拼进 guiOptions() 才是用户真正看到的那一版。
+  //
+  // 曾经的洞：wasm / wasmInterpreter 在 BOOL_LABELS 里有标签、BOOL_HINTS 里**根本没有
+  // 条目**，界面上就是两个没有任何说明的开关——而 VALUE_OPTIONS 那圈检查看不见它们。
+  // 所以这里以 guiOptions() 为准再查一遍：只要界面会渲染，它就必须有说明。
+  const gui = optionsMeta.guiOptions();
+  ok(gui.length > keys.length, '界面选项集大于 VALUE_OPTIONS（含布尔项）',
+    gui.length + ' vs ' + keys.length);
+  const guiMiss = gui.filter((o) => !o.hintZh || !o.hintEn).map((o) => o.key);
+  ok(guiMiss.length === 0, gui.length + ' 个界面选项都有中英文说明', '缺说明: ' + guiMiss.join(','));
+
+  // 长度预算：提示是让人在**选一个值之前**知道自己在选什么，不是文档。
+  // 上限给得宽（220 字）——它拦的是"膨胀"而不是"长短"：超过这个长度的多半又把实现
+  // 细节、历史沿革或动机塞回来了，而那些在 README 与 AGENTS 里各有一处正本。
+  const over = gui.filter((o) => (o.hintZh || '').length > 220)
+    .map((o) => o.key + '(' + o.hintZh.length + ')');
+  ok(over.length === 0, '没有说明膨胀到 220 字以上', over.join(','));
+
+  // 说明里点名了别的选项时要真实存在：改名/删项之后最容易漏改的就是这种交叉引用，
+  // 而它不会报错——用户读到的是一个不存在的选项名。
+  const known = new Set(gui.map((o) => o.key));
+  const badRef = [];
+  for (const o of gui) {
+    for (const m of (o.hintZh || '').matchAll(/\b([a-z][A-Za-z0-9]{3,})\b/g)) {
+      const w = m[1];
+      // 只查"看起来像选项名"且确实不在表里的：避免把 camelCase 的普通英文词全算进来
+      if (/[A-Z]/.test(w) && !known.has(w) && /^(string|vm|wasm|control|number|opaque|dead|sentinel|integrity|domain|module|dir|shell|html|name|chinese|force|reserved|extra|self|debug|anti|console|env|simplify|escape|compact|indent|seed|lang|preset|target|identifier|logical|condition|rt)/.test(w)) {
+        badRef.push(o.key + '->' + w);
+      }
+    }
+  }
+  ok(badRef.length === 0, '说明里引用的选项名都真实存在', badRef.join(','));
 }
 
 if (process.argv[1] && process.argv[1].endsWith('minify.js')) {
