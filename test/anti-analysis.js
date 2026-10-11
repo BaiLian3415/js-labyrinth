@@ -11,9 +11,11 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { TMP, cleanTmp, counters, ok, report, runNode, runSync, section, throws } from './_harness.js';
 import obfuscateMod from '../src/obfuscate.js';
+import parserMod from '../src/ast/parser.js';
 import plan from '../src/plan.js';
 
 const { obfuscate } = obfuscateMod;
+const { parse } = parserMod;
 section('Anti-CDP（CDP 自动化检测）');
 {
   // 探针样例：字符串全部经字符串池（high 预设 threshold=1），投毒后输出腐蚀
@@ -88,6 +90,68 @@ process.stdout.write(a + '|' + b + '\\n');
     if (got !== cdpWant) cdpWeakBad = 'seed=' + seed + ' → ' + got.slice(0, 40);
   }
   ok(cdpWeakBad === '', '弱证据（单次触发）不投毒不误伤', cdpWeakBad);
+
+  // V1 低频周期重跑（2026-10-11）：启动版之外，定时器里还有第二份同形探针，
+  // 尾巴是衰减累加器（持续在场 3 轮累计≥4 投毒，单次偶发自然衰减），修"启动后
+  // 才 attach 的 CDP 过去漏检"。判据用 AST：defineProperty(obj,"x",{...get:fn})
+  // 且 fn 体内含自增计数与 return 1——探针函数体会被别的 pass 注入 junk 语句，
+  // 文本正则数不准；隔离配置关掉 VM（探针被搬进字节码就数不见）与
+  // objectKeyEncoding（改写 get: 键）。旧码每 seed 恰 1（只有启动版），
+  // 新码每 seed 恰 2；v1Every（周期数 10~20）旧码无此键。
+  const cdpWalk = (n, fn) => {
+    if (!n || typeof n !== 'object') return;
+    if (Array.isArray(n)) { n.forEach((c) => cdpWalk(c, fn)); return; }
+    if (n.type) fn(n);
+    for (const k of Object.keys(n)) {
+      if (k === 'loc' || k === 'start' || k === 'end') continue;
+      cdpWalk(n[k], fn);
+    }
+  };
+  const countV1Probes = (code) => {
+    let n = 0;
+    cdpWalk(parse(code, { sourceType: 'script' }), (x) => {
+      if (x.type !== 'CallExpression') return;
+      const cal = x.callee;
+      if (!cal || cal.type !== 'MemberExpression') return;
+      const args = x.arguments || [];
+      if (args.length < 3 || !args[1] || args[1].type !== 'StringLiteral' || args[1].value !== 'x') return;
+      const desc = args[2];
+      if (!desc || desc.type !== 'ObjectExpression') return;
+      const getProp = (desc.properties || []).find((p) => {
+        const key = p && p.key;
+        const kn = !key ? '' : key.type === 'Identifier' ? key.name
+          : key.type === 'StringLiteral' ? key.value : '';
+        return kn === 'get';
+      });
+      if (!getProp || !getProp.value) return;
+      let inc = false, ret1 = false;
+      cdpWalk(getProp.value, (y) => {
+        if (y.type === 'UpdateExpression') inc = true;
+        if (y.type === 'ReturnStatement' && y.argument && y.argument.type === 'NumericLiteral'
+          && y.argument.value === 1) ret1 = true;
+      });
+      if (inc && ret1) n++;
+    });
+    return n;
+  };
+  let cdpV1Bad = '', cdpV1EveryBad = '';
+  for (const seed of [11, 12]) {
+    const r = obfuscate(cdpSample, {
+      preset: 'high', shell: false, antiCDP: true, seed,
+      objectKeyEncoding: false, vmProtection: false,
+    });
+    if (countV1Probes(r.code) !== 2) cdpV1Bad = 'seed=' + seed;
+    const every = r.stats.find((s) => s.pass === 'antiCDP');
+    const v = every && every.result && every.result.v1Every;
+    if (!(v >= 10 && v <= 20)) cdpV1EveryBad = 'seed=' + seed + ' v1Every=' + v;
+    if (seed === 11) {
+      let got;
+      try { got = runNode(r.code, 'cdp-v1-node'); } catch (e) { got = 'THREW'; }
+      if (got !== cdpWant) cdpV1Bad = 'seed=11 Node 直跑输出变：' + got.slice(0, 40);
+    }
+  }
+  ok(cdpV1Bad === '', 'V1 探针启动版之外还有周期版（每 seed 恰 2 份）', cdpV1Bad);
+  ok(cdpV1EveryBad === '', '周期数 v1Every 落在 10~20（旧码无此键）', cdpV1EveryBad);
 
   // 开关有效性：关闭后 webdriver 环境也不投毒
   ok(cdpRun(rCdpOff.code, 'webdriver', 'off') === cdpWant,

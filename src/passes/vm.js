@@ -3188,6 +3188,10 @@ function compileFunction(fn, ctx) {
   // 新后端的计数在这里累加（走到这一行说明整条编译流程没抛错、产物已落到 AST 上）；
   // 片段里嵌套的函数走 compileInnerFns 递归调用，也会各自累加，所以统计不会漏报
   if (asyncFn && ctx.__vmAsync) ctx.__vmAsync.funcs++;
+  // 栈编码落盘标记：SE 发射器只在 stackEnc 为真时装配（见上面的 ...(stackEnc ? …)），
+  // 走到这里说明本函数带了逐函数密钥的编解码器。抛错路径到不了这一行，所以
+  // applied 为真恒等于"真的发射了"，与 dyn.applied 同口径。
+  if (stackEnc && ctx.__vmStackEnc) ctx.__vmStackEnc.applied = true;
   return {
     real: opKinds.length, decoy: decoys.length, total: entries.length, form: dispatchForm,
   };
@@ -3450,6 +3454,9 @@ function vm(ast, options, ctx) {
   ctx.__vmFused = { jumps: 0, nops: 0 };
   // vmDynOpcodes 的计数：同样放 ctx 上，片段里嵌套编译的函数也要算进来
   ctx.__vmDyn = { applied: false, space: 0 };
+  // vmStackEncoding 的落盘标记：逐函数 SE 发射时置位（见 compileFunction 成功返回处）。
+  // 只读 stats 用，不参与任何分发逻辑。
+  ctx.__vmStackEnc = { applied: false };
   ctx.__vmAsync = { funcs: 0 };
   ctx.__vmDepth = 0;
   ctx.__vmLayerMax = 0;
@@ -3544,6 +3551,10 @@ function vm(ast, options, ctx) {
     fused: { jumps: ctx.__vmFused.jumps, nops: ctx.__vmFused.nops },
     // vmDynOpcodes：是否真的生效，以及取整后的字空间大小（0 表示本项没生效）
     dyn: { applied: ctx.__vmDyn.applied, space: ctx.__vmDyn.space },
+    // vmStackEncoding：是否有函数真的带栈编码解释器（逐函数 SE 发射时置位）。
+    // 开关开着但一个函数都没编译时为 false——那是"没用上"不是"配了没生效"，
+    // 不进 suppressed（suppressed 只收"配了但本档不支持"的项，见 OFF 表）。
+    stack: { applied: !!(ctx.__vmStackEnc && ctx.__vmStackEnc.applied) },
     // vmAsyncExecutor：被 WASM 解释器内核档挡下或 await 落进闭包被保守放弃时为 0。
     asyncExec: { funcs: ctx.__vmAsync.funcs },
     // 实际嵌套了几层 VM。默认所有 VM 编译都深度 1（外层解释器就是底层解释器）；

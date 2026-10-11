@@ -36,9 +36,10 @@ section('强制入池字符串');
     ok(leaked === 0, 'threshold=1（必然全收）下点名串 8 个 seed 都不泄漏', '泄漏 ' + leaked + ' 次');
 
     // 对照：同样 8 个 seed 但不点名 —— 说明"泄漏"本来就会发生，这正是要解决的问题
+    // （forceSecretStrings:false 锁定旧行为：内置启发式默认会收走这个密钥形态的串）
     let leakedNoForce = 0;
     for (const seed of [1, 2, 3, 5, 8, 13, 21, 34]) {
-      const r = build(src, { stringArrayThreshold: 0, seed });
+      const r = build(src, { stringArrayThreshold: 0, seed, forceSecretStrings: false });
       if (r.code.includes(SECRET)) leakedNoForce++;
     }
     ok(leakedNoForce > 0, '对照：threshold=0 且不点名时确实会漏（这条选项针对的就是它）',
@@ -70,12 +71,14 @@ section('强制入池字符串');
   }
 
   // ⑤ 非法正则不能让构建失败（与 reservedStrings 同口径：跳过而不是抛）
+  // （forceSecretStrings:false 锁定旧行为：这个密钥形态的串默认会被内置启发式收走，
+  // 测"非法正则被跳过"必须先关掉它，否则断言的"仍在明文里"不成立）
   {
     const src = `var s="${SECRET}";process.stdout.write(String(s.length));`;
     let threw = false;
     let r = null;
     try {
-      r = build(src, { stringArrayThreshold: 0, forceTransformStrings: ['([unclosed'] });
+      r = build(src, { stringArrayThreshold: 0, forceSecretStrings: false, forceTransformStrings: ['([unclosed'] });
     } catch (e) { threw = true; }
     ok(!threw, '非法正则被跳过而不是让构建失败');
     ok(r && r.code.includes(SECRET), '非法正则被跳过后该串仍按普通阈值处理（在明文里）');
@@ -86,6 +89,39 @@ section('强制入池字符串');
     const src = 'var t=`' + SECRET + '`;process.stdout.write(String(t.length));';
     const r = build(src, { stringArrayThreshold: 0, forceTransformStrings: [SECRET] });
     ok(!r.code.includes(SECRET), '无插值的模板字面量同样被点名入池');
+  }
+
+  // ⑦ 内置强制（forceSecretStrings，默认开）：看着像密钥/端点的串不点名也恒进池，
+  //   不靠概率；reservedStrings 明确保留的除外；关掉回到纯概率。
+  {
+    const S1 = 'sk_live_51Hb3kL9xQ2mZ8vB4nT6';
+    const S2 = 'https://api.example.com/v1/pay';
+    const S3 = 'a1b2c3d4e5f60718293a4b5c6';
+    const S4 = '550e8400-e29b-41d4-a716-446655440000';
+    const src = 'var box=["' + [S1, S2, S3, S4, 'hello', 'OK'].join('","') + '"];'
+      + 'process.stdout.write(String(box.length));';
+    // low 档阈值 0.5：不强制的话每个串各有一半概率留明文
+    let leaked = 0, first = '';
+    for (const seed of [1, 2, 3]) {
+      const r = build(src, { stringArrayThreshold: 0.5, seed });
+      for (const s of [S1, S2, S3, S4]) {
+        if (r.code.includes(s)) { leaked++; if (!first) first = 'seed=' + seed + ' 漏 ' + s.slice(0, 16); }
+      }
+    }
+    ok(leaked === 0, '密钥形态串不点名也恒进池（3 seed×4 串零泄漏）', first);
+    // 保留名单明确要留的，内置启发式不覆盖（与 forceTransformStrings 压过保留正好反过来）
+    const kept = build(src, { stringArrayThreshold: 0.5, seed: 1, reservedStrings: [S1] });
+    ok(kept.code.includes(S1) && ![S2, S3, S4].some((s) => kept.code.includes(s)),
+      'reservedStrings 明确保留的不被内置强制覆盖（其余照常入池）');
+    // 逃生舱：关掉回到纯概率（旧行为可复现）
+    let leakedOff = 0;
+    for (const seed of [1, 2, 3]) {
+      const r = build(src, { stringArrayThreshold: 0, seed, forceSecretStrings: false });
+      if ([S1, S2, S3, S4].some((s) => r.code.includes(s))) leakedOff++;
+    }
+    ok(leakedOff > 0, '关掉后回到纯概率（对照：旧行为仍在）', 'leakedOff=' + leakedOff + '/3');
+    const r0 = build(src, { stringArrayThreshold: 0.5, seed: 7 });
+    ok(String(runNode(r0.code, 'fs-7.js')).trim() === '6', '内置强制不改变语义');
   }
 }
 

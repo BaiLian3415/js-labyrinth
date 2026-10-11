@@ -165,16 +165,22 @@ function foldConditional(path) {
   return true;
 }
 
-/** 相邻 var 声明合并。就地改 declarations，求值顺序保持不变。 */
+/** 相邻 var/let/const 声明合并。就地改 declarations，求值顺序保持不变。 */
 function mergeVarScopes(scopes, stat) {
   for (const node of scopes) {
     const arr = node.body;
     if (!Array.isArray(arr)) continue;
     for (let i = 0; i < arr.length - 1; i++) {
       const cur = arr[i];
-      if (!cur || cur.type !== 'VariableDeclaration' || cur.kind !== 'var') continue;
+      // 只合相同 kind 的相邻声明（var/let/const 三档各合各的，`using` 这类不动）：
+      // 同体数组内相邻即同作用域、中间无 interleaving 求值，初始化顺序不变，
+      // 合并恒等。跨 kind（var 接 let）与跨数组的分支一律不动——TDZ/作用域不同，
+      // 合错即 SyntaxError 或语义变。scopes 只收 Program/Block 体，for-init、
+      // for-in 左值、switch-case 体天然不在合并面上。
+      if (!cur || cur.type !== 'VariableDeclaration'
+        || (cur.kind !== 'var' && cur.kind !== 'let' && cur.kind !== 'const')) continue;
       let j = i + 1;
-      while (j < arr.length && arr[j] && arr[j].type === 'VariableDeclaration' && arr[j].kind === 'var') {
+      while (j < arr.length && arr[j] && arr[j].type === 'VariableDeclaration' && arr[j].kind === cur.kind) {
         cur.declarations.push(...arr[j].declarations);
         arr.splice(j, 1);
         stat.merged++;

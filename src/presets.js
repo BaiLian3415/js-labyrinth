@@ -109,6 +109,15 @@ export default {
     "vmThreshold": 2,
     "vmDecoyOps": 128,
     "vmDispatchEnc": false,
+    // 2026-10-11：宏指令融合在 medium 档开启（JS 解释器路径）：连续装载并成一条，
+    // 取指/分发次数减少，字流还变短（实测 -9% 字节），性能纯收益、语义构造性等价。
+    // 栈编码不在 medium 开：它让 int 密集循环慢约 38%（20k 次循环 271→374ms），
+    // 与 medium 的 balanced 定位冲突，只上 high。WASM 解释器内核档自动关闭这两项
+    // （见 vm.js 的 OFF 表与 suppressed 上报），所以 max 档不受影响；low 档无 VM，
+    // 不受影响。DEFAULTS 保持 false：max 的 suppressed 为空是钉住的回归
+    // （见 test/vmp.js），默认值翻 true 会让 max 把这两项报进 suppressed——
+    // 预设层开、默认值不动，两边都保住。
+    "vmMacroOps": true,
     "vmBlockDecrypt": false,
     "wasm": true,
     "wasmThreshold": 64,
@@ -192,6 +201,11 @@ export default {
     // 2631 KB → 2642 KB（+0.4%），宏指令 0 → 9 条，动态字空间 256，语义 7/7 一致。
     "vmMacroOps": true,
     "vmDynOpcodes": true,
+    // 2026-10-11：栈编码在 high 档开启。high 是 JS 解释器路径（wasmInterpreter 只在
+    // max 为 true），开关真实生效；栈上整数全部 XOR，dump 字节码也看不到明文栈值
+    // （非数字透明，语义构造性等价）。medium 不开：int 密集循环慢约 38%，与 medium
+    // 的 balanced 定位冲突。max 档仍靠 OFF 表自动关闭 + suppressed 上报，不在此声明。
+    "vmStackEncoding": true,
     "vmBlockDecrypt": false,
     "wasm": true,
     "wasmThreshold": 1,

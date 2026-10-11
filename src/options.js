@@ -304,6 +304,12 @@ export default {
   // 命中的一律收进字符串池，绕过 stringArrayThreshold 的随机抽样。密钥/URL/特征串
   // 这类不能靠概率——某次构建恰好没收就直接裸奔。冲突时压过 reservedStrings。
   "forceTransformStrings": [],
+  // 内置的"看着像密钥就强制入池"（默认开）：多字符类、无空白、够长或种类够散的串
+  // （密钥/口令牌/端点/长纯数字）绕过 stringArrayThreshold 的抽样，恒进池。
+  // 与 forceTransformStrings 的区别：那是用户点名，这里是形态启发式；误判只增体积、
+  // 不断语义。用户显式 reservedStrings 的串不受它影响（保留名单是明确决定，内置
+  // 启发式不覆盖——与 forceTransformStrings 压过保留名单正好反过来）。关掉回到纯概率。
+  "forceSecretStrings": true,
   // ESM 载荷的基准 URL。套壳后载荷经 blob:/data: URL 加载，这两种地址没有目录
   // 上下文，`./dep.js` 一律解析失败，所以带相对说明符的 ESM 必须给这个值，
   // 构建期会改写成绝对地址。形如 'file:///D:/app/' 或 'https://cdn/app/'。

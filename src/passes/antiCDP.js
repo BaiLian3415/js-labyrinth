@@ -18,7 +18,8 @@
  *      逐一精确比对，再对 "cdc_" 子串做一遍枚举扫描（ChromeDriver 注入的
  *      $cdc_<随机串> 属性名带随机后缀，只能子串匹配）。
  *
- * V1 只在启动时跑一次（周期重跑会往控制台持续打探针对象）；V2/V3 由定时器
+ * V1 启动跑一次，外加低频周期重跑（每 10~20 个复查周期一次，探针对象污染可接受；
+ * 尾巴是衰减累加器，持续在场才投毒，单次偶发自然衰减）；V2/V3 由定时器
  * 周期复查，间隔从 debugProtectionInterval 派生并逐构建随机。所有特征串经
  * 掩码恒等式重组（M），产物文本里没有可批量定位的明文指纹。定时器句柄
  * unref，不阻塞进程退出。
@@ -96,6 +97,20 @@ export default function antiCDP(ast, options, ctx) {
     'try{_0clog(_0gp);}catch(_0e){}' +
     'try{_0cdb(_0gp);}catch(_0e){}' +
     'if(_0n>=2){' + hitSrc('_0xG') + '}else if(_0n===1){_0xdg();}})();';
+  // V1 周期版（2026-10-11）：与启动版同一探针体，尾巴换成衰减累加器。启动版保持
+  // "见 2 次即投毒"（CDP 在场时一次命中就够）；周期版低频跑（每 V1EVERY 个复查
+  // 周期一次，console 探针对象污染可接受），累加器每轮先加本轮命中、再衰减 1：
+  // 持续在场 3 轮即累计 ≥4 投毒，单次偶发（2→1→0）自然衰减掉。修的是"启动后才
+  // attach 的 CDP 过去漏检"——V1 原先只跑一次。持续弱证据（每轮恰 1 次）不投毒，
+  // 与启动版"1 次只断点"的口径一致。
+  const V1EVERY = randInt(10, 20);
+  const v1PeriodicSrc =
+    '(function(){if(typeof window===typeof void 0||!_0clog||!_0cdb){return;}' +
+    'var _0n=0;var _0gp={};' +
+    'Object.defineProperty(_0gp,"x",{configurable:true,enumerable:true,get:function(){_0n++;return 1;}});' +
+    'try{_0clog(_0gp);}catch(_0e){}' +
+    'try{_0cdb(_0gp);}catch(_0e){}' +
+    '_0v1acc+=_0n;if(_0v1acc>=4){' + hitSrc('_0xG') + '}if(_0v1acc>0){_0v1acc--;}})();';
 
   const PERIOD = Math.max(3000, Math.floor(
     (options.debugProtectionInterval > 50 ? options.debugProtectionInterval : 4000)
@@ -113,10 +128,13 @@ export default function antiCDP(ast, options, ctx) {
   parts.push('try{' + v1Src + '}catch(_0z){}');
   parts.push('try{' + v2Src + '}catch(_0z){}');
   parts.push('try{' + v3Src + '}catch(_0z){}');
-  // 周期复查只跑 V2/V3（V1 会往控制台打探针对象，周期重跑是可见污染）。
-  // 仅浏览器环境装配；句柄 unref，不阻塞进程退出。
+  // 周期复查跑 V2/V3，外加低频 V1（计数器每 V1EVERY 个周期命中一次）。
+  // V1 会往控制台打探针对象，逐周期跑是可见污染，所以只低频跑；_0v1acc 与
+  // _0tick 是头部函数作用域变量，随头部执行一次初始化，定时器闭包共享。
+  parts.push('var _0tick=0;var _0v1acc=0;');
   parts.push('if(typeof window!==typeof void 0&&typeof setInterval==="function"){try{' +
-    'var _0th=setInterval(function(){try{' + v2Src + v3Src + '}catch(_0e){}},' + PERIOD + ');' +
+    'var _0th=setInterval(function(){try{_0tick++;' + v2Src + v3Src + '}catch(_0e){}' +
+    'try{if(_0tick%' + V1EVERY + '===0){' + v1PeriodicSrc + '}}catch(_0e){}},' + PERIOD + ');' +
     'try{if(_0th&&typeof _0th.unref==="function"){_0th.unref();}}catch(_0w){}}catch(_0w){}}');
 
   const headFnName = uniqueName(ctx.usedNames, '_0x');
@@ -136,6 +154,7 @@ export default function antiCDP(ast, options, ctx) {
     vectors: 3,
     periodic: true,
     period: PERIOD,
+    v1Every: V1EVERY,
     poison: poisonable,
     headFn: headFnName,
   };

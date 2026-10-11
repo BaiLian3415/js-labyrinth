@@ -142,6 +142,34 @@ section('VMP 增强（覆盖率 / 深度 / stats 口径）');
     }
   }
 
+  // --- ④ medium/high 的宏融合与栈编码：预设层开启，DEFAULTS 不动 ---
+  {
+    // 2026-10-11：vmMacroOps 在 medium/high 开（连续装载并成一条，取指/分发减少，
+    // 字流还变短）；vmStackEncoding 只在 high 开（栈上整数全 XOR；int 密集循环
+    // 慢约 38%，与 medium 的 balanced 定位冲突）。max 靠 OFF 表自动关闭 +
+    // suppressed 上报（本处不断言 max，由 ③ 的 suppressed 为空覆盖）。
+    // DEFAULTS 保持 false：翻默认值会让 max 把这两项报进 suppressed，打破 ③。
+    const F = 'function f(n){var s=0;for(var i=0;i<n;i++){if(i%2){s+=i;}else{s-=i;}}return s;}'
+      + 'process.stdout.write(String(f(200)));';
+    const want = runOf(F);
+    const med = vmRun(F, { preset: 'medium' });
+    const medOff = vmRun(F, { preset: 'medium', vmMacroOps: false });
+    const hi = vmRun(F, { preset: 'high' });
+    ok(med.st && med.st.macros.fused > (medOff.st ? medOff.st.macros.fused : 0) && med.st.macros.fused > 0,
+      'medium：宏指令融合默认生效（旧码此处为 0）',
+      'off=' + (medOff.st && medOff.st.macros.fused) + ' on=' + (med.st && med.st.macros.fused));
+    ok(!((med.st && med.st.stack && med.st.stack.applied) === true),
+      'medium：栈编码不开（balanced 档不付 38% 的热循环税）');
+    ok(hi.st && hi.st.macros.fused > 0, 'high：宏指令融合生效（原先已开，保持）',
+      'fused=' + (hi.st && hi.st.macros.fused));
+    ok(hi.st && hi.st.stack && hi.st.stack.applied === true,
+      'high：栈编码落盘（旧码无 stack.applied）',
+      JSON.stringify(hi.st && hi.st.stack));
+    for (const [name, v] of [['medium', med], ['medium-off', medOff], ['high', hi]]) {
+      ok(String(runNode(v.r.code)).trim() === want, name + ' 档语义一致');
+    }
+  }
+
   // --- comment 模式：起止标记圈住谁就编译谁 ---
   {
     const S = '/*<jslabyrinth-vmp-start>*/';

@@ -207,13 +207,42 @@ export default function stringArray(ast, options, ctx) {
     .filter(Boolean);
   const isForced = (v) => forceRe.length > 0 && forceRe.some((re) => re.test(v));
 
+  // 内置强制入池（forceSecretStrings，默认开）：看着像密钥/口令牌/端点的串不配
+  // 留明文——阈值抽样在 low/medium 档会随机丢下一半/两成，明文里的密钥串就是洞。
+  // 只看字符形态（长度 + 字符类 + 种类数），不读语义：误判只增体积、不断语义
+  // （入池位置早被 isEligible 守住）。单一字符类的普通词（全小写 kebab 词、
+  // 纯英文标签）一律放过；用户显式 reservedStrings 的串也不碰（保留名单是明确
+  // 决定，内置启发式不覆盖——与 forceTransformStrings 压过保留名单正好反过来）。
+  const forceSecret = options.forceSecretStrings !== false;
+  function looksSecret(v) {
+    const n = v.length;
+    if (n < 8) return false;                     // 太短无法与普通词区分，不强制
+    if (SURROGATE_RE.test(v)) return false;      // 表情等多半是展示文本
+    if (/[\u4e00-\u9fff]/.test(v)) return false; // CJK 同上
+    if (v.includes('://')) return true;          // 端点 URL
+    const compact = v.replace(/\s/g, '');
+    if (compact.length >= 12 && /^[+]?[0-9]+$/.test(compact)) return true; // 长纯数字
+    if (/\s/.test(v)) return false;              // 剩余含空白的是文案
+    let lower = false, upper = false, digit = false;
+    for (const ch of v) {
+      if (ch >= 'a' && ch <= 'z') lower = true;
+      else if (ch >= 'A' && ch <= 'Z') upper = true;
+      else if (ch >= '0' && ch <= '9') digit = true;
+    }
+    // 单一字符类多半是普通词（全小写标签、全大写常量、全数字短码已在上面处理）
+    if ((lower ? 1 : 0) + (upper ? 1 : 0) + (digit ? 1 : 0) < 2) return false;
+    const u = new Set(v).size;
+    if (n >= 16) return u >= 12;
+    return u / n >= 0.75;
+  }
+
   const candidates = [];
   traverse(ast, {
     StringLiteral(path) {
       if (!isEligible(path)) return;
       const forced = isForced(path.node.value);
       if (!forced && isReservedString(path.node.value)) return;
-      if (!forced && rng() > threshold) return;
+      if (!forced && !(forceSecret && looksSecret(path.node.value)) && rng() > threshold) return;
       // 非计算属性的键位置字符串要先置 computed，才能在键位换成解码调用
       const pp = path.parentPath;
       if (pp && pp.isObjectProperty && pp.isObjectProperty() && !pp.node.computed && pp.node.key === path.node) {
@@ -229,8 +258,11 @@ export default function stringArray(ast, options, ctx) {
       const value = q.cooked !== undefined && q.cooked !== null ? q.cooked : q.raw;
       const forced = isForced(value);
       if (!forced) {
-        if (rng() > threshold) return;
+        // 先掷硬币再判保留/启发式：rng() 的消耗位置必须与改动前完全一致，
+        // 否则阈值路径的随机流整体移位，无关构建的产物字节跟着变。
+        const skipped = rng() > threshold;
         if (isReservedString(value)) return;
+        if (skipped && !(forceSecret && looksSecret(value))) return;
       }
       candidates.push({ path, value, parts: null });
     },

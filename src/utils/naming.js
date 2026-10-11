@@ -187,9 +187,15 @@ export function normalizeNameDict(raw) {
 function* dictionaryNames(dict) {
   const words = shuffle(normalizeNameDict(dict).slice());
   const n = words.length;
-  // 上限 n*64（约四千个名字）后交回调用方退回随机名，不静默复用名字
-  for (let i = 0; i < n * 64; i++) {
+  // 无上限：走完一轮后加数字后缀继续发（word、word1、word2……），形状永远是词表形，
+  // 不退回 _0x 随机名——后缀一出就是"词典档被用超了"的指纹，不如一直保持词表形状。
+  // 后缀名仍经调用方的 used/RESERVED 查重（见 mangle 的 nextName），撞了顺延，
+  // 永不复用（复用会撞名并改变语义）。去上限不改变前 n*64 个的发放序列，
+  // 常规构建（远到不了四千个绑定）产物逐字节不变。
+  let i = 0;
+  for (;;) {
     yield words[i % n] + (i < n ? '' : String(Math.floor(i / n)));
+    i++;
   }
 }
 

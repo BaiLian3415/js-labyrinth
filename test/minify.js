@@ -88,6 +88,34 @@ process.stdout.write(String(a) + '|' + String(b) + '|' + c + '\\n');`, 'Infinity
     ok(comboBad === '', 'high 预设 + simplify 全链路语义不变', comboBad);
   }
 
+  // let/const 相邻合并（2026-10-11）：原来只合 var。合并只发生在同一体数组内
+  // 相邻同 kind 声明之间（中途无语句、无跨作用域），初始化顺序不变，恒等；
+  // var 接 let 这类跨 kind 一律不动（TDZ 语义不同）。simplify 跑在一切机器代码
+  // 注入之前，所以 merged 计数只反映用户代码，可断精确值。旧码两个用例的计数
+  // 是 0 与 1，新码是 1 与 3。
+  {
+    const letSrc = 'function f(n){ let a = 1;\n let b = 2;\n return a + b + n; }\n'
+      + 'process.stdout.write(f(10) + "\\n");';
+    const rLet = obfuscate(letSrc, { preset: 'low', shell: false, simplify: true, seed: 1 });
+    const stLet = rLet.stats.find((s) => s.pass === 'simplify');
+    ok(stLet && stLet.result && stLet.result.merged === 1, '相邻 let 合并（旧码此处为 0）',
+      JSON.stringify(stLet && stLet.result));
+    let gotLet = 'THREW';
+    try { gotLet = runNode(rLet.code, 'sim-let.js').trim(); } catch (e) { gotLet = 'THREW'; }
+    ok(gotLet === '13', 'let 合并后语义不变', gotLet);
+
+    const mixSrc = 'function g(n){ var c = 1;\n var d = 2;\n let a = 3;\n let b = 4;\n'
+      + 'const e = 5;\n const k = 6;\n return [c, d, a, b, e, k, n].join(","); }\n'
+      + 'process.stdout.write(g(0) + "\\n");';
+    const rMix = obfuscate(mixSrc, { preset: 'low', shell: false, simplify: true, seed: 1 });
+    const stMix = rMix.stats.find((s) => s.pass === 'simplify');
+    ok(stMix && stMix.result && stMix.result.merged === 3, 'var/let/const 各合各的（旧码此处为 1）',
+      JSON.stringify(stMix && stMix.result));
+    let gotMix = 'THREW';
+    try { gotMix = runNode(rMix.code, 'sim-mix.js').trim(); } catch (e) { gotMix = 'THREW'; }
+    ok(gotMix === '1,2,3,4,5,6,0', '跨 kind 不互合、语义不变', gotMix);
+  }
+
   // 门控：free 锁死、plus 放行；默认关闭
   ok(plan.violations({ simplify: true }, 'free').length === 1, 'free 档 simplify 被闸门锁死');
   ok(plan.violations({ simplify: false }, 'free').length === 0, 'free 档关闭放行');
@@ -282,6 +310,47 @@ const normalizeNameDict = (await import('../src/utils/naming.js')).normalizeName
     ok(got === want, 'Dictionary 档产物语义不变', got + ' ≠ ' + want);
     ok(obfuscate(shapeSrc, { ...NAMEONLY, nameStyle: 'Dictionary', seed: 9 }).code === dict.code, 'Dictionary 档同 seed 逐字节可复现');
     ok(obfuscate(shapeSrc, { ...NAMEONLY, nameStyle: 'Dictionary', seed: 10 }).code !== dict.code, 'Dictionary 档换 seed 换一套词');
+  }
+  {
+    // Dictionary 池耗尽不退 _0x 随机名：走完一轮后加数字后缀继续发（word、word1…），
+    // 形状永远是词表形。旧形态在 n*64（内置词表 4096）后交回调用方退回 _0x 随机名，
+    // 后缀一出就是"词典档被用超了"的指纹。去上限不改变前 4096 个的发放序列。
+    const pool = naming.createNamePool({ nameStyle: 'Dictionary' });
+    const got = [];
+    for (let i = 0; i < 5000; i++) {
+      const it = pool.next();
+      if (it.done) break;
+      got.push(it.value);
+    }
+    ok(got.length === 5000, '词典池可发放 5000 个名而不枯竭（旧上限 4096）', '实得 ' + got.length);
+    ok(new Set(got).size === got.length, '超量发放的名字仍互不重复');
+    ok(got.every((n) => /^[a-z]{3,6}[0-9]*$/.test(n)), '超量发放的仍是词表形状（无 _0x 回落）',
+      got.filter((n) => !/^[a-z]{3,6}[0-9]*$/.test(n)).slice(0, 5).join(' '));
+    // 端到端：4400 个绑定（超 4096 上限）走完 mangle，尾部出现后缀 ≥64 的词名
+    // （旧码只能发到后缀 63）；全部重命名点位语义正确（求和对拍）。
+    const N = 4400, PER = 100;
+    const parts = [];
+    const chunks = [];
+    for (let c = 0; c < N / PER; c++) {
+      const vs = [];
+      for (let i = 0; i < PER; i++) vs.push('v' + (c * PER + i));
+      parts.push('var ' + vs.map((v, i) => v + '=' + (c * PER + i)).join(',') + ';');
+      parts.push('var s' + c + '=' + vs.join('+') + ';');
+      chunks.push('s' + c);
+    }
+    const bigSrc = parts.join('\n') + '\nprocess.stdout.write(String(' + chunks.join('+') + '));';
+    const bigWant = runNode(bigSrc, 'dict-big-raw.js').trim();
+    const big = obfuscate(bigSrc, { ...NAMEONLY, nameStyle: 'Dictionary', seed: 9 });
+    // 前边界不可少：机器十六进制名（_0xaf2295 这类）的子串 `xaf2295` 形如"字母+数字"，
+    // 无前边界会误伤（旧码实测 4 个误伤，恰好贴着阈值，极险）。后边界同理。
+    const suffixed = big.code.match(/(?<![A-Za-z0-9_$])[a-z]{3,6}(6[4-9]|[7-9][0-9]|[0-9]{3,})(?![A-Za-z0-9_$])/g) || [];
+    ok(new Set(suffixed).size >= 5, '超量构建出现后缀 ≥64 的词名（旧码上限 63）',
+      '实得去重 ' + new Set(suffixed).size + ' 个：' + [...new Set(suffixed)].slice(0, 5).join(' '));
+    let bigGot = 'THREW';
+    try { bigGot = runNode(big.code, 'dict-big.js').trim(); } catch (e) { bigGot = 'THREW'; }
+    ok(bigGot === bigWant && bigWant === '9677800', '超量改名后语义正确（4400 绑定求和）', bigGot + ' ≠ ' + bigWant);
+    ok(obfuscate(bigSrc, { ...NAMEONLY, nameStyle: 'Dictionary', seed: 9 }).code === big.code,
+      '超量构建同 seed 逐字节可复现');
   }
   {
     // Dictionary 的自定义词表。词表里的名字会直接写进产物，所以"过滤规则"和
