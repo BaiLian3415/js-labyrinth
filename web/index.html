@@ -237,10 +237,10 @@
       <h2 id="compareTitle" data-i18n="cmpTitle">混淆强度对比 · JsLabyrinth vs obfuscator.io</h2>
       <button id="compareClose" class="mini" type="button" data-i18n-aria="cmpAriaClose" aria-label="close">✕</button>
     </div>
-    <p class="compare-note" data-i18n="cmpNote">双方最强档：JsLabyrinth 用 max 预设，obfuscator.io 用 Pro VM。十维 0–10 分，按公开能力面逐项对照——obfuscator.io 在标识符/属性重命名与成熟度上更优，JsLabyrinth 在调试保护、防篡改、反自动化与 VM 内核上更强；代码压缩可用 simplify（含无用声明消除）+ nameStyle=Mangled-shuffled 达到真正 minifier 量级：同一输入实测产物为 terser 的 1.18~1.58×，同口径下 obfuscator.io 为 1.49~1.89×。2026-09-27 按代码审查结果下调两项：VM 虚拟化 9.0→8.5、自防御/防篡改 9.5→9.0。评分为能力覆盖度，不等于实测破解耗时；十维也不覆盖全部能力（例如域名锁定未列入）。</p>
+    <p class="compare-note" data-i18n="cmpNote">双方最强档：JsLabyrinth 用 max 预设，obfuscator.io 用 Pro VM。十维 0–10 分，按公开能力面逐项对照——obfuscator.io 在标识符/属性重命名与成熟度（实战检验、边界用例覆盖）上更优，JsLabyrinth 在调试保护、防篡改、反自动化与 VM 内核上更强；代码压缩一项自 2026-09-25 起可用 simplify（含无用声明消除）+ nameStyle=Mangled-shuffled 达到真正 minifier 量级：同一输入实测产物为 terser 的 1.18~1.58×，同口径下 obfuscator.io（compact+simplify）为 1.49~1.89×，含死代码的模块化 bundle 上差距更大（3.5 KB 对 13.6 KB）。2026-09-27 按代码审查结果下调两项并在此说明理由，不做只涨不跌的调整：VM 虚拟化 9.0→8.5（vm pass 在编译失败时只记 failed++，但函数体已被就地改写且未登记进 compiledSet，后续 pass 可能再动这个已损坏的节点；且多数 VM 档位默认仍关闭）；自防御/防篡改 9.5→9.0（完整性哈希面只覆盖根级函数声明，实测 25 个；访问器延迟校验块不带闩锁；本次审查还发现密钥耦合链路原有一处 100% 可复现的静默损坏，已修）。2026-10-11 按加固实测上调两项：控制流平坦化 8.5→9.0（恒真谓词不再两臂同形并扩成 5 种位运算恒等式，5 个 seed 上可零语义折叠的包裹由 29 处降至 1 处）；自防御/防篡改 9.0→9.5（原生性探针三处统一为多路径、投毒响应铺满整条密文、校验偏移增加载荷本地通道；一行式 toString 伪造与全局属性钉死两类绕过实测均被拦下）。VM 虚拟化维持 8.5：2026-09-27 下调的两项理由（失败处理、默认关闭档位）本轮未动，不涨。评分为能力覆盖度，不等于实测破解耗时；十维也不覆盖全部能力（例如域名锁定未列入本图）。</p>
 
     <div class="compare-legend">
-      <span class="lg-item"><span class="lg-dot lg-js"></span><span data-i18n="cmpLegendJs">JsLabyrinth（max）</span><strong class="lg-mean lg-js-text">8.6</strong></span>
+      <span class="lg-item"><span class="lg-dot lg-js"></span><span data-i18n="cmpLegendJs">JsLabyrinth（max）</span><strong class="lg-mean lg-js-text">8.7</strong></span>
       <span class="lg-item"><span class="lg-dot lg-obf"></span><span data-i18n="cmpLegendObf">obfuscator.io（Pro VM）</span><strong class="lg-mean lg-obf-text">7.2</strong></span>
     </div>
 
@@ -266,7 +266,7 @@
           <line x1="360" y1="250" x2="260.1" y2="112.5"/>
         </g>
         <g class="cmp-data">
-          <polygon class="js-series" points="360.0,114.0 449.9,126.2 497.4,205.3 489.3,292.0 449.9,373.8 360.0,386.0 275.1,366.9 214.5,297.3 222.6,205.3 270.1,126.2"/>
+          <polygon class="js-series" points="360.0,114.0 449.9,126.2 505.5,202.7 489.3,292.0 449.9,373.8 360.0,386.0 275.1,366.9 206.4,299.9 222.6,205.3 270.1,126.2"/>
           <polygon class="obf-series" points="360.0,97.0 444.9,133.1 489.3,208.0 481.3,289.4 429.9,346.3 360.0,360.5 275.1,366.9 254.9,284.1 238.7,210.6 330.0,208.7"/>
         </g>
         <g class="cmp-labels">
@@ -291,12 +291,12 @@
       <tbody>
         <tr><td data-i18n="cmpDim1">标识符重命名</td><td>8.0</td><td class="win-obf">9.0</td></tr>
         <tr><td data-i18n="cmpDim2">字符串加密</td><td class="win-js">9.0</td><td>8.5</td></tr>
-        <tr><td data-i18n="cmpDim3">控制流平坦化</td><td class="win-js">8.5</td><td>8.0</td></tr>
+        <tr><td data-i18n="cmpDim3">控制流平坦化</td><td class="win-js">9.0</td><td>8.0</td></tr>
         <tr><td data-i18n="cmpDim4">死代码注入</td><td class="win-js">8.0</td><td>7.5</td></tr>
         <tr><td data-i18n="cmpDim5">调试保护</td><td class="win-js">9.0</td><td>7.0</td></tr>
         <tr><td data-i18n="cmpDim6">代码压缩</td><td class="win-js">8.0</td><td>6.5</td></tr>
         <tr><td data-i18n="cmpDim7">VM 虚拟化</td><td>8.5</td><td>8.5</td></tr>
-        <tr><td data-i18n="cmpDim8">自防御/防篡改</td><td class="win-js">9.0</td><td>6.5</td></tr>
+        <tr><td data-i18n="cmpDim8">自防御/防篡改</td><td class="win-js">9.5</td><td>6.5</td></tr>
         <tr><td data-i18n="cmpDim9">常量/数字混淆</td><td class="win-js">8.5</td><td>7.5</td></tr>
         <tr><td data-i18n="cmpDim10">反自动化/反LLM</td><td class="win-js">9.0</td><td>3.0</td></tr>
       </tbody>
