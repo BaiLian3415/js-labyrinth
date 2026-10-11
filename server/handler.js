@@ -438,7 +438,14 @@ async function handleLicense(request) {
  *   JSLB_PAY_PAYEE       收款方显示名（买家核对用）
  *   JSLB_PAY_CONTACT     客服联系方式（可选，显示在订单页）
  *   JSLB_ADMIN_TOKEN     管理端令牌（配了才启用 /api/admin-order）
- *   JSLB_PAY_WEBHOOK_SECRET  收款回调签名密钥（配了才启用 /api/pay-notify）
+ *   JSLB_PAY_WEBHOOK_SECRET  收款回调签名密钥（配了才能用 /api/pay-notify 的验签）
+ *   JSLB_PAY_AUTO        显式开关：=1/true 才把 pay.auto 报成真（=已接入自动回调）
+ *
+ * auto 为什么不能直接等于"配没配签名密钥"（2026-10-11）：密钥只是 /api/pay-notify
+ * 的验签材料，**没有任何系统会去调它**——个人收款码没有商户回调，密钥配了、端点活着，
+ * 却不会有支付通知进来。这时若把 auto 报成真，定价页会写"付款后通常几秒内自动发卡"，
+ * 属于对外过度承诺。所以"接入了自动回调"这件事必须由部署方显式声明，
+ * 而不是从"密钥恰好存在"推断出来。
  */
 function payInfo(env) {
   const e = env || {};
@@ -446,9 +453,15 @@ function payInfo(env) {
     qr: String(e.JSLB_PAY_QR || '/assets/pay-wechat.png'),
     payee: String(e.JSLB_PAY_PAYEE || 'JsLabyrinth'),
     contact: String(e.JSLB_PAY_CONTACT || ''),
-    auto: !!e.JSLB_PAY_WEBHOOK_SECRET,
+    auto: envFlag(e.JSLB_PAY_AUTO),
     admin: !!e.JSLB_ADMIN_TOKEN,
   };
+}
+
+/** 环境变量布尔开关：只有 1/true/yes/on（大小写不敏感）算真，其余（含未配）算假。 */
+function envFlag(v) {
+  const s = String(v == null ? '' : v).trim().toLowerCase();
+  return s === '1' || s === 'true' || s === 'yes' || s === 'on';
 }
 
 /**

@@ -213,7 +213,7 @@ curl -s -X POST https://<host>/api/obfuscate \
 | `/api/obfuscate` | POST | `{code, options?, type?}` → `{code, stats, originalSize, obfuscatedSize, quota}`。**供程序调用**，界面不使用它（见"混淆只在浏览器内跑"） |
 | `/api/pricing` | GET | 价目表（`src/pricing.js`）+ 收款信息（收款码路径、收款方、是否已接回调）。定价页用它一次拿全 |
 | `/api/order` | GET / POST | 购买订单。POST `{action:'create',plan,term}` 建单（**只在这次响应里返回查询码**）／`{action:'claim',id,q,txid,amount?}` 提交交易单号／`{action:'pickup',id,q}` 查状态并在已发卡时取卡；GET `?id=&q=` 等价于 pickup |
-| `/api/pay-notify` | POST | 收款回调。HMAC-SHA256(原始请求体) 放 `X-JSLB-Signature`，签名通过即幂等签发卡密；**响应不回卡密**，卡密只经查询码交付。需配 `JSLB_PAY_WEBHOOK_SECRET` |
+| `/api/pay-notify` | POST | 收款回调。HMAC-SHA256(原始请求体) 放 `X-JSLB-Signature`，签名通过即幂等签发卡密；**响应不回卡密**，卡密只经查询码交付。需配 `JSLB_PAY_WEBHOOK_SECRET`；`pay.auto` 另需显式开 `JSLB_PAY_AUTO` |
 | `/api/admin-order` | POST | 管理端人工核验：`{action:'list'|'get'|'confirm'|'reject'}`，Bearer `JSLB_ADMIN_TOKEN`。未配令牌时恒为 403 |
 
 响应状态码：`400` 非法请求体/选项、`401` 卡密无效、`402` 未激活且要求激活、
@@ -248,10 +248,15 @@ curl -s -X POST https://<host>/api/obfuscate \
 - **没配存储不下单**：`/api/order` 在无 KV 时返回 503 而不是"建一张活不过一个实例的单"
   ——买家付了钱却查不到单，比暂时不能下单糟得多。
 
-想接商户号自动发卡：配 `JSLB_PAY_WEBHOOK_SECRET`，让支付方（或自建对账脚本）以
-`POST /api/pay-notify` 回调，正文任意 JSON（含 `orderId`/`txid`/`amount`），
+想接商户号自动发卡：配 `JSLB_PAY_WEBHOOK_SECRET`（验签密钥），再让支付方（或自建对账脚本）
+以 `POST /api/pay-notify` 回调，正文任意 JSON（含 `orderId`/`txid`/`amount`），
 `X-JSLB-Signature` 为 `HMAC-SHA256(密钥, 原始请求体)` 的十六进制。签名校验用原始文本，
 **不要**重新序列化后再签（键序变化必然失配）。
+
+配了密钥只代表"验签材料齐了"，端点不会自己收到通知——所以定价页的"自动发卡"文案由
+**显式开关** `JSLB_PAY_AUTO=1` 决定（读 `/api/pricing` 的 `pay.auto`），而不是从
+"密钥是否存在"推断。没开它就按"人工核验"展示，这正是个人收款码 + 人工核单的默认形态
+（过度承诺比不承诺更糟）。
 
 > 定价页的收款码图片在 `web/assets/pay-wechat.png`（已裁掉收款人昵称）。换成自己的
 > 收款码时替换该文件即可，或用 `JSLB_PAY_QR` 指向别的路径。
@@ -1014,7 +1019,8 @@ curl -s -X POST https://<host>/api/free-key -H 'content-type: application/json' 
 | `JSLB_PAY_PAYEE` | 服务端 | 收款方显示名（买家付款前核对用），默认 `JsLabyrinth` |
 | `JSLB_PAY_CONTACT` | 服务端 | 客服联系方式，显示在订单页（可选） |
 | `JSLB_ADMIN_TOKEN` | 服务端/工具 | 管理端令牌。**机密**。配了才启用 `/api/admin-order`；不配则该端点恒 403 |
-| `JSLB_PAY_WEBHOOK_SECRET` | 服务端 | 收款回调签名密钥。**机密**。配了才启用 `/api/pay-notify`（自动发卡） |
+| `JSLB_PAY_WEBHOOK_SECRET` | 服务端 | 收款回调签名密钥。**机密**。配了才启用 `/api/pay-notify` 的验签 |
+| `JSLB_PAY_AUTO` | 服务端 | 显式声明"已接入自动回调"（=1/true）。只有它开着 `/api/pricing` 的 `pay.auto` 才为真，定价页才显示"自动发卡"；未开按"人工核验"展示 |
 | `JSLB_DEVICE_ID` | 网页/服务端 | 固定设备码（仅存储分键与试用计数），便于测试 |
 | `JSLB_LIVE_ORIGIN` | 测试 | 线上验收目标站点（**必须显式给**，如 `https://<站点>.vercel.app`；不给则跳过该段） |
 | `JSLB_SKIP_LIVE` | 测试 | 设为 `1` 跳过线上验收段，纯离线跑 |

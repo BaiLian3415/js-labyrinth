@@ -40,6 +40,7 @@ function makeEnv(extra) {
     JSLB_KV: memKv(),
     JSLB_ADMIN_TOKEN: ADMIN,
     JSLB_PAY_WEBHOOK_SECRET: HOOK,
+    JSLB_PAY_AUTO: '1',
     JSLB_PAY_PAYEE: '测试收款方',
     ...(extra || {}),
   };
@@ -79,6 +80,16 @@ const env = makeEnv();
   ok(pricing.data.pay && pricing.data.pay.payee === '测试收款方'
     && pricing.data.pay.auto === true && pricing.data.pay.admin === true,
     '收款信息来自环境变量，自动回调/管理端标记为真', JSON.stringify(pricing.data.pay));
+
+  // pay.auto 只认显式开关 JSLB_PAY_AUTO，不认"配没配签名密钥"：密钥在（端点活着）但
+  // 没声明接入回调时，auto 必须为假——否则定价页会写"几秒内自动发卡"，是过度承诺。
+  const secretOnly = makeEnv({ JSLB_PAY_AUTO: undefined });
+  const pNoAuto = await call(secretOnly, '/api/pricing');
+  ok(pNoAuto.data.pay.auto === false && pNoAuto.data.pay.admin === true,
+    '有回调密钥但未开 JSLB_PAY_AUTO 时 auto 为假（人工核验）', JSON.stringify(pNoAuto.data.pay));
+  const autoOn = makeEnv({ JSLB_PAY_AUTO: 'true' });
+  const pAuto = await call(autoOn, '/api/pricing');
+  ok(pAuto.data.pay.auto === true, 'JSLB_PAY_AUTO=true 时 auto 为真');
 
   const created = await call(env, '/api/order', { method: 'POST', body: { action: 'create', plan: 'plus', term: 'year' } });
   ok(created.status === 200 && created.data.ok, '建单成功', JSON.stringify(created.data).slice(0, 100));

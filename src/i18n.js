@@ -210,7 +210,8 @@ const STRINGS = {
 
     // ---- 定价页与购买订单（2026-10-11）----
     // 收款走个人收款码：没有商户回调，所以文案要如实说清"提交交易单号 → 人工核验"，
-    // 配了 JSLB_PAY_WEBHOOK_SECRET 的部署才显示"自动发卡"（见 orderAutoNote）。
+    // 只有显式开了 JSLB_PAY_AUTO 的部署才显示"自动发卡"（见 orderAutoNote）。
+    // 判断的是 pay.auto，且该标记**不**由"配没配 WEBHOOK_SECRET"推断。
     guiPricing: '套餐定价',
     priceTitle: '套餐定价',
     priceSubtitle: '同一套混淆核心，区别只在强度上限与用量。所有档位都可用全部解码链形态与外层保护。',

@@ -166,10 +166,14 @@ node tools/issue/orders.js confirm <订单号> --amount 29900 --kv
 想改成**自动发卡**：接一个能拿到支付回调的通道（微信支付商户号 / 服务商 / 自建对账脚本），
 然后：
 
-1. 在 Vercel 环境变量里加 `JSLB_PAY_WEBHOOK_SECRET=<随机密钥>`（**机密**）；
+1. 在 Vercel 环境变量里加 `JSLB_PAY_WEBHOOK_SECRET=<随机密钥>`（**机密**，验签用）；
+   再开 `JSLB_PAY_AUTO=1` 显式声明"已接入自动回调"；
 2. 让回调方以 `POST /api/pay-notify` 通知，正文 JSON 至少含 `orderId`、`txid`、`amount`（分），
    头 `X-JSLB-Signature: <hex(HMAC-SHA256(密钥, 原始请求体))>`；
 3. 定价页会自动把提示文案从"人工核验"换成"通常几秒内自动发卡"（读 `/api/pricing` 的 `pay.auto`）。
+
+> `pay.auto` **只认 `JSLB_PAY_AUTO`**，不认"配没配密钥"：密钥只是验签材料，端点不会自己
+> 收到通知。只配密钥而没开开关时，文案保持"人工核验"——个人收款码就是这条默认路。
 
 > 签名必须对**原始请求体**计算。先 JSON.parse 再 JSON.stringify 会因键序/空白变化导致
 > 签名失配，而那种失败看起来像"密钥配错了"。
