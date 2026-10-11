@@ -304,6 +304,53 @@ function doFlatten(path, stmts, rng, loopFlatten, rolling) {
     return t.binaryExpression('+', xorExpr, subExpr);
   };
 
+  // 恒真谓词的形态表（2026-10-11 强化）。
+  //
+  // 旧形态只有 `typeof state==='number'` 一种，而且**两个分支是逐字相同的克隆**——
+  // 也就是说 `cond ? A : A` 这个形状本身就够了：任何工具（甚至三行正则）都能不看
+  // 语义直接把它折成 `A`，包裹等于没加。两条修法：
+  //   ① 两个分支语义恒等但**文本不同**（`A` 与 `(0,A)`/`(void 0,A)`：逗号表达式
+  //      返回右值，对任意值都恒等，不改类型也不多求值），"结构相等"这条捷径失效；
+  //   ② 谓词不再只有 typeof 一种，改为逐构建从下表挑：每个都是**对任意值恒真**的
+  //      位运算/算术恒等式——操作数一律先 `|0` 归一化到 int32，所以即使 state 万一
+  //      不是数字也恒真（`(x|0)` 对任意 x 都有定义）。要证明它们恒真得做模算术/
+  //      位级推理，纯常量折叠与类型推导都消不掉。
+  //
+  // 各形态的恒等性（S 表示 (state|0)，即任意 int32）：
+  //   0 typeof：S 由我们自己的数值路径赋值，恒为 'number'
+  //   1 (S>>1)*2 + (S&1) === S     —— 算术右移后重拼低一位；|S>>1|*2 ≤ 2^31 在
+  //                                  float64 里精确，负数同样成立（-3→-2*2+1=-3）
+  //   2 (S&-2)|(S&1) === S         —— 清低位再按原低位回填
+  //   3 (S^(S&1)) + (S&1) === S    —— 低位置零后加回
+  //   4 ((S|1)>S) === ((S&1)===0)  —— 偶数才因置位变大；两边同为布尔的等价判定
+  const truePredForms = [
+    () => t.binaryExpression('===',
+      t.unaryExpression('typeof', t.identifier(stateName.name), true),
+      t.stringLiteral('number')),
+    () => t.binaryExpression('===',
+      t.binaryExpression('+',
+        t.binaryExpression('*', t.binaryExpression('>>', intState(), t.numericLiteral(1)), t.numericLiteral(2)),
+        t.binaryExpression('&', intState(), t.numericLiteral(1))),
+      intState()),
+    () => t.binaryExpression('===',
+      t.binaryExpression('|',
+        t.binaryExpression('&', intState(), t.numericLiteral(-2)),
+        t.binaryExpression('&', intState(), t.numericLiteral(1))),
+      intState()),
+    () => t.binaryExpression('===',
+      t.binaryExpression('+',
+        t.binaryExpression('^', intState(), t.binaryExpression('&', intState(), t.numericLiteral(1))),
+        t.binaryExpression('&', intState(), t.numericLiteral(1))),
+      intState()),
+    () => t.binaryExpression('===',
+      t.binaryExpression('>', t.binaryExpression('|', intState(), t.numericLiteral(1)), intState()),
+      t.binaryExpression('===', t.binaryExpression('&', intState(), t.numericLiteral(1)), t.numericLiteral(0))),
+  ];
+  // 每个操作数都要一个新节点（AST 节点不可共享），这里现取现建
+  function intState() {
+    return t.binaryExpression('|', t.identifier(stateName.name), t.numericLiteral(0));
+  }
+
   // 跳转写入加密值 enc(s)，switch 匹配的 case 标签也是 enc(s)，语义等价。
   // 赋值目标不是字面量，而是加密值经 stateExpr 分解出的计算表达式
   // 写入状态值。滚动重键时写的是 enc(s) ^ K，K 此刻已被推进到下一轮的值，
@@ -312,18 +359,22 @@ function doFlatten(path, stmts, rng, loopFlatten, rolling) {
     const rhs = rolling
       ? t.binaryExpression('^', stateExpr(enc(s)), t.identifier(kName))
       : stateExpr(enc(s));
-    // 去确定性：30% 概率把状态写入包一层恒真条件 `typeof state==='number'?A:A`。
-    // state 恒为数值（allocState/enc/滚动 K 全是 int32 路径），条件恒真但证明它
-    // 需要类型推导 + 变量追踪：纯常量折叠消不掉，符号执行每处多一个分叉，trace
-    // 重建 CFG 时状态赋值不再是单一数值表达式。两分支共用同一 rhs 克隆，运行时
-    // 只求值一次选中的分支，语义与不包裹逐位一致。
+    // 去确定性：30% 概率把状态写入包一层恒真条件 `cond ? A : B`。
+    //
+    // state 恒为数值（allocState/enc/滚动 K 全是 int32 路径），所以谓词恒真；但
+    // 证明它需要位级/模算术推理，纯常量折叠与类型推导都消不掉。两个分支共用同一
+    // rhs 的克隆（运行时只求值选中的那支），语义与不包裹逐位一致。
     if (randInt(0, 9) < 3) {
-      const cond = t.binaryExpression('===',
-        t.unaryExpression('typeof', t.identifier(stateName.name), true),
-        t.stringLiteral('number'));
+      const cond = truePredForms[randInt(0, truePredForms.length - 1)]();
+      // 第二支过一层恒等包装：`(0,A)` / `(void 0,A)` 对任意值恒等且文本不同，
+      // 于是 `cond?A:A`（结构相等即折叠）这条最容易的捷径不再成立。
+      const cloned = t.cloneNode(rhs, true);
+      const alt = randInt(0, 1) === 0
+        ? t.sequenceExpression([t.numericLiteral(0), cloned])
+        : t.sequenceExpression([t.unaryExpression('void', t.numericLiteral(0), true), cloned]);
       return t.expressionStatement(t.assignmentExpression('=',
         t.identifier(stateName.name),
-        t.conditionalExpression(cond, rhs, t.cloneNode(rhs, true))));
+        t.conditionalExpression(cond, rhs, alt)));
     }
     return t.expressionStatement(t.assignmentExpression('=', t.identifier(stateName.name), rhs));
   };

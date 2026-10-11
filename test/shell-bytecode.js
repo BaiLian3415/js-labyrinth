@@ -126,11 +126,21 @@ function reference(c) {
     bd = (bd ^ (mul32(E ^ N, junkMult) || 1)) >>> 0;
   }
   if (bd !== 0) {
+    // 与 shellir.js 同步：投毒铺满整条密文（2026-10-11 起不再是前 ≤8 字节——
+    // 只重掩 8 字节的话，攻击者补一个合法前导就能救回整份载荷）。
+    // 移位与遍历方向由 cfg 决定，缺省 11 / 升序，与生产侧缺省一致。
+    const scrShift = c.scrShift === undefined ? 11 : c.scrShift;
     let u2 = xs32(E ^ bd);
-    const lim = L < 8 ? L : 8;
-    for (let i = 0; i < lim; i++) {
-      u2 = xs32(u2 ^ bd ^ i);
-      q[i] = (q[i] ^ (u2 >>> 11)) & 255;
+    if (c.scrDesc) {
+      for (let i = L - 1; i >= 0; i--) {
+        u2 = xs32(u2 ^ bd ^ i);
+        q[i] = (q[i] ^ (u2 >>> scrShift)) & 255;
+      }
+    } else {
+      for (let i = 0; i < L; i++) {
+        u2 = xs32(u2 ^ bd ^ i);
+        q[i] = (q[i] ^ (u2 >>> scrShift)) & 255;
+      }
     }
   }
   return q;
@@ -180,6 +190,8 @@ function makeCase(o) {
     G: mkSegments(raw, SG),
     tailOrder: o.tailOrder, junkMult: o.junkMult, posHash: o.posHash,
     badCount: o.badCount || 0, probeFunction: !!o.probeFunction, seed: o.seed || 0,
+    // 投毒公式的两个自由度：缺省（undefined / false）与生产侧缺省一致
+    scrShift: o.scrShift, scrDesc: !!o.scrDesc,
   };
   // 往段里掺坏字符：坏字符让 bd2 变化，走的是投毒判定那条分支，必须覆盖到
   if (o.dirty) c.G[c.G.length - 1] += '!';
@@ -196,10 +208,21 @@ section('三路对拍：手写参考 ⟷ emitJs ⟷ emitVm');
       N: 64, SG: 1, tailOrder: 1, posHash: 0, junkMult: 0x0f1e2d3c, seed: 11,
       dirty: true, probeFunction: true,
     }],
-    // L 很小 → 投毒循环只走 8 字节；L 也可能 < 8，走 lim = L 分支
-    ['L<8（投毒循环取 lim=L）', { N: 12, SG: 1, tailOrder: 0, posHash: 1, junkMult: 0x5bf03635, seed: 13 }],
+    // 极小载荷：投毒循环要能处理 L 比 8 还小（旧实现有 min(L,8) 分支，现在没有
+    // 8 字节上限了，这条仍然要留——L<8 时循环边界只剩 L）
+    ['L<8（极小载荷）', { N: 12, SG: 1, tailOrder: 0, posHash: 1, junkMult: 0x5bf03635, seed: 13 }],
     ['单段单字节边界', { N: 5, SG: 1, tailOrder: 0, posHash: 0, junkMult: 0x45d9f3b, seed: 17 }],
     ['大 N / 多段', { N: 2048, SG: 17, tailOrder: 1, posHash: 1, junkMult: 0x2545f491, seed: 19 }],
+    // 投毒公式的两个自由度必须各覆盖一组：降序 + 自定义移位、升序 + 另一移位。
+    // 只测缺省写法的话，"整条密文被投毒"这条不变量在降序版本里坏掉也看不出来。
+    ['降序投毒 + 移位 5 + 坏字符', {
+      N: 211, SG: 4, tailOrder: 1, posHash: 0, junkMult: 0x45d9f3b, seed: 23,
+      dirty: true, scrShift: 5, scrDesc: true,
+    }],
+    ['升序投毒 + 移位 29 + 坏字符', {
+      N: 175, SG: 3, tailOrder: 0, posHash: 1, junkMult: 0x1a2b3c4d, seed: 29,
+      dirty: true, scrShift: 29,
+    }],
   ];
   for (const [label, o] of cases) {
     const c = makeCase(o);
@@ -444,11 +467,28 @@ section('解释器多态：形状逐构建变化，语义逐位不变');
   ok(sameLoop[0] !== sameLoop[1], '循环骨架参与形态选择');
   ok(/case \d+:/.test(runAs(9, [0, 0, 0]).src), '形态 0 是 switch 直接分发');
 
-  // 形态 1：case 标签必须是 1..N 的连续值（不是操作码的随机置换）
+  // 形态 1：case 标签必须**恰好**是 1..N 这个集合（不是操作码的随机置换）。
+  //
+  // 不能按"发射顺序等于标签升序"来判：handler 的发射顺序从 2026-10-11 起逐构建打乱
+  // （多态轴之一），顺序不再等于标签序，但集合不变，且条数必须正好是操作码条数。
   const dense = runAs(11, [1, 0, 0]).src;
   const labels = (dense.match(/case (\d+):/g) || []).map((x) => Number(x.slice(5, -1)));
-  const isDense = labels.length > 0 && labels.every((x, i) => x === i + 1);
-  ok(isDense, '形态 1 的 case 标签是 1..N 连续值（稠密表）', labels.slice(0, 6).join(','));
+  const sorted = labels.slice().sort((x, y) => x - y);
+  const isDense = labels.length === OPCODES.length && sorted.every((x, i) => x === i + 1);
+  ok(isDense, '形态 1 的 case 标签恰好是 1..N（稠密、无重复无缺口）',
+    labels.length + ' 条: ' + labels.slice(0, 6).join(','));
+  ok(labels.join(',') !== sorted.join(','),
+    '形态 1 的 case 发射顺序被打乱（不再等于标签升序）', labels.slice(0, 6).join(','));
+
+  // handler 体的等价改写两轴：forced 的第 4/5 个随机数就是 swapSym / truthify，
+  // 这里显式钉住取值，免得写成"多跑几个 seed 看概率"的统计断言（那种断言会偶发假失败）。
+  {
+    const tie = runAs(11, [0, 0, 0, 0, 0]).src;
+    const tf = runAs(11, [0, 0, 0, 0, 1]).src;
+    ok(/\?1:0/.test(tie), 'truthify=0 时比较归一化写成 (c)?1:0');
+    ok(/\+!!\(/.test(tf), 'truthify=1 时写成 +!!(c)（逐位等价）');
+    ok(tie !== tf, '两轴确实改变了解释器源码');
+  }
 
   // 形态 2：不该出现 switch
   const chain = runAs(11, [2, 0, 0]).src;

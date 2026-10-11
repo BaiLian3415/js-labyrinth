@@ -459,6 +459,8 @@ export default function stringArray(ast, options, ctx) {
       nm, arrExpr,
       // 密钥耦合：把完整性校验的偏移量混进解密密钥，见 buildIifeSource 的说明
       couple: ctx.couple || null,
+      // 访问器自己的名字：本地偏移项写在它的一个属性上（defineProperty 够不着）
+      selfName: accessorName,
     });
     const parsed = parse("var " + accessorName + "=" + iifeSource + ";", { sourceType: "script" });
     // 标记为引导机制函数。debugProtection 的内联哨兵每次调用都要重哈希自身
@@ -647,7 +649,7 @@ function hashItems(items, init, prime) {
   return h >>> 0;
 }
 
-function buildIifeSource({ listVar, encodedItems, encoding, key, rotation, mask, selfDefending, checksum, checksumRot, hashInit, hashPrime, poisonKeys, rt, cache, evolveMask, nm, arrExpr, couple }) {
+function buildIifeSource({ listVar, encodedItems, encoding, key, rotation, mask, selfDefending, checksum, checksumRot, hashInit, hashPrime, poisonKeys, rt, cache, evolveMask, nm, arrExpr, couple, selfName }) {
   const arrLit = "[" + encodedItems.map((s) => JSON.stringify(s)).join(",") + "]";
   // 碎片化时调用方给出「多载体拼回」表达式；默认仍是单个数组字面量
   const arrArg = arrExpr || arrLit;
@@ -681,7 +683,15 @@ function buildIifeSource({ listVar, encodedItems, encoding, key, rotation, mask,
   // 还没写健康值，缓存下来的 -OK 会把正常产物自己打成乱码。每次读一个属性、
   // 做一次减法，成本可忽略；好处是横幅的偏移、各校验点累加的偏移在任何时刻
   // 到达都能立刻生效，不存在"先解出的明文留着好数据"的窗口。
-  const dkDecl = couple ? "var " + nm.dk + "=((" + cRef + "|0)-" + OK_LIT + ");" : "";
+  //
+  // 偏移由**两项**相加：全局载体的 (值-OK)，以及访问器函数对象自己的一个属性
+  // （载荷本地项，见 couple.prop 的说明）。第二项是给"用 defineProperty 钉死全局"
+  // 那类绕法准备的：钉住全局只让第一项恒为 0，第二项仍带着校验器累计的偏移。
+  // 未改动时该属性从未被写过，`(undefined|0)` 也是 0——所以早带校验器先跑、
+  // 池声明后跑这种顺序差异不会造成误报。
+  const dkDecl = couple
+    ? "var " + nm.dk + "=((" + cRef + "|0)-" + OK_LIT + "+(" + selfName + "[\"" + couple.prop + "\"]|0));"
+    : "";
   // 解码累加形态多态：三种写法语义全等（字符串拼接），但 AST/文本各不相同。
   // 批量还原脚本若按 `o+=fcc(...)` 硬编码模式提取解码循环，换个形态即失效；
   // 要通吃必须做语义级匹配，成本从正则提到数据流分析。

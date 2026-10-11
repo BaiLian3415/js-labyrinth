@@ -370,6 +370,52 @@ section('BigInt 与不透明谓词');
   ok(mismatch === 0, 'BigInt / Symbol / 对象参数不被谓词位运算弄坏（4 例 × 6 seed）', firstBad);
 }
 
+section('原生性探针：同一口径必须覆盖三处');
+{
+  // shell 的 _0ph/_0pw、rtgen 的 hb 心跳、rtgen 的 WebAssembly 获取器链。
+  // 判据都是"多路径"：自身属性没被换 + 经原型方法 stringify + 原型方法自证。
+  // 用例用 shell:false + bannerSkip 拿明文载荷，否则内核在密文里 grep 不到。
+  const r = obfuscate('function f(a){return a+1;}process.stdout.write(String(f(1)));',
+    { preset: 'max', seed: 5, shell: false, bannerSkip: true });
+  const c = r.code;
+  ok(/Function\.prototype\.toString\.call\(/.test(c),
+    '载荷里有"经原型方法 stringify"的探针（own 属性伪造骗不到它）');
+  ok(/\.test\.toString\s*!==/.test(c), '载荷里有"自身属性未被换"的比对（test）');
+  ok(/var [A-Za-z_$][\w$]*\s*=\s*Function\.prototype\.toString/.test(c),
+    '载荷把 Function.prototype.toString 取进局部再比对');
+  // 旧写法必须清干净：`("" + X)` 只看实例属性，一行就能骗过
+  ok(!/\(""\s*\+\s*Function\.prototype\.toString\)/.test(c),
+    '旧的实例 stringify 写法（Function.prototype.toString）已不存在');
+  ok(!/\(""\s*\+\s*RegExp\.prototype\.test\)/.test(c),
+    '旧的实例 stringify 写法（RegExp.prototype.test）已不存在');
+}
+
+section('健康载体：全局通道之外必须还有载荷本地通道');
+{
+  // 背景（2026-10-11 实测）：载体与毒药键都是**全局属性**，用 defineProperty 把它们
+  // 定义成 get→健康值/set→空操作，检测的写入就全被吞掉——实测篡改锚点后产物照常
+  // 输出正确结果。所以偏移必须有第二条通道：写在**访问器函数对象自己的属性**上，
+  // 全局劫持够不着它，要解除只能改载荷代码（而访问器本体在校验面内）。
+  const src = 'function g(a){return a*3;}process.stdout.write(String(g(7)));';
+  const r = obfuscate(src, { preset: 'medium', seed: 5, shell: false, mangle: false });
+  const c = r.code;
+  const read = c.match(/([A-Za-z_$][\w$]*)\["(__d[0-9a-f]+)"\]/);
+  ok(!!read, '读取端把载荷本地项加进密钥偏移', read ? read[1] + '["' + read[2] + '"]' : '未接线');
+  if (read) {
+    const refs = c.split('["' + read[2] + '"]').length - 1;
+    ok(refs >= 2, '本地项同时出现在读取端与校验器写入端', refs + ' 处引用');
+    // 必须是**累加**：校验器会被调用多次，覆盖式赋值会让"后一次是 0"抹掉前一次的偏移
+    ok(new RegExp('\\["' + read[2] + '"\\]\\|0\\)\\+').test(c),
+      '校验器对本地项做累加（不是覆盖赋值）');
+  }
+  // 关掉耦合链时读取端不该再有本地项。注意不能只搜 `["__d…"]`：其他 pass 也会用
+  // `__d` 前缀的全局属性名（实测 `["__d631c7c"]` 是另一处的缓存键），只认**读取端
+  // 形态** `["__d…"]|0)`。
+  const off = obfuscate(src, { preset: 'medium', seed: 5, shell: false, mangle: false, bannerSkip: true }).code;
+  ok(/\["__d[0-9a-f]{6,}"\]\|0\)/.test(c), '耦合开启时读取端确实读本地项');
+  ok(!/\["__d[0-9a-f]{6,}"\]\|0\)/.test(off), 'bannerSkip（耦合链整体关闭）时读取端不读本地项');
+}
+
 if (process.argv[1] && process.argv[1].endsWith('passes-defense.js')) {
   const bad = report();
   cleanTmp();

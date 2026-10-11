@@ -149,8 +149,19 @@ function buildLoader(spec) {
   defPriv('fail', 'c', spec.debug === true ? 'console.error("[rt] mark " + c); return; ' : N.pois + ' = 1; ');
   defPriv('hb', '', 'if (' + N.pois + ') { return; } '
     + N.hbw + '[0]++; if (' + N.hbw + '[0] < 16) { return; } ' + N.hbw + '[0] = 0; '
-    + 'if (("" + Function.prototype.toString).indexOf(' + N.nat + ') < 0) { ' + N.pois + ' = 1; } '
-    + 'if (("" + RegExp.prototype.test).indexOf(' + N.nat + ') < 0) { ' + N.pois + ' = 1; }');
+    // 原生性判定必须多路径（与 shell 的 _0ph 同一口径，见 AGENTS）。
+    // 旧写法 `("" + Function.prototype.toString)` 走**实例属性**，一行就能骗过：
+    // `Function.prototype.toString.toString = () => 'function toString(){[native code]}'`。
+    // 现在三条独立路径：① 自身属性没被换（`X.toString === Function.prototype.toString`）
+    // ② 经**原型方法**调用 stringify（own 属性伪造骗不到）③ 该原型方法自证也是原生。
+    // 代价：每 16 次心跳多两次属性读（stringify 次数与改造前相同），可忽略。
+    + 'var FT = Function.prototype.toString; '
+    + 'if (typeof FT !== "function" || Function.prototype.toString.toString !== FT '
+    + '|| RegExp.prototype.test.toString !== FT) { ' + N.pois + ' = 1; } '
+    + 'if (("" + FT.call(Function.prototype.toString)).indexOf(' + N.nat + ') < 0) { '
+    + N.pois + ' = 1; } '
+    + 'if (("" + FT.call(RegExp.prototype.test)).indexOf(' + N.nat + ') < 0) { '
+    + N.pois + ' = 1; }');
   // 分发链：分支顺序逐构建打乱，子码字面量只出现在这里。未知子码返回 0/直接返回，
   // 不抛错——真实执行不到，分析者无法用"未知子码抛错"区分真假路径。
   const chain = (fn, grp, args, retZero) => {
@@ -264,14 +275,19 @@ function buildLoader(spec) {
   const E2 = (E1 ^ hv) | 0;
   P('function ' + N.hv + '(b) { var h = ' + hashBase + ' >>> 0, i; '
     + 'for (i = 0; i < b.length; i++) { h = ' + N.mul + '(h ^ b[i], ' + hvPrime + ') >>> 0; } return h >>> 0; }');
-  // 获取器链：逐层原生性检查，层数与形态逐次随机
+  // 获取器链：逐层原生性检查，层数与形态逐次随机。
+  // 检查同样走"原型方法调用 + 自身属性未被换"两路（与 hb/_0ph 同口径）：
+  // `(W.Module + "")` 只看实例属性，伪造一个 toString 就能让这条链认下假 WebAssembly。
   const scNames = [];
   for (let d = 0; d <= layers; d++) scNames.push(uk());
+  const FTS = 'Function.prototype.toString';
+  const natCall = (expr) => '(' + FTS + '.call(' + expr + ') + "").indexOf(' + N.nat + ') >= 0';
+  const notSpoofed = (expr) => '(' + expr + '.toString === ' + FTS + ')';
   const checks = [
-    (W) => '(' + W + '.Module + "").indexOf(' + N.nat + ') >= 0',
-    (W) => '(' + W + '.Instance + "").indexOf(' + N.nat + ') >= 0',
-    (W) => '(' + W + '.instantiate + "").indexOf(' + N.nat + ') >= 0',
-    (W) => '(' + W + '.compile + "").indexOf(' + N.nat + ') >= 0',
+    (W) => '(' + natCall(W + '.Module') + ' && ' + notSpoofed(W + '.Module') + ')',
+    (W) => '(' + natCall(W + '.Instance') + ' && ' + notSpoofed(W + '.Instance') + ')',
+    (W) => '(' + natCall(W + '.instantiate') + ' && ' + notSpoofed(W + '.instantiate') + ')',
+    (W) => '(' + natCall(W + '.compile') + ' && ' + notSpoofed(W + '.compile') + ')',
     (W) => 'typeof ' + W + '.Module === "function"',
   ];
   P('function ' + scNames[0] + '() { '

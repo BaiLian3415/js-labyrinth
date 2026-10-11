@@ -425,8 +425,13 @@ function namePool(k) {
  *     也逐构建打乱）/ `if-else` 长链（连 switch 与 case 标签都不存在）。
  *   - **循环骨架**（3 种）：`for(;;)` / `while(1)` / `for(;1;)`。
  *   - **局部短名**（4 组）：见 namePool。
+ *   - **handler 顺序**（N! 种）：case/比较的**发射顺序**逐构建打乱。每条分支自带
+ *     标签，顺序纯属写法；固定顺序会让"handler 序列"成为可对号入座的签名。
+ *   - **handler 算式等价式**（4 种组合）：对称算子操作数交换（`a&b`↔`b&a`、
+ *     `a<b`↔`b>a`）、比较结果归一化 `(c)?1:0`↔`+!!(c)`、`x>>>0`↔`(x|0)>>>0`。
  *
- * 三轴独立组合（36 种），同一份外壳每次构建的形状都不同，两次产物之间无法对照。
+ * 三轴（分发/骨架/短名）独立组合 36 种，再乘上后两轴——同一份外壳每次构建的形状都不同，
+ * 两次产物之间无法对照。
  *
  * 这是**提高识别成本**，不是让形状不可识别：真要彻底不可识别得做架构级差异（不同
  * 执行模型、不同字节码格式），那是另一个量级的工作。
@@ -447,6 +452,29 @@ export function emitInterpreter({ opmap, key, k2, outSlot, randInt }) {
   const W = np.W, T = np.T, C = np.C, SK = np.SK, pc = np.pc, sp = np.sp, D = np.D;
   const a = np.a, b = np.b, s = np.s, i = np.i, o = np.o, v = np.v, n = np.n, t = np.t;
   const g = np.g, J = np.j, PP = np.pp, CC = np.cc, Z = np.z;
+
+  // ---- handler 体的逐构建等价改写（2026-10-11 加）----
+  //
+  // 动机：36 种形态只把**编号与分派骨架**换掉了，handler 的**先后顺序与算式写法**一直
+  // 是固定的——语义恢复者照样能按固定顺序做签名匹配（挑一条条指令的攻击就是这么打的：
+  // 只要 handler 体文本稳定，指令集就能被逐条认出来）。
+  //
+  // 两条轴，都只收**逐位等价**的写法：
+  //   swapSym：对称算子的操作数交换（a&b → b&a、a<b → b>a）。只碰真正交换律成立的
+  //            算子；`a-b` 写成 `b-a`、`a<<b` 写成 `b<<a` 一律不动——那是"错了但大
+  //            部分用例看不出来"的典型，减法与移位会当场露馅。
+  //   truthify：比较结果归一化的两种写法 `(c)?1:0` ↔ `+!!(c)`。`+!!` 只把布尔化结果
+  //            变 0/1，不会对操作数多做一次求值，NaN/对象/字符串都恒等。
+  // ri 缺省时（三路对拍里不传 randInt 的那条路）两个开关都取 false，与改造前一致。
+  const swapSym = ri(0, 1) === 1;
+  const truthify = ri(0, 1) === 1;
+  const sym = (x, op, y) => (swapSym ? y + op + x : x + op + y);
+  const cmp = (x, op, flip, y) => {
+    const lhs = swapSym ? y : x;
+    const rhs = swapSym ? x : y;
+    const o = swapSym ? flip : op;
+    return truthify ? '+!!(' + lhs + o + rhs + ')' : '(' + lhs + o + rhs + ')?1:0';
+  };
 
   // 弹栈必须是 SK[--sp]，**不是** SK[sp--]。
   //
@@ -486,12 +514,15 @@ export function emitInterpreter({ opmap, key, k2, outSlot, randInt }) {
   emit('DUP', `{var ${t}=${SK}[${sp}-1];${SK}[${sp}++]=${t}}`);
   emit('POP', `{${sp}--}`);
 
-  bin('ADD', `${a}+${b}`); bin('SUB', `${a}-${b}`); bin('MUL', `${a}*${b}`); bin('AND', `${a}&${b}`);
-  bin('OR', `${a}|${b}`); bin('XOR', `${a}^${b}`); bin('SHL', `${a}<<${b}`); bin('SHR', `${a}>>${b}`);
-  bin('USHR', `${a}>>>${b}`);
-  emit('U32', `{var ${a}=${pop()};${push(a + '>>>0')}}`);
-  bin('LT', `${a}<${b}?1:0`); bin('LE', `${a}<=${b}?1:0`); bin('GT', `${a}>${b}?1:0`);
-  bin('GE', `${a}>=${b}?1:0`); bin('EQ', `${a}===${b}?1:0`); bin('NE', `${a}!==${b}?1:0`);
+  bin('ADD', `${a}+${b}`); bin('SUB', `${a}-${b}`);
+  bin('MUL', sym(a, '*', b)); bin('AND', sym(a, '&', b));
+  bin('OR', sym(a, '|', b)); bin('XOR', sym(a, '^', b));
+  bin('SHL', `${a}<<${b}`); bin('SHR', `${a}>>${b}`); bin('USHR', `${a}>>>${b}`);
+  // >>>0 的两种等价写法：`x>>>0` 与 `(x|0)>>>0` 对任意值都落在同一个 ToUint32 结果上
+  // （ToInt32 与 ToUint32 只差 2^32 的同余类，再取一次 ToUint32 就回来了）。
+  emit('U32', `{var ${a}=${pop()};${push(ri(0, 1) === 1 ? '(' + a + '|0)>>>0' : a + '>>>0')}}`);
+  bin('LT', cmp(a, '<', '>', b)); bin('LE', cmp(a, '<=', '>=', b)); bin('GT', cmp(a, '>', '<', b));
+  bin('GE', cmp(a, '>=', '<=', b)); bin('EQ', cmp(a, '===', '===', b)); bin('NE', cmp(a, '!==', '!==', b));
 
   emit('JMP', `{${pc}=${W}[${pc}++]}`);
   emit('JZ', `{var ${J}=${W}[${pc}++];if(!${pop()})${pc}=${J}}`);
@@ -501,6 +532,16 @@ export function emitInterpreter({ opmap, key, k2, outSlot, randInt }) {
   emit('NCHK', `{var ${g}=${W}[${pc}++],${CC}=${W}[${pc}++];`
     + `${push('((""+tbl[' + g + ']).indexOf(' + C + '[' + CC + '])<0)?1:0')}}`);
   emit('RET', `{return ${T}[${outSlot}];}`);
+
+  // handler 的**发射顺序**逐构建打乱：每条 case/比较都自带自己的标签（form 0/2 是
+  // 操作码，form 1 是它自己的稠密下标 + 1），所以先后顺序纯属写法，语义不变。
+  // 这是"handler 体形态"这一轴的另一半——只换算式写法而顺序固定，签名匹配仍可按
+  // 固定序列对号入座。
+  const seq = cases.map((_, k) => k);
+  for (let k = seq.length - 1; k > 0; k--) {
+    const q = ri(0, k);
+    const tmp = seq[k]; seq[k] = seq[q]; seq[q] = tmp;
+  }
 
   const opExpr = W + '[' + pc + '++]';
   let dispatch;
@@ -520,7 +561,7 @@ export function emitInterpreter({ opmap, key, k2, outSlot, randInt }) {
     const tblPre = 'var ' + D + '=[];' + order
       .map((idx) => D + '[' + opmap[cases[idx].nm] + ']=' + (idx + 1) + ';').join('');
     dispatch = tblPre + 'switch(' + D + '[' + opExpr + ']){'
-      + cases.map((c, k) => 'case ' + (k + 1) + ':' + c.code + 'break;').join('')
+      + seq.map((k) => 'case ' + (k + 1) + ':' + cases[k].code + 'break;').join('')
       + 'default:throw new Error("vm")}';
   } else if (form === 2) {
     // if-else 长链：连 switch 与 case 标签都不存在，形状与另两种完全不同。
@@ -528,13 +569,14 @@ export function emitInterpreter({ opmap, key, k2, outSlot, randInt }) {
     // 操作码**必须先取进局部**：`W[pc++]` 写在比较式里会被求值 N 次（一条 case 一
     // 次），每读一个字 pc 就前移一格——于是从第二个分支起全在拿操作数当操作码比，
     // 表现为"跑到第几条就抛 vm"。switch 形态没这个问题是因为 switch 的判据只求值一次。
+    // 链上第一条不加 else（`seq` 的首项承担这个位置），顺序由 seq 决定。
     dispatch = 'var ' + D + '=' + opExpr + ';'
-      + cases.map((c, k) => (k === 0 ? '' : 'else ')
-        + 'if(' + D + '===' + opmap[c.nm] + '){' + c.code + '}').join('')
+      + seq.map((k, pos) => (pos === 0 ? '' : 'else ')
+        + 'if(' + D + '===' + opmap[cases[k].nm] + '){' + cases[k].code + '}').join('')
       + 'else{throw new Error("vm")}';
   } else {
     dispatch = 'switch(' + opExpr + '){'
-      + cases.map((c) => 'case ' + opmap[c.nm] + ':' + c.code + 'break;').join('')
+      + seq.map((k) => 'case ' + opmap[cases[k].nm] + ':' + cases[k].code + 'break;').join('')
       + 'default:throw new Error("vm")}';
   }
 

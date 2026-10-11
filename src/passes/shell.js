@@ -616,6 +616,41 @@ function makeShellLayer(payload, variant, mode) {
     'var _0fc=String.fromCharCode;var _0cc=function(_0s9,_0k9){return _0s9.charCodeAt(_0k9);};var _0U8=Uint8Array;var _0Ar=Array;',
     'var _0fc=String.fromCharCode,_0U8=Uint8Array,_0Ar=Array;var _0cc=function(_0s9,_0k9){return _0s9.charCodeAt(_0k9);};',
   ]));
+  // 原生性探针助手（classic 与 bytecode 两种形态共用）。判据是三条**互相独立**的路径，
+  // 任一条不满足即视为被钩：
+  //   ① 实例上的 toString 必须仍等于 Function.prototype.toString——自身属性被换过，
+  //      就是最常见的一行式伪造：`hookedEval.toString=()=>'function eval(){[native code]}'`；
+  //   ② 经**原型方法**（而不是实例属性）stringify 目标，源码里必须含 native；
+  //   ③ 该原型方法 stringify 它自己，也必须含 native——堵住"整条原型被换、且会为
+  //      自己伪造文本"这一层。
+  // 旧写法 `(""+eval).indexOf('native')` 只走 ① 的反面（实例属性优先），一行就能骗过；
+  // 三条都要过，攻击者得写出一致的多层谎言，而自动化工具体不会为此改。
+  // 抛错一律判为被钩（fail-closed）：让探针抛错本身就是一种绕过手法。
+  // 说明：这里刻意不用 try 包住 ①（它只读属性，不会抛）；`typeof` 两道先把
+  // "Function.prototype.toString 被换成非函数""eval 在受限宿主里不存在"兜住。
+  put(P([
+    'var _0ph=function(_0f,_0n){var _0ts=Function.prototype.toString;'
+    + 'if(typeof _0ts!=="function"||typeof _0f!=="function"){return 1;}'
+    + 'if(_0f.toString!==_0ts){return 1;}'
+    + 'try{if((""+_0ts.call(_0f)).indexOf(_0n)<0){return 1;}'
+    + 'if((""+_0ts.call(_0ts)).indexOf(_0n)<0){return 1;}}catch(_0e){return 1;}'
+    + 'return 0;};',
+    'var _0ph=function(_0f,_0n){var _0ts=Function.prototype["toString"];'
+    + 'if(typeof _0ts!=="function"||typeof _0f!=="function"){return 1;}'
+    + 'if(_0f.toString!==_0ts){return 1;}'
+    + 'try{if(0>((""+_0ts["call"](_0f)).indexOf(_0n))){return 1;}'
+    + 'if(0>((""+_0ts["call"](_0ts)).indexOf(_0n))){return 1;}}catch(_0e){return 1;}'
+    + 'return 0;};',
+  ]));
+  // 探针外壳：给"按字符串比 native"那条老路（字节码形态的 NCHK 只认 stringify 结果）
+  // 用的可替换目标。它自身的 toString 走 _0ph，所以 stringify 出来含 needle 才代表
+  // 原生未被钩；被钩时返回空串，NCHK 找不到 needle 即判为篡改。
+  put(P([
+    'var _0pw=function(_0f,_0n){var _0g=function(){};'
+    + '_0g.toString=function(){return _0ph(_0f,_0n)?"":_0n;};return _0g;};',
+    'var _0pw=function(_0f,_0n){var _0g=function(){};'
+    + '_0g["toString"]=function(){return _0ph(_0f,_0n)?"":_0n;};return _0g;};',
+  ]));
   put('var _0s2=' + s2 + ';');
   put(P(['var _0a="";var _0i,_0j,_0t;', 'var _0a="",_0i,_0j,_0t;']));
   // 字符串累加二形态（右部纯：别名调用无可见副作用，求值一次）。
@@ -710,6 +745,10 @@ function makeShellLayer(payload, variant, mode) {
       probeFunction: evalStyle === 1,
       junkMult: JUNK_MULT,
       posHash: ph,
+      // 投毒公式的移位与遍历方向逐构建随机（公式自洽，任意取值都成立）；
+      // 固定成一种写法会让这段新增代码成为跨 seed 的固定形态。
+      scrShift: randInt(3, 29),
+      scrDesc: randInt(0, 1) === 1,
     });
     const bcOp = shuffleOpCodes(randInt);
     const vm = emitVm(ir, { inputs: vmInputs, output: 'q', opmap: bcOp });
@@ -729,10 +768,13 @@ function makeShellLayer(payload, variant, mode) {
       opmap: bcOp, key: bcEnc.key, k2: bcEnc.k2, outSlot: vm.outSlot, randInt,
     }) + ';';
     put('var _0bw=[' + bcEnc.data.join(',') + '];');
-    // 原语表：前五项是引导器已声明的原语，后两项是原生探针对象。
-    // 第 6 项（Function）在 probeFunction 为假时永不被读，放 Function 只是占位，
-    // 比放个占位常量少一处可搜的字面量。
-    put('var _0bt=[xs32,mix,ipos,mul32,_0cc,' + bcEval + ',Function];');
+    // 原语表：前五项是引导器已声明的原语，后两项是**原生性探针目标**。
+    // 第 6/7 项不是裸的 eval / Function，而是 _0pw 包出来的探针外壳：NCHK 只按
+    // "stringify 后含不含 native"判定，外壳把三条独立路径的结论折成那一个字符串，
+    // 于是"伪造实例 toString"这类一行式绕过在外壳里就被识破（见 _0ph 的注释）。
+    // 交付用的 eval/Function 在 _0s2 那一段（evalTake），与本表无关。
+    put('var _0bt=[xs32,mix,ipos,mul32,_0cc,_0pw(eval,' + NATIVE + '),_0pw(Function,'
+      + NATIVE + ')];');
     // 常量池：原生性探针的针脚。走 _0fc 现拼，与 classic 形态同一口径，不留 'native' 明文。
     put('var _0bc=[' + NATIVE + '];');
     // 局部表：一次性给全长度并把非输入槽填 0。不填的话那些槽是「洞」，万一读到
@@ -830,17 +872,41 @@ function makeShellLayer(payload, variant, mode) {
     put(P(['if(_0bd2>0&&_0bd===0){_0bd=1;}',
       'if(0<_0bd2&&0===_0bd){_0bd=1;}',
       'if(_0bd2>0&&0===_0bd){_0bd=1;}']));
-    put(P(['if((""+eval).indexOf(' + NATIVE + ')<0){_0bd=(_0bd^(mul32(_0e^_0L,' + JUNK_MULT + ')||1))>>>0;}',
-      'if(0>((""+eval)["indexOf"](' + NATIVE + '))){_0bd=(_0bd^(mul32(_0e^_0L,' + JUNK_MULT + ')||1))>>>0;}']));
+    put(P(['if(_0ph(eval,' + NATIVE + ')){_0bd=(_0bd^(mul32(_0e^_0L,' + JUNK_MULT + ')||1))>>>0;}',
+      'if(0<_0ph(eval,' + NATIVE + ')){_0bd=(_0bd^(mul32(_0e^_0L,' + JUNK_MULT + ')||1))>>>0;}']));
     if (evalStyle === 1) {
-      put(P(['if((""+Function).indexOf(' + NATIVE + ')<0){_0bd=(_0bd^(mul32(_0e^_0N,' + JUNK_MULT + ')||1))>>>0;}',
-        'if(0>((""+Function)["indexOf"](' + NATIVE + '))){_0bd=(_0bd^(mul32(_0e^_0N,' + JUNK_MULT + ')||1))>>>0;}']));
+      put(P(['if(_0ph(Function,' + NATIVE + ')){_0bd=(_0bd^(mul32(_0e^_0N,' + JUNK_MULT + ')||1))>>>0;}',
+        'if(0<_0ph(Function,' + NATIVE + ')){_0bd=(_0bd^(mul32(_0e^_0N,' + JUNK_MULT + ')||1))>>>0;}']));
     }
-    put(P(['if(_0bd!==0){var _0u2=xs32(_0e^_0bd);var _0lim=_0L<8?_0L:8;',
-      // 合并声明但不提前闭合 if：闭合仍由下面的 for 行末 `}}` 完成（与原版同位）
-      'if(0!==_0bd){var _0u2=xs32(_0e^_0bd),_0lim=_0L<8?_0L:8;']));
-    put(P(['for(_0i=0;_0i<_0lim;_0i++){_0u2=xs32(_0u2^_0bd^_0i);_0q[_0i]=(_0q[_0i]^(_0u2>>>11))&255;}}',
-      'for(_0i=0;_0lim>_0i;_0i+=1){_0u2=xs32(_0u2^(_0bd^_0i));_0q[_0i]=(_0q[_0i]^(_0u2>>>11))&255;}}']));
+    // 投毒响应铺满整条密文（2026-10-11 改，与 shellir.js 同一口径）。
+    // 原来只重掩前 ≤8 字节：攻击者把 8 个乱码字节补成合法前导（`!function`）就能
+    // 救回整份载荷，于是原生探针、差分校验、FNV 尾校验全都只剩一个弱响应
+    // （实测钩 eval 拿到 166 KB 明文，只有头部 8 字节坏）。现在按 _0bd 派生的
+    // 滚动密钥异或全长度；_0bd===0（未改动）时不进分支，逐字节与改造前一致。
+    //
+    // 写法逐构建随机（头/循环方向/更新式/掩码拼写/右移位数）：这段是**新增的固定
+    // 形态**，不换写法会拉高跨 seed 结构相似度（passes-basic 的棘轮立刻抓到）。
+    // 公式自洽（生成端与运行端同一份），移位与方向任意取值都成立。
+    {
+      const scrShift = randInt(3, 29);
+      const scrHead = P([
+        'if(_0bd!==0){var _0u2=xs32(_0e^_0bd);',
+        'if(0!==_0bd){var _0u2=xs32(_0e^_0bd);',
+        'if(_0bd){var _0u2=xs32(_0e^_0bd);',
+      ]);
+      const scrLoop = randInt(0, 1) === 1
+        ? P(['for(_0i=_0L-1;_0i>=0;_0i--){', 'for(_0i=_0L-1;0<=_0i;_0i-=1){'])
+        : P(['for(_0i=0;_0i<_0L;_0i++){', 'for(_0i=0;_0L>_0i;_0i+=1){']);
+      const scrUpd = P([
+        '_0u2=xs32(_0u2^(_0bd^_0i));', '_0u2=xs32((_0u2^_0bd)^_0i);', '_0u2=xs32(_0u2^_0i^_0bd);',
+      ]);
+      const scrStore = P([
+        '_0q[_0i]=(_0q[_0i]^(_0u2>>>' + scrShift + '))&255;}}',
+        '_0q[_0i]=255&(_0q[_0i]^(_0u2>>>' + scrShift + '));}}',
+      ]);
+      put(scrHead + scrLoop + scrUpd);
+      put(scrStore);
+    }
     }
   // ↓↓↓ 以下「字节→字符串」与「eval/import 交付」两段两种形态共用 ↓↓↓
   if (plainIsAscii) {

@@ -407,6 +407,18 @@ const targets = rootBody.filter((s) => s.type === 'FunctionDeclaration' && s.id 
   if (couple) {
     const cref = globalRef() + '["' + couple.name + '"]';
     verifierLines.push(cref + '=(((' + cref + '|0)+(' + nHashA + '^' + nEA + ')+(' + nHashB + '^' + nEB + '))|0);');
+    // 载荷本地偏移项（2026-10-11 加）：累加到**访问器函数对象自己的属性**上，
+    // 与上面那个全局载体并行。理由见 obfuscate.js 里 couple.prop 的说明——
+    // 全局属性可以被 defineProperty 钉死（实测三行就能解除全部检测），而函数对象
+    // 的属性不行：要动它就得改载荷代码，而访问器本体恰恰在校验面内（源码参与哈希），
+    // 改了它这里的偏移立刻非零。
+    // `if(REF)` 守卫是必需的：校验器的**早带**先于池声明执行，那时访问器变量
+    // 还没赋值（var 已提升但为 undefined），不加守卫会 TypeError。
+    for (const d of deferred) {
+      const pr = d.ref + '["' + couple.prop + '"]';
+      verifierLines.push('if(' + d.ref + '){' + pr + '=(((' + pr + '|0)+(' + nHashA + '^' + nEA + ')+('
+        + nHashB + '^' + nEB + '))|0);}');
+    }
   }
   verifierLines.push('if((' + nHashA + '>>>0)!==(' + nEA + '>>>0)' +
     '||(' + nHashB + '>>>0)!==(' + nEB + '>>>0)){' +

@@ -348,6 +348,60 @@ section('控制流扁平化：大函数体');
   ok(!!code && runNode(code, 'cf-big-obf.js').trim() === want, '大函数体产物语义与原源码一致');
 }
 
+section('控制流扁平化：恒真谓词包裹不许"零语义"折叠');
+{
+  // 旧形态是 `cond ? A : A`——两臂逐字相同，任何工具（AST 比较两臂，甚至三行正则）
+  // 都能不看语义直接折成 `A`，30% 的状态写入包裹等于没加。现在两臂语义恒等但**文本
+  // 不同**（`A` 与 `(0,A)`/`(void 0,A)`），且谓词逐构建从 5 种位运算/typeof 恒等式里挑。
+  //
+  // 判据放在 AST 上（比正则可靠）：统计"两臂结构相等"的三元节点数。注意要关掉 VM，
+  // 否则函数被搬进字节码解释器，扁平化根本不落在这段代码上——第一版度量就是这么
+  // 得出"0 个谓词"的假结论。别的 pass 也可能产出结构相等的三元（实测偶发 0~1 个），
+  // 所以阈值取 ≤1，而改造前是每 seed 5~10 个。
+  const src = [
+    'function a(x){if(x>3){return x*2}else{return x-1}}',
+    'function b(x){var s=0;for(var i=0;i<x;i++){if(i%2){s+=i}else{s-=1}}return s}',
+    'function c(x){if(x){if(x>10){return 1}else{return 2}}else{return 3}}',
+    'console.log(a(4)+b(4)+c(4));',
+  ].join('\n');
+  const strip = (n) => {
+    if (!n || typeof n !== 'object') return n;
+    if (Array.isArray(n)) return n.map(strip);
+    const o = {};
+    for (const k of Object.keys(n)) {
+      if (k === 'start' || k === 'end' || k === 'loc' || k === 'extra') continue;
+      o[k] = strip(n[k]);
+    }
+    return o;
+  };
+  const walk = (n, fn) => {
+    if (!n || typeof n !== 'object') return;
+    if (Array.isArray(n)) { n.forEach((c) => walk(c, fn)); return; }
+    if (n.type) fn(n);
+    for (const k of Object.keys(n)) {
+      if (k === 'loc' || k === 'start' || k === 'end') continue;
+      walk(n[k], fn);
+    }
+  };
+  let worstSame = 0;
+  let worstSeed = 0;
+  for (const seed of [11, 22, 33, 44]) {
+    const code = obfuscate(src, {
+      preset: 'medium', seed, shell: false, bannerSkip: true,
+      vmProtection: false, controlFlowFlattening: true,
+    }).code;
+    const ast = parse(code, { sourceType: 'script' });
+    let same = 0;
+    walk(ast, (n) => {
+      if (n.type !== 'ConditionalExpression') return;
+      if (JSON.stringify(strip(n.consequent)) === JSON.stringify(strip(n.alternate))) same++;
+    });
+    if (same > worstSame) { worstSame = same; worstSeed = seed; }
+  }
+  ok(worstSame <= 1, '恒真谓词的两臂不再结构相等（零语义折叠失效）',
+    '最多 ' + worstSame + ' 个（seed ' + worstSeed + '），改造前每 seed 5~10 个');
+}
+
 if (process.argv[1] && process.argv[1].endsWith('passes-basic.js')) {
   const bad = report();
   cleanTmp();

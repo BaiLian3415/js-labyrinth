@@ -95,7 +95,7 @@ function tailExpr(q, L, tailOrder) {
  * @param {number} cfg.posHash    位置散列开关（传给 mix 的 ph）
  * @returns {object} 语句树
  */
-export function buildDecodeChain({ tailOrder, probeFunction, junkMult, posHash }) {
+export function buildDecodeChain({ tailOrder, probeFunction, junkMult, posHash, scrShift, scrDesc }) {
   const list = [];
   const put = (s) => list.push(s);
 
@@ -186,21 +186,32 @@ export function buildDecodeChain({ tailOrder, probeFunction, junkMult, posHash }
   put(probe('P_EVAL', 'L'));
   if (probeFunction) put(probe('P_FN', 'N'));
 
+  // 投毒响应必须铺满**整条密文**（2026-10-11 改）。
+  //
+  // 原来只重掩前 ≤8 字节（`lim = min(L, 8)`）：攻击者把那 8 个字节补成合法前导
+  // （`!function(){` 之类）就能把整份载荷救回来——而原生探针、差分校验、FNV 尾校验
+  // 背后都只有这一个响应，响应太弱等于检测没做（实测：钩 eval 拿到 166 KB 载荷，
+  // 只有头 8 字节是乱码，其余全是明文）。
+  //
+  // 现在用 `bd` 派生的滚动密钥异或全长度；`bd === 0`（未被改动）时整个分支不进入，
+  // 逐字节与改造前一致。代价只在被篡改时多一次 O(n) 扫描，正常路径零开销。
+  //
+  // 移位与遍历方向逐构建随机（`cfg.scrShift` / `cfg.scrDesc`，2026-10-11 加）：
+  // 投毒公式是自洽的（生成端与运行端同一份代码），所以任何移位/方向都成立，
+  // 而"多一段固定形态"会拉高跨 seed 的结构相似度——passes-basic 的棘轮就是这么
+  // 抓出来的。缺省值 11/升序是为了让旧用例与三路对拍不必改配置。
+  const scrShiftN = scrShift !== undefined ? (scrShift | 0) : 11;
+  const scrDescN = !!scrDesc;
   put(iff(bin('!==', vr('bd'), num(0)), blk([
     set('u2', call('xs32', [bin('^', vr('E'), vr('bd'))])),
-    iff(bin('<', vr('L'), num(8)), blk([
-      set('lim', vr('L')),
-    ]), blk([
-      set('lim', num(8)),
-    ])),
     loop(
-      set('i', num(0)),
-      bin('<', vr('i'), vr('lim')),
-      set('i', bin('+', vr('i'), num(1))),
+      scrDescN ? set('i', bin('-', vr('L'), num(1))) : set('i', num(0)),
+      scrDescN ? bin('>=', vr('i'), num(0)) : bin('<', vr('i'), vr('L')),
+      scrDescN ? set('i', bin('-', vr('i'), num(1))) : set('i', bin('+', vr('i'), num(1))),
       blk([
         set('u2', call('xs32', [bin('^', bin('^', vr('u2'), vr('bd')), vr('i'))])),
         store(vr('q'), vr('i'),
-          bin('&', bin('^', idx(vr('q'), vr('i')), bin('>>>', vr('u2'), num(11))), num(255))),
+          bin('&', bin('^', idx(vr('q'), vr('i')), bin('>>>', vr('u2'), num(scrShiftN))), num(255))),
       ]),
     ),
   ])));

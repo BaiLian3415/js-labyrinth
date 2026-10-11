@@ -14,7 +14,7 @@ const INTERNAL_OPTION_KEYS = new Set(['config']);
 import PRESETS from './presets.js';
 import randUtil from './utils/rand.js';
 import { isChineseNaming, wantsPropertyRename } from './utils/naming.js';
-const { setSeed, rand, randInt } = randUtil;
+const { setSeed, rand, randInt, randHex } = randUtil;
 import rtlib from './passes/rtlib.js';
 import simplify from './passes/simplify.js';
 import renameProperties from './passes/renameProperties.js';
@@ -545,6 +545,20 @@ function obfuscate(code, userOptions) {
       name: '__c' + randInt(0x10000000, 0x7fffffff).toString(16) + randInt(0x1000, 0xffff).toString(16),
       // 健康常量。必须是奇数且 < 2^31，读取端做 (值|0)-OK 求偏移，得 0 才算健康
       ok: randInt(0x100000, 0x7fffff) * 2 + 1,
+      // 载荷本地的偏移项（2026-10-11 加，攻击面收窄）：
+      //
+      // 健康载体是**全局属性**，而全局属性可以用 defineProperty 钉死——实测：
+      // 把载体与全部毒药键定义成 get→健康常量 / set→空操作，再篡改引导锚点字面量，
+      // 产物照常输出正确结果（所有检测的写入都被吞掉了）。检测再多，响应只有那
+      // 几个可挂钩的落点时，三行 defineProperty 就能全部解除。
+      //
+      // 这一项不走全局：校验器把偏移累加到**访问器函数对象自己的一个属性**上
+      // （属性名逐构建随机），读取端把 `(该属性|0)` 加进密钥偏移。全局劫持够不着
+      // 它；要解除就得改载荷代码，而访问器本体**在校验面内**（它的源码参与哈希），
+      // 改它又会让偏移非零——这正是我们想要的循环。
+      // 未改动时该属性从未被写（或写 0），`(undefined|0)` 也是 0，所以不依赖
+      // "谁先执行"（校验器的早带先于池声明，也不会误报）。
+      prop: '__d' + randHex(12),
     };
   }
 
