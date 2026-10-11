@@ -555,15 +555,13 @@ function doFlatten(path, stmts, rng, loopFlatten, rolling) {
   for (let i = 0; i < deadCount; i++) {
     const deadState = allocState();
     const deadNext = rng() < 0.5 ? allocState() : exitState;
-    // 假 case 用嵌套 if 加恒真谓词包裹真实操作，看起来像可选分支
-    const guard = randInt(1, 0xfffffff);
-    const predForms = [
-      t.binaryExpression('===', t.numericLiteral(guard), t.numericLiteral(guard)),           // g === g
-      t.binaryExpression('===',
-        t.binaryExpression('^', t.numericLiteral(guard), t.numericLiteral(0x65280)),
-        t.binaryExpression('^', t.numericLiteral(guard), t.numericLiteral(0x65280))),        // (g^65280)===(g^65280)
-    ];
-    const pred = predForms[randInt(0, predForms.length - 1)];
+    // 假 case 用嵌套 if 加恒真谓词包裹真实操作，看起来像可选分支。
+    // 谓词直接复用上面的 truePredForms（5 种位运算/typeof 恒等式）：判定它需要
+    // 位级推理 + 跟踪 state 变量的数据流，而旧的两路字面量自反（`g===g`、
+    // `(g^65280)===(g^65280)`，grep 个 65280 即定位）不看任何上下文就能折掉。
+    // 死状态永不命中，谓词永不求值——引用 live 的 state 变量只有静态耦合效果，
+    // 无运行期语义影响。
+    const pred = truePredForms[randInt(0, truePredForms.length - 1)]();
     const fakeBody = [
       t.ifStatement(pred, t.blockStatement([
         t.expressionStatement(

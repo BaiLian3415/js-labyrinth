@@ -1,14 +1,15 @@
 import t from '../ast/types.js';
+import { yodaEq } from '../utils/morph.js';
 import vmBoundary from './vmBoundary.js';
 const { insideVmFunction } = vmBoundary;
 /**
- * 条件表达式混淆。做四类等价变换：比较运算符取反，把 a === b 写成 !(a !== b)，
+ * 条件表达式混淆。做五类等价变换：比较运算符取反，把 a === b 写成 !(a !== b)，
  * 每个比较运算符都有对应的取反形态；双取反噪音，原运算符不动只在外层包 !!(a op b)，
  * 和取反形态混用，反混淆器要同时折叠 !! 和运算符翻转两套规则；if 分支交换，
  * if (a) {B} else {C} 写成 if (!a) {C} else {B}，分支体原样搬移；比较方向翻转，
- * a < b 写成 b > a。
+ * a < b 写成 b > a；Yoda 式（操作数交换，算子不变），a === b 写成 b === a。
  * 这些变换在 JavaScript 的求值语义下恒等：比较取反对任意类型和 NaN 都成立，
- * 方向翻转只在两侧求值互不影响时使用。
+ * 方向翻转与 Yoda 只在两侧求值互不影响时使用（标识符/字面量）。
  */
 
 const FLIP = {
@@ -58,6 +59,20 @@ export default function conditionObf(ast, options, ctx) {
       const flip = FLIP[n.operator];
       const swapOp = SWAP[n.operator];
       if (!flip && !swapOp) return;
+
+      // Yoda（操作数交换，算子不变）：=== 两侧纯时恒等，复用 morph.yodaEq；
+      // !== 同理但保持算子不变（yodaEq 只收 ===，拿它归一化 !== 会反转语义）。
+      // ==/!= 不做：宽松相等虽对称，但 morph 的等价证书只到 ===/!== 为止，
+      // 在用户 AST 上不越界。门限 0.2 先于方向翻转，保证新形态有稳定出现率。
+      if ((n.operator === '===' || n.operator === '!==') && isPureAtomic(n.left)
+        && isPureAtomic(n.right) && rng() < 0.2) {
+        path.replaceWith(n.operator === '==='
+          ? yodaEq(n.left, n.right)
+          : t.binaryExpression('!==', n.right, n.left));
+        path.skip();
+        swapped++;
+        return;
+      }
 
       // 两侧都是原子时先试方向翻转，约三成半的概率走这条
       if (swapOp && isPureAtomic(n.left) && isPureAtomic(n.right) && rng() < 0.35) {

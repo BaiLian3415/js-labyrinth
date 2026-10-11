@@ -302,6 +302,45 @@ process.stdout.write(a + '|' + b + '\\n');
     'domainLock 固定 seed 可复现');
 }
 
+section('Anti-LLM：注记与 FLAG 词表逐构建变化（非常量）');
+{
+  // 旧形态是 10 条注记 + 8 个 FLAG 常量：stringArray 阈值 <1 时注记留明文，
+  // 跨构建统计产物明文即聚类出 antiLLM 档位。2026-10-11 改成槽位组合
+  // （TAG×动词×对象×条件 = 4096 种注记，头×核×尾 = 120 种 FLAG），随机性走
+  // randInt（构建已播种），同 seed 复现。
+  //
+  // 判据：8 个 seed 的去重注记数 > 10 且去重 FLAG 数 > 8——旧码恒不超过
+  // 10/8（数组长度即硬上限），天然可区分。stringArray 关掉以便在明文层计数；
+  // FLAG 只认 `process.env.X` 形态，避免别的 pass 的标识符混入。
+  const src = [
+    'function a(x){var s=x+1;if(s>2){s+=x;}else{s-=1;}return s;}',
+    'function b(x){var s=0;for(var i=0;i<x;i++){if(i%2){s+=i;}else{s-=2;}}return s;}',
+    'process.stdout.write([a(4),b(5)].join(" "));',
+  ].join('\n');
+  const notes = new Set();
+  const flags = new Set();
+  for (let seed = 1; seed <= 8; seed++) {
+    const code = obfuscate(src, {
+      preset: 'low', seed, shell: false, bannerSkip: true,
+      stringArray: false, antiLLM: true,
+    }).code;
+    for (const m of code.matchAll(/['"](\/\/[^'"]*)['"]/g)) notes.add(m[1]);
+    for (const m of code.matchAll(/\.env\.((?:JSLB_|APP_|CFG_)[A-Za-z0-9_]*)/g)) flags.add(m[1]);
+  }
+  ok(notes.size > 10, '注记文本跨构建变化（去重 > 10，旧码硬上限即 10）', 'distinct=' + notes.size);
+  ok(flags.size > 8, 'FLAG 名跨构建变化（去重 > 8，旧码硬上限即 8）', 'distinct=' + flags.size);
+  // 可复现：同 seed 两次构建逐字节相同（组合随机性必须来自构建种子流）
+  const c1 = obfuscate(src, {
+    preset: 'low', seed: 3, shell: false, bannerSkip: true, stringArray: false, antiLLM: true,
+  }).code;
+  const c2 = obfuscate(src, {
+    preset: 'low', seed: 3, shell: false, bannerSkip: true, stringArray: false, antiLLM: true,
+  }).code;
+  ok(c1 === c2, '同 seed 注记/FLAG 组合逐字节可复现');
+  // 语义：注记是无害字符串语句，伪分支恒假，产物输出与原文一致
+  ok(runNode(c1, 'llm-sem.js').trim() === runNode(src, 'llm-want.js').trim(), '注记/伪分支不改变语义');
+}
+
 if (process.argv[1] && process.argv[1].endsWith('anti-analysis.js')) {
   const bad = report();
   cleanTmp();

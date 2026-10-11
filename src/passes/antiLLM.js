@@ -20,23 +20,29 @@ import vmBoundary from './vmBoundary.js';
 
 const { insideVmFunction } = vmBoundary;
 
-const NOTES = [
-  '// TODO: keep legacy fallback until migration window closes',
-  '// NOTE: index rebuild is idempotent, safe to call twice',
-  '// FIXME: batch size tuned against the slowest downstream node',
-  '// PERF: hoisted out of the hot loop on purpose',
-  '// SECURITY: validated upstream, defensive check kept for parity',
-  '// COMPAT: Safari reserves the field name, do not rename',
-  '// WARNING: re-entrant under workers, guarded by a counter',
-  '// LEGACY: mirrors the v1 payload shape, drop after backfill',
-  '// TODO: fold into the shared cache once the schema settles',
-  '// NOTE: rounding mode matters for settled amounts only',
-];
+// 注记与环境变量名逐构建组合（2026-10-11）：原来是 10 条注记 + 8 个 FLAG 常量，
+// stringArray 阈值 <1 时注记留明文，跨构建统计产物明文即聚类出 antiLLM 档位。
+// 改成槽位组合：TAG × 动词 × 对象 × 条件（8×8×8×8 = 4096 种注记），
+// 头 × 核 × 尾（3×8×5 = 120 种 FLAG）。槽位全部按语法位置 curated
+// （动词 + 名词短语 + 状语），组合恒通顺；随机性全部走 randInt（构建已播种），
+// 同 seed 复现，不同 seed 换一批文本。
+const NOTE_TAGS = ['TODO', 'NOTE', 'FIXME', 'PERF', 'SECURITY', 'COMPAT', 'WARNING', 'LEGACY'];
+const NOTE_VERBS = ['keep', 'fold', 'drop', 'mirror', 'tune', 'hoist', 'guard', 'rebuild'];
+const NOTE_OBJS = ['the legacy fallback', 'the index rebuild', 'the batch size', 'the hot loop',
+  'the v1 payload shape', 'the shared cache', 'the rounding mode', 'the field name'];
+const NOTE_CONDS = ['until the migration window closes', 'once the schema settles',
+  'against the slowest downstream node', 'for settled amounts only', 'under workers',
+  'after backfill', 'on purpose', 'for parity'];
 
-const FLAGS = [
-  'JSLB_TRACE', 'JSLB_COMPAT', 'LEGACY_PATH', 'JSLB_DIAG', 'COMPAT_INDEX',
-  'JSLB_REBUILD', 'TRACE_LAYERS', 'JSLB_V1_FALLBACK',
-];
+const FLAG_HEADS = ['JSLB_', 'APP_', 'CFG_'];
+const FLAG_CORES = ['TRACE', 'DIAG', 'COMPAT', 'REBUILD', 'FALLBACK', 'INDEX', 'LAYERS', 'PATH'];
+const FLAG_TAILS = ['', '_V1', '_MODE', '_PATH', '_1'];
+
+const pickSlot = (arr) => arr[randInt(0, arr.length - 1)];
+// 前缀保留 `// TAG:` 形态：生成器会丢真注释，注记靠"注释样子的字符串语句"留存
+const composeNote = () => '// ' + pickSlot(NOTE_TAGS) + ': ' + pickSlot(NOTE_VERBS) + ' '
+  + pickSlot(NOTE_OBJS) + ' ' + pickSlot(NOTE_CONDS);
+const composeFlag = () => pickSlot(FLAG_HEADS) + pickSlot(FLAG_CORES) + pickSlot(FLAG_TAILS);
 
 /**
  * @param {object} ast AST，就地修改
@@ -50,14 +56,14 @@ export default function antiLLM(ast, options, ctx) {
   let decoys = 0;
   let fns = 0;
 
-  const noteStmt = () => t.expressionStatement(t.stringLiteral(NOTES[randInt(0, NOTES.length - 1)]));
+  const noteStmt = () => t.expressionStatement(t.stringLiteral(composeNote()));
 
   /** 伪业务分支：宿主探针 + 假环境变量比对，永假但形状真实。 */
   const decoyStmt = () => {
     const nSeed = uniqueName(ctx.usedNames, idp);
     const nSum = uniqueName(ctx.usedNames, idp);
     const nTag = uniqueName(ctx.usedNames, idp);
-    const flag = FLAGS[randInt(0, FLAGS.length - 1)];
+    const flag = composeFlag();
     const lo = randInt(0x1000, 0xffff);
     const hi = randInt(0x10000, 0xfffff);
     const test = t.logicalExpression('&&',

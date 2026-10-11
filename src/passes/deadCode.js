@@ -81,18 +81,17 @@ export default function deadCode(ast, options, ctx) {
       cond = t.binaryExpression('>',
         t.binaryExpression('|', g(), t.unaryExpression('~', g(), true)),
         t.numericLiteral(-1));
-    } else if (pick <= 8) {
+    } else {
       // ((g ^ (g - 1)) & 1) === 0：相邻两个整数异或得到的是低位起连续的 1，
-      // 恒为奇数，与 1 相与恒为 1，条件恒假。判定需用到进位传播的性质
+      // 恒为奇数，与 1 相与恒为 1，条件恒假。判定需用到进位传播的性质。
+      //
+      // 注意这里曾经有第四路 `g !== g`（pick === 9，10%）：自反单规则即可折叠为
+      // false，与另三路数论谓词强度断层，2026-10-11 删掉并入本分支——少一路"一眼假"。
       cond = t.binaryExpression('===',
         t.binaryExpression('&',
           t.binaryExpression('^', g(), t.binaryExpression('-', g(), t.numericLiteral(1))),
           t.numericLiteral(1)),
         t.numericLiteral(0));
-    } else {
-      // g !== g，g 非 NaN 时恒假。自反规则可直接折叠为 false，形态多样性用，
-      // 概率压到十分之一
-      cond = t.binaryExpression('!==', g(), g());
     }
     return [
       t.variableDeclaration('var', [t.variableDeclarator(t.identifier(guard), guardInit())]),

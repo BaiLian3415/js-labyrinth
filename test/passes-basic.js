@@ -402,6 +402,166 @@ section('控制流扁平化：恒真谓词包裹不许"零语义"折叠');
     '最多 ' + worstSame + ' 个（seed ' + worstSeed + '），改造前每 seed 5~10 个');
 }
 
+section('死代码注入：守卫不许出现自反 `X !== X`（单规则可折叠）');
+{
+  // 旧形态有一路 `g !== g`（pick === 9，10%）：自反规则三行正则即折叠为 false，
+  // 与另三路数论谓词（模 3 同余、位模式、进位奇偶）强度断层，等于白送一个定位器。
+  // 2026-10-11 删掉该分支并入数论谓词。
+  //
+  // 判据放在 AST 上：统计"两侧结构相等"的 `!==` 测试 if。junk 语句只产表达式语句、
+  // 永不产 if；别的 pass 的 `!==`（快照比对、翻转）两侧恒不同——能命中这个形状的
+  // 只有死代码守卫。seed 取旧码实测 nổ 过的 [1,7,11,19]（旧码在 20 seed 里 nổ 11 个，
+  // 本组旧码计 2+2+1+4 = 9 处），新码必须全 0。
+  const src = [
+    'function a(x){var s=x+1;if(s>2){s+=x;}else{s-=1;}return s;}',
+    'function b(x){var s=0;for(var i=0;i<x;i++){if(i%2){s+=i;}else{s-=2;}}return s;}',
+    'function c(x){var s=x;s*=2;if(s>100){s-=50;}return s;}',
+    'process.stdout.write([a(4),b(5),c(60)].join(" "));',
+  ].join('\n');
+  const strip = (n) => {
+    if (!n || typeof n !== 'object') return n;
+    if (Array.isArray(n)) return n.map(strip);
+    const o = {};
+    for (const k of Object.keys(n)) {
+      if (k === 'start' || k === 'end' || k === 'loc' || k === 'extra') continue;
+      o[k] = strip(n[k]);
+    }
+    return o;
+  };
+  const walk = (n, fn) => {
+    if (!n || typeof n !== 'object') return;
+    if (Array.isArray(n)) { n.forEach((c) => walk(c, fn)); return; }
+    if (n.type) fn(n);
+    for (const k of Object.keys(n)) {
+      if (k === 'loc' || k === 'start' || k === 'end') continue;
+      walk(n[k], fn);
+    }
+  };
+  let worst = 0, worstSeed = 0;
+  for (const seed of [1, 7, 11, 19]) {
+    const code = obfuscate(src, { preset: 'medium', seed, shell: false, bannerSkip: true }).code;
+    const ast = parse(code, { sourceType: 'script' });
+    let n = 0;
+    walk(ast, (x) => {
+      if (x.type !== 'IfStatement' || !x.test || x.test.type !== 'BinaryExpression') return;
+      if (x.test.operator !== '!==') return;
+      if (JSON.stringify(strip(x.test.left)) === JSON.stringify(strip(x.test.right))) n++;
+    });
+    if (n > worst) { worst = n; worstSeed = seed; }
+  }
+  ok(worst === 0, '死代码守卫无自反恒假（`g !== g` 已删）', '最多 ' + worst + ' 处（seed ' + worstSeed + '）');
+}
+
+section('控制流扁平化：死 case 谓词不许字面量自反（`g===g` 类）');
+{
+  // 死 case 的旧谓词只有两路字面量自反：`guard===guard` 与 `(guard^65280)===` 同形，
+  // 不看任何上下文就能折掉，grep 个 65280 即定位全部假 case。2026-10-11 改为复用
+  // assignState 的 5 种位运算/typeof 恒等式（依赖 live 的 state 变量，判定需位级推理）。
+  // 死状态永不命中，谓词永不求值，无运行期语义影响。
+  //
+  // 判据只认旧两式的精确形状（数字自等 / 含 65280 的同形两侧），opaque 的 `g===g`
+  //（标识符两侧）与快照比对（两侧恒不同）都不会误伤。seed 取旧码实测 nổ 过的
+  // [1,9,14]（旧码计 3+6+5 = 14 处），新码必须全 0。注意关掉 VM，否则函数被搬进
+  // 字节码解释器，扁平化不落可见代码（见上一节注释）。
+  const src = [
+    'function a(x){var s=0;for(var i=0;i<x;i++){if(i%2){s+=i;}else{s-=1;}}return s;}',
+    'function b(x){var s=x;if(s>3){s*=2;}else{s+=10;}while(s>100){s-=7;}return s;}',
+    'process.stdout.write([a(9),b(4)].join(" "));',
+  ].join('\n');
+  const strip = (n) => {
+    if (!n || typeof n !== 'object') return n;
+    if (Array.isArray(n)) return n.map(strip);
+    const o = {};
+    for (const k of Object.keys(n)) {
+      if (k === 'start' || k === 'end' || k === 'loc' || k === 'extra') continue;
+      o[k] = strip(n[k]);
+    }
+    return o;
+  };
+  const walk = (n, fn) => {
+    if (!n || typeof n !== 'object') return;
+    if (Array.isArray(n)) { n.forEach((c) => walk(c, fn)); return; }
+    if (n.type) fn(n);
+    for (const k of Object.keys(n)) {
+      if (k === 'loc' || k === 'start' || k === 'end') continue;
+      walk(n[k], fn);
+    }
+  };
+  const has65280 = (n) => {
+    let found = false;
+    walk(n, (x) => { if (x.type === 'NumericLiteral' && x.value === 65280) found = true; });
+    return found;
+  };
+  let worst = 0, worstSeed = 0;
+  for (const seed of [1, 9, 14]) {
+    const code = obfuscate(src, {
+      preset: 'medium', seed, shell: false, bannerSkip: true,
+      vmProtection: false, controlFlowFlattening: true,
+    }).code;
+    const ast = parse(code, { sourceType: 'script' });
+    let n = 0;
+    walk(ast, (x) => {
+      if (x.type !== 'IfStatement' || !x.test || x.test.type !== 'BinaryExpression') return;
+      if (x.test.operator !== '===') return;
+      const L = x.test.left, R = x.test.right;
+      if (L.type === 'NumericLiteral' && R.type === 'NumericLiteral' && L.value === R.value) { n++; return; }
+      if (JSON.stringify(strip(L)) === JSON.stringify(strip(R)) && (has65280(L) || has65280(R))) n++;
+    });
+    if (n > worst) { worst = n; worstSeed = seed; }
+  }
+  ok(worst === 0, '死 case 谓词无字面量自反（`65280` 指纹已消失）', '最多 ' + worst + ' 处（seed ' + worstSeed + '）');
+}
+
+section('条件混淆：Yoda 式（字面量左置）真实出现');
+{
+  // 新增的第五类变换：`x===1` 写成 `1===x`（=== 复用 morph.yodaEq，!== 保持算子
+  // 换两侧；==/!= 不做，morph 的等价证书只到 ===/!== 为止）。门限 0.2 先于方向翻转。
+  //
+  // 判据：字面量在左、标识符在右的 ===/!==（fixture 里比较一律写成标识符在左，
+  // 别的变换都不移动字面量到左侧：FLIP/!! 保序，SWAP 只动关系算子，numberObf
+  // 把字面量展成表达式而非搬家）。隔离配置关掉 VM/完整性/数字改写/死代码——
+  // 机器代码与 junk 都可能偶发同形（旧码 20 seed 里 junk 巧合出 4 处），隔离后
+  // 该形态唯一对应 Yoda：旧码 20 seed 全 0，新码 20 seed 全 nổ。seed 取 [1,2,3]
+  //（新码计 2+2+3 处），断言每 seed ≥1 且产物语义正确。
+  const src = [
+    'function f(x,y){var t=(x!==2);var u=(y===3);while(x>0){if(x===1){t+=u;}else{t-=1;}x--;}return t+(y===x?100:0);}',
+    'process.stdout.write(String(f(3,5)));',
+  ].join('\n');
+  const walk = (n, fn) => {
+    if (!n || typeof n !== 'object') return;
+    if (Array.isArray(n)) { n.forEach((c) => walk(c, fn)); return; }
+    if (n.type) fn(n);
+    for (const k of Object.keys(n)) {
+      if (k === 'loc' || k === 'start' || k === 'end') continue;
+      walk(n[k], fn);
+    }
+  };
+  const countYoda = (code) => {
+    let n = 0;
+    walk(parse(code, { sourceType: 'script' }), (x) => {
+      if (x.type !== 'BinaryExpression') return;
+      if (x.operator !== '===' && x.operator !== '!==') return;
+      if (x.left && x.left.type === 'NumericLiteral' && x.right && x.right.type === 'Identifier') n++;
+    });
+    return n;
+  };
+  const opts = (seed) => ({
+    preset: 'medium', seed, shell: false, bannerSkip: true,
+    vmProtection: false, integrityCheck: false, numberObfuscation: false,
+    deadCodeInjection: false,
+  });
+  const want = runNode(src, 'yoda-want.js').trim();
+  let bad = '';
+  for (const seed of [1, 2, 3]) {
+    const code = obfuscate(src, opts(seed)).code;
+    if (countYoda(code) < 1) { bad = 'seed=' + seed + ' 没出现 Yoda 形态'; break; }
+    let got;
+    try { got = runNode(code, 'yoda-' + seed + '.js').trim(); } catch (e) { got = 'THREW'; }
+    if (got !== want) { bad = 'seed=' + seed + ' 语义不对：实得 ' + got.slice(0, 40) + '，应为 ' + want; break; }
+  }
+  ok(!bad, 'Yoda 式出现且语义正确（3 seed）', bad);
+}
+
 if (process.argv[1] && process.argv[1].endsWith('passes-basic.js')) {
   const bad = report();
   cleanTmp();

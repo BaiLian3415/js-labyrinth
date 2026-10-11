@@ -3461,6 +3461,20 @@ function vm(ast, options, ctx) {
   for (const fn of fns) {
     if (compiledSet.has(fn)) continue; // 已被外层编译过程连带处理
     if (rtNames.size && fn.type === 'FunctionDeclaration' && fn.id && rtNames.has(fn.id.name)) continue; // RT 内核是解释器的引导层，编译它会造成循环依赖
+    // 快照函数体（2026-10-11）：compileFunction 中途抛错时输入节点已被就地改写
+    // （for-in/of 剥 var、stripVars、rewriteFragStrings），而 catch 只记 failed++，
+    // 会留下"声明被剥、引用还在"的半成品体继续走后续 pass——实测 `for (var k in …)`
+    // 的函数在 wasm 形参超限时整单构建被自检拦下（未绑定引用 k）。快照让失败路径
+    // 真正"保持原样"。成功路径只多一次克隆：不消耗随机流，产物字节不变。
+    // structuredClone 是 Web 标准；快照本身失败则放弃回滚（退回旧行为），绝不引入新抛错。
+    let savedBody = null;
+    let savedExpression;
+    let hadExpression = false;
+    try {
+      savedBody = structuredClone(fn.body);
+      hadExpression = Object.prototype.hasOwnProperty.call(fn, 'expression');
+      savedExpression = fn.expression;
+    } catch (e) { savedBody = null; }
     prepareFn(fn);
     if (!canCompile(fn, allowAsync)) continue;
     if (countRegionStmts(fn.body) < threshold) continue;
@@ -3477,7 +3491,12 @@ function vm(ast, options, ctx) {
         if (r.form !== undefined) formCount['ABCDE'[r.form]]++;
       }
     } catch (e) {
-      failed++; // 保守处理，该函数保持原样
+      failed++; // 保守处理，该函数保持原样（靠上面的快照回滚半改写的体）
+      if (savedBody !== null) {
+        fn.body = savedBody;
+        if (hadExpression) fn.expression = savedExpression;
+        else delete fn.expression;
+      }
       if (platform.env('DSH_VM_DEBUG')) console.error('[vm] 编译失败（降级）:', e && e.stack ? e.stack : e);
     }
   }

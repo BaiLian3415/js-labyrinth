@@ -526,6 +526,47 @@ section('回归：NOP 不许插在「跳转链字 ↔ 该跳转目标」之间�
   ok(covered === 8, '8 组配置都真的注入了 NOP（断言非空跑）', 'covered=' + covered);
 }
 
+section('回归：VM 编译失败必须回滚半改写的函数体（不能留下剥掉 var 的 for-in）');
+{
+  // 2026-10-11 修掉的缺陷：compileFunction 中途抛错时，for-in/of 的 `s.left` 剥 var、
+  // stripVars、rewriteFragStrings 等改写已经落到输入 AST 上，而 catch 只记 failed++。
+  // 残留的 `for (k in …)`（k 已无声明）随后被构建后自检以"未绑定引用"拦下，整单构建抛错。
+  // 修法是筛查通过后先 structuredClone 快照函数体，失败即换回；成功路径只多一次克隆，
+  // 不消耗随机流，产物字节不变。
+  //
+  // 覆盖要点：65 形参保证走到 wasm 段（vmWasmTooManyParams）才抛——此时发射改写已发生；
+  // controlFlow 关掉以免 for-in 在 vm 之前被改形；三件套缺一不可：failed 计数（真走了
+  // 失败路径，否则是空跑）、`for (var` 仍在（回滚生效）、产物输出正确（回滚体语义完整）。
+  const ps = Array.from({ length: 65 }, (_, i) => 'a' + (i + 1));
+  const src = 'function f(' + ps.join(',') + '){var t=0;for(var k in {p:1,q:2}){t++;}return t+a1+a65;}'
+    + 'var res=f(' + ps.map((_, i) => String(i + 1)).join(',') + ');'
+    + 'process.stdout.write(String(res));';
+  const want = runNode(src, 'vmfail-want.js').trim();
+  let bad = '', failedTotal = 0, varKept = 0;
+  for (const seed of [7, 42]) {
+    let r = null, buildErr = '';
+    try {
+      r = obfuscate(src, {
+        preset: 'high', seed, shell: false, integrityCheck: false,
+        controlFlowFlattening: false, controlFlowLoopFlattening: false,
+        wasm: false, wasmInterpreter: true, vmThreshold: 1,
+      });
+    } catch (e) { buildErr = String((e && e.message) || e).split('\n')[0]; }
+    if (!r) { bad = 'seed=' + seed + ' 构建抛错：' + buildErr.slice(0, 80); break; }
+    const st = r.stats.find((x) => x.pass === 'vm');
+    failedTotal += (st && st.result && st.result.failed) || 0;
+    if (/for\s*\(\s*var\b/.test(r.code)) varKept++;
+    let got;
+    try { got = runNode(r.code, 'vmfail-' + seed + '.js').trim(); } catch (e) { got = 'THREW'; }
+    if (got !== want) { bad = 'seed=' + seed + ' 语义不对：实得 ' + got.slice(0, 40) + '，应为 ' + want; break; }
+  }
+  ok(!bad, '失败函数被回滚：构建成功、产物输出正确（2 seed）', bad);
+  // 覆盖确认：failed 必须恰为 2（每 seed 各 1 次），否则函数可能因别的原因被提前筛掉，
+  // 上面两条断言就成了空跑
+  ok(failedTotal === 2, '两 seed 各走一次真实失败路径（failed=1+1）', 'failedTotal=' + failedTotal);
+  ok(varKept === 2, '回滚后 `for (var` 声明仍在（不是半剥离的 `for (k in`）', 'varKept=' + varKept);
+}
+
 if (process.argv[1] && process.argv[1].endsWith('vm.js')) {
   const bad = report();
   cleanTmp();
