@@ -442,15 +442,23 @@ function obfuscate(code, userOptions) {
     if (options.antiCDP) { options.antiCDP = false; suppressedByTarget.push('antiCDP'); }
   }
 
-  // vmLayers >= 3 钳到 2。界面把这档开放到 3，但 3 层实测**跑不出结果**：
-  //   wasmInterpreter 开 → wasm 越界崩溃（memory access out of bounds）；
-  //   wasmInterpreter 关（wasm 开或都关）→ 一个不含循环的函数 90 s 也跑不完。
-  // 三种组合全坏，且与输入规模无关（无循环函数同样挂），所以不是"慢"，是坏值。
+  // vmLayers >= 2 钳到 1。**2 层在规模上是坏的**，实测三条路径都撑不住：
+  //   纯 JS 路径：循环约 200~400 次就死（`memory access out of bounds` 同类症状）；
+  //   wasm 路径：线性内存耗尽，N≥5000 即 wasm 越界崩溃；
+  //   3 层：连无循环的函数都跑不完。
+  // 3 层原本就坏，2 层是 2026-10-10 才查出来的——它在小样本上完全正常，所以
+  // 「用小程序验一把就开进预设」的作法把它漏了过去。边界与循环次数绑定，不是"慢"。
   //
-  // 按项目铁律「绝不产出半成品」：钳到能用的最大值并**告警**，而不是默默给一份
-  // 跑不完的产物——后者最坏，用户会以为是自己代码的问题。同 target 降级那一套。
-  const clippedVmLayers = options.vmLayers > 2 ? options.vmLayers : 0;
-  if (clippedVmLayers) options.vmLayers = 2;
+  // 根因方向：2 层把解释器循环本身编成外层字节码，内层解释器的状态（操作数栈、
+  // 局部表）全部落在外层的栈上，而这个栈的容量在**编译期**按被编译函数静态定出。
+  // 小函数估得准，大函数实际用量超出估计就越界。要真修，得让外层栈在运行期可增长
+  // （wasm 侧还要线性内存增长），那是 vm.js 的结构性改动，不是一行钳位。
+  //
+  // 按项目铁律「绝不产出半成品」：钳到能用的值并**告警**，而不是默默给一份会在某个
+  // 循环次数上死掉的产物——那是最坏的一类：大部分时候正常，用户会以为是自己代码
+  // 触发了什么边界。同 target 降级那一套。
+  const clippedVmLayers = options.vmLayers > 1 ? options.vmLayers : 0;
+  if (clippedVmLayers) options.vmLayers = 1;
 
   const tNames = platform.nowMs();
   const usedNames = new Set();
@@ -516,8 +524,8 @@ function obfuscate(code, userOptions) {
     }));
   }
 
-  // vmLayers 钳位同上一类：说了才能让用户知道"我要的 3 层没生效"，
-  // 否则他只会看到产物跑不起来（或跑得完但保护不如预期）而找不到原因。
+  // vmLayers 钳位同上一类：说了才能让用户知道"我要的 2 层没生效"，
+  // 否则他只会看到产物在某个循环次数上莫名死掉而找不到原因。
   if (clippedVmLayers) {
     warnings.push(msg('warnVmLayersClipped', { want: clippedVmLayers, got: options.vmLayers }));
   }
@@ -812,11 +820,28 @@ function obfuscate(code, userOptions) {
       domainLock: [],
       // simplify 同样只作用于载荷：引导层代码本就精简，不重复压缩
       simplify: false,
-      controlFlowFlattening: true, logicalExpressions: true,
-      conditionObfuscation: true, opaquePredicates: true,
-      deadCodeInjection: true, objectKeyEncoding: true,
-      templateToConcat: true, functionWrapper: true,
-      callProxy: true, mangle: true,
+      // 引导层用「轻装档」：只保留改名与字符串形态这类**几乎不增体积**的处理，
+      // 关掉会把直线代码炸开的几项。
+      //
+      // 为什么必须关：引导器本身是**每次启动都要跑一遍**的代码，而它是直线型的
+      // 解码逻辑。控制流扁平化/函数包装/callProxy/死代码/不透明谓词这五项在普通
+      // 业务代码上是"用体积换静态隐藏"，用在引导器上是反过来的——引导器每层壳
+      // 都要付一次，而它没有"体积换隐藏"的必要：里面的解码算法已经由外壳自身的
+      // 密文与校验尾保护，外层读它只会看到一堆加法。
+      //
+      // 实测（max，壳 1 层，N=0 纯启动）：全开 3235 ms，关掉这几项降到 162 ms，
+      // 产物 545 KB → 99 KB。壳 2 层是 8558 ms，按同比例降到 1 s 以内。
+      // 载荷侧的保护一点没减——减的只是"保护外壳自己"。
+      controlFlowFlattening: false, controlFlowLoopFlattening: false,
+      functionWrapper: false, callProxy: false,
+      deadCodeInjection: false, opaquePredicates: false,
+      // 哨兵要注入扁平化后的控制流里；扁平化关了就没有落点，留着是无效参数
+      // （顺带：留着也会让 pass 走一遍无用的遍历）。
+      sentinelRate: 0,
+      // 下面几项几乎不增体积、且对隐藏引导器固定名有用，保留。
+      logicalExpressions: true,
+      conditionObfuscation: true, objectKeyEncoding: true,
+      templateToConcat: true, mangle: true,
     });
     const sr = shellWrap(finalCode, options, (src) => obfuscate(src, bootOpts), cjs, isModuleSrc);
     finalCode = sr.code;

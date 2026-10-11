@@ -378,68 +378,74 @@ section('执行护栏：vmStepLimit（栈机后端共用）');
   ok(okBad === 0, 'vmStepLimit 默认足够大：正常循环得 45', firstOk);
 }
 
-// 多层 VM：vmLayers=2 把解释器循环再编译一层。外层 VM 函数体是一段调用内层函数的
-// 桥，内层函数体是第二份 VM 编译过的解释器（它的 body 才是真正的解释循环的 VM 形态）。
-// 语义必须与单层产物逐位一致；layers 统计必须显示 2，证明嵌套确实成功编译。
-section('多层 VM：vmLayers=2 嵌套解释器，语义与层数统计');
+// 多层 VM 的现状（2026-10-10 实测后改写）：嵌套实现仍在 vm.js 里，但**选项层已关闭**——
+// vmLayers >= 2 一律钳到 1（见下一节）。原因是 2 层在规模上是坏的：纯 JS 路径循环约
+// 200~400 次就死，wasm 路径 N>=5000 线性内存耗尽。小函数完全正常，所以下面这组原本
+// "语义一致 + layers=2"的用例当年全绿——它测的正好是唯一能过的规模。
+//
+// 保留这一节是为了钉住「嵌套一旦重新放开时，规模样本必须一起测」：下面的样本循环
+// 2000 次，2 层在这个规模上必死。
+section('多层 VM：当前钳到单层，且规模样本必须能跑完');
 {
   const src = 'function a(n){var s=0;for(var i=0;i<n;i++)s+=i;return s;}\n'
     + 'function b(x){if(x<0)return -x;return x*2+1;}\n'
-    + 'process.stdout.write(a(9)+","+b(4)+","+b(-3)+"\\n");';
+    + 'process.stdout.write(a(2000)+","+b(4)+","+b(-3)+"\\n");';
   const want = runNode(src, 'layers-want.js').trim();
-  let semBad = 0, firstSem = '', layers2 = 0, layers1 = 0;
+
   for (const l of [1, 2]) {
     const r = obfuscate(src, {
       preset: 'high', seed: 7, shell: false, integrityCheck: false,
       wasm: false, wasmInterpreter: false, vmLayers: l,
     });
     const st = r.stats.find((x) => x.pass === 'vm');
-    if (st && st.result && st.result.layers === l) { if (l === 2) layers2++; if (l === 1) layers1++; }
+    const layers = st && st.result && st.result.layers;
+    ok(layers === 1, 'vmLayers=' + l + ' 实际只嵌套 1 层（嵌套已关闭）', 'layers=' + layers);
     let got;
     try { got = runNode(r.code, 'layers-' + l + '.js').trim(); } catch (e) { got = 'THREW'; }
-    if (got !== want) { semBad++; if (!firstSem) firstSem = 'l=' + l + ' → ' + got.slice(0, 60); }
+    ok(got === want, 'vmLayers=' + l + ' 在 2000 次循环规模上语义正确',
+      got === want ? '' : got.slice(0, 60));
   }
-  ok(semBad === 0, 'vmLayers=1 与 =2 输出一致', firstSem);
-  ok(layers1 > 0, 'layers=1 统计生效（vmLayers=1 时 layers==1）');
-  ok(layers2 > 0, 'layers=2 统计生效（vmLayers=2 嵌套成功）', 'layers=' + layers2);
 }
 
-// vmLayers ≥ 3 钳到 2 + 告警。3 层实测跑不出结果（wasmInterpreter 下 wasm 越界崩溃，
-// 关掉则一个不含循环的函数 90 s 也跑不完），所以界面只开放到 2，另有一道钳位兜底
-// 旧配置/直接传参。没有这条断言的话，"钳位"会在某次重构里被顺手删掉，而它的失效
-// 表征是"用户拿到一份永远跑不完的产物"——最难归因的那一类。
-section('vmLayers ≥ 3：钳到 2 并告警，不留坏值');
+// vmLayers ≥ 2 钳到 1 + 告警。**2 层在规模上是坏的**：纯 JS 路径循环约 200~400 次就死，
+// wasm 路径 N≥5000 就线性内存耗尽。小函数完全正常——所以 2026-10-10 有人用小程序
+// 验了一把就把 vmLayers:2 开进了 max 预设，回归因此漏网。本节用**带规模的样本**钉住它。
+section('vmLayers ≥ 2：钳到 1 并告警，不留坏值');
 {
   const src = 'function a(n){var s=0;for(var i=0;i<n;i++)s+=i;return s;}\n'
-    + 'process.stdout.write(String(a(9)));';
+    + 'process.stdout.write(String(a(2000)));';
   const want = runNode(src, 'layers-clip-want.js').trim();
 
-  for (const asked of [3, 8]) {
+  for (const asked of [2, 3, 8]) {
     const r = obfuscate(src, { preset: 'high', seed: 7, shell: false, vmLayers: asked });
     const st = r.stats.find((x) => x.pass === 'vm');
-    ok(st && st.result && st.result.layers === 2,
-      'vmLayers=' + asked + ' 被钳到 2', 'layers=' + (st && st.result && st.result.layers));
+    ok(st && st.result && st.result.layers === 1,
+      'vmLayers=' + asked + ' 被钳到 1', 'layers=' + (st && st.result && st.result.layers));
     const w = (r.warnings || []).map(String).find((x) => /vmLayers/.test(x));
     ok(!!w && w.includes(String(asked)), 'vmLayers=' + asked + ' 的钳位有告警且点名了请求值',
       (r.warnings || []).map(String).join(' | ').slice(0, 100));
+    // 关键：带规模的样本。钳到 1 之后，2000 次循环必须跑得完——这正是 2 层会死的地方。
     ok(runNode(r.code, 'layers-clip-' + asked + '.js').trim() === want,
-      'vmLayers=' + asked + ' 钳位后产物语义不变');
+      'vmLayers=' + asked + ' 钳位后，2000 次循环的产物语义正确',
+      runNode(r.code, 'layers-clip-' + asked + '-b.js').trim());
   }
-  // 2 层是合法值，不该被钳、也不该告警
-  const r2 = obfuscate(src, { preset: 'high', seed: 7, shell: false, vmLayers: 2 });
-  const st2 = r2.stats.find((x) => x.pass === 'vm');
-  ok(st2 && st2.result && st2.result.layers === 2, 'vmLayers=2 原样生效（不被钳）');
-  ok(!(r2.warnings || []).some((x) => /vmLayers/.test(String(x))), 'vmLayers=2 不产生钳位告警');
+  // 1 层是唯一合法值，不该被钳、也不该告警
+  const r1 = obfuscate(src, { preset: 'high', seed: 7, shell: false, vmLayers: 1 });
+  const st1 = r1.stats.find((x) => x.pass === 'vm');
+  ok(st1 && st1.result && st1.result.layers === 1, 'vmLayers=1 原样生效（不被钳）');
+  ok(!(r1.warnings || []).some((x) => /vmLayers/.test(String(x))), 'vmLayers=1 不产生钳位告警');
 }
 
-// 多层 VM × WASM 解释器内核：要嵌套的函数改走 JS 路径（nestedJs>0），最内层以
-// 桥接形态进模块，layers 统计仍为 2，语义与单层一致。回归防线：此前桥接分支无
-// 条件提前返回，wasm 下嵌套静默失效（layers 恒为 1）。
-section('多层 VM × WASM：嵌套让路 JS 路径，内层进模块');
+// 多层 VM × WASM 解释器内核（2026-10-10 随嵌套关闭改写）。原来这条防线守的是
+// 「桥接分支无条件提前返回 → wasm 下嵌套静默失效（layers 恒为 1）」，那次是用 a(9)
+// 这种小程序验出来的，恰好是嵌套唯一能过的规模。现在嵌套已在选项层钳掉，这条只剩
+// 两件要守：wasm 档下钳位照常生效、以及产物在**带规模的样本**上跑得完
+// （wasm 路径是三条路里最先撑不住的一档：N>=5000 就线性内存耗尽）。
+section('多层 VM × WASM：钳位生效，产物在规模样本上跑得完');
 {
   const src = 'function a(n){var s=0;for(var i=0;i<n;i++)s+=i;return s;}\n'
     + 'function b(x){if(x<0)return -x;return x*2+1;}\n'
-    + 'process.stdout.write(a(9)+","+b(4)+","+b(-3)+"\\n");';
+    + 'process.stdout.write(a(2000)+","+b(4)+","+b(-3)+"\\n");';
   const want = runNode(src, 'layers-wasm-want.js').trim();
   const r = obfuscate(src, {
     preset: 'high', seed: 7, shell: false, integrityCheck: false,
@@ -447,15 +453,13 @@ section('多层 VM × WASM：嵌套让路 JS 路径，内层进模块');
   });
   const st = r.stats.find((x) => x.pass === 'vm');
   const ws = r.stats.find((x) => (x.pass || '').startsWith('wasm'));
-  ok(st && st.result && st.result.layers === 2, 'wasm 下 vmLayers=2 嵌套成功（layers==2）',
+  ok(st && st.result && st.result.layers === 1, 'wasm 下 vmLayers=2 同样钳到 1 层',
     'layers=' + (st && st.result && st.result.layers));
-  ok(st && st.result && st.result.nestedJs >= 2, 'wasm 下嵌套函数让路走 JS 路径（nestedJs>=2）',
-    'nestedJs=' + (st && st.result && st.result.nestedJs));
-  ok(ws && ws.result && ws.result.smoke === 'ok', '内层桥接进模块且冒烟通过',
+  ok(ws && ws.result && ws.result.smoke === 'ok', 'wasm 档冒烟通过',
     'smoke=' + (ws && ws.result && ws.result.smoke));
   let got;
   try { got = runNode(r.code, 'layers-wasm-2.js').trim(); } catch (e) { got = 'THREW'; }
-  ok(got === want, 'wasm × 嵌套产物语义一致', got.slice(0, 60));
+  ok(got === want, 'wasm 档产物在 2000 次循环规模上语义一致', got.slice(0, 60));
 }
 
 section('单层复杂度：融合关系跳转 + 流干扰 NOP');

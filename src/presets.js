@@ -268,9 +268,9 @@ export default {
     "vmThreshold": 1,
     "vmDecoyOps": 1024,
     "vmDispatchEnc": true,
-    // 2 层：把解释器循环本身再编译一次（外层字节码的解释动作由第二份字节码执行）。
-    // 实测可用，代价约 +90 KB 与运行时间 ×2.5；3 层跑不出结果，见 obfuscate.js 的钳位说明。
-    "vmLayers": 2,
+    // 2026-10-10：这里曾设 vmLayers: 2，已撤回。多层 VM 在**规模**上是坏的——见
+    // obfuscate.js 里 vmLayers 钳位注释：2 层在纯 JS 路径下循环约 200~400 次就死，
+    // wasm 路径下更早就线性内存耗尽。小函数能过，所以只测小样本会全绿。
     // 2026-10-01 由 true 改为 false。max 档的 wasmInterpreter 为 true，而分块自解密
     // 在 WASM 解释器内核档没有对应物（模块内的解释器按绝对下标硬编码，块边界不存在），
     // 那一处 vm.js 的 `!!opts.vmBlockDecrypt && !ctx.__vmWasmShared && enc` 会把它整项

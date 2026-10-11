@@ -111,13 +111,23 @@ npm run build:web:cloud  # 云端执行形态（核心不进产物，Vercel 部�
     在 `wasmInterpreter` 内核档下本就不生效（实测补进 max 后产物与基线**逐字节相同**，
     vm stats 恒为 `macros.fused:0` / `dyn.applied:false`）。补了只是安慰剂，还会让
     读预设的人以为它开着。
-- **`vmLayers >= 3` 是坏值，已钳到 2 并告警**（`obfuscate.js` 的 `clippedVmLayers`，
-  文案 `warnVmLayersClipped`；界面 `min/max` 同步收到 2）。实测三种 wasm 组合全坏：
-  `wasmInterpreter` 开 → WASM `memory access out of bounds`；关（wasm 开或都关）→
-  **一个不含循环的函数 90 s 也跑不完**（是挂死不是慢，与输入规模无关）。
-  钳位而不是默默产出，理由同 target 降级：跑不完的产物最坏，用户会以为是自己代码的问题。
-- `vmLayers: 2` 可用，但代价要记住：约 **+90 KB**、运行时间约 **×2.5**，且在
-  `wasmInterpreter` 下嵌套函数让路 JS（`nestedJs > 0`）。max 档已启用。
+- **`vmLayers >= 2` 是坏值，已钳到 1 并告警**（`obfuscate.js` 的 `clippedVmLayers`，
+  文案 `warnVmLayersClipped`；界面 `min/max` 同步收到 1）。这是本项目**最难归因的
+  一类坑**，教训比结论重要：
+  - 2 层（把解释器循环本身再编译一次）在**小函数上完全正常**。2026-10-10 就是因为
+    只用小程序验了一把（`a(9)`、`b(4)` 这类），把 `vmLayers: 2` 开进了 max 预设，
+    回归因此漏网。**带循环的样本才有判别力**：纯 JS 路径循环约 **200~400 次**就死，
+    wasm 路径 N≥5000 即线性内存耗尽（`memory access out of bounds`）。
+  - 3 层更早就坏：连**不含循环**的函数都跑不完。
+  - 根因方向：2 层把解释器循环编成外层字节码，内层的操作数栈与局部表全落在外层栈
+    上，而这个栈的容量在**编译期**按被编译函数静态定出。小函数估得准，大函数实际
+    用量超出估计就越界。要真修得让外层栈运行期可增长（wasm 侧还要线性内存增长），
+    是 `vm.js` 的结构性改动，不是一行钳位。嵌套实现仍在 `vm.js` 里，只是选项层够不着。
+  - 钳位而不是默默产出，理由同 target 降级：**会在某个循环次数上死掉的产物最坏**——
+    大部分时候正常，用户会以为是自己代码触发了什么边界。
+- **「在小样本上验过」不等于「验过」**。凡是带状态机/嵌套解释器/自增计数的东西，
+  回归样本的规模必须越过它的已知边界；`test/vm.js` 的多层 VM 两节现在都固定用
+  2000 次循环的样本，就是这个原因。
 - **实测优先于读配置**。这一轮有三条结论与"看预设文件"的直觉相反（两条"漏写"里一条
   不用补、一条方向被误判为更弱实为更强：`wasmThreshold` 的 `0` 是**不设限**、
   `stringSplitThreshold` 降低是**拆得更多**）。凡是给预设提强度，先跑一次对比
@@ -157,6 +167,24 @@ npm run build:web:cloud  # 云端执行形态（核心不进产物，Vercel 部�
    case 的 `var a`）。一元运算也要自己弹栈。
 7. 校验尾 4 字节的移位**四项都要写**：大端序末项移位恰是 0，省掉也对，于是这处省事
    在大端全绿、**只在小端全错**。这就是对拍用例必须两种字节序各覆盖一组的原因。
+
+## 引导层用「轻装档」（2026-10-11，`src/obfuscate.js` 的 `bootOpts`）
+
+- **引导器自混淆过的是"每次启动都要跑一遍"的代码**，与载荷的性质根本不同：载荷是
+  跑一次的业务逻辑，引导器是跑一次的开机程序。所以两者该用不同强度的档，此前没分开，
+  max + 壳 1 层的**纯启动**要 3.2 s、壳 2 层 8.6 s。
+- 轻装档关掉的是「会把直线代码炸开」的几项：`controlFlowFlattening`、
+  `controlFlowLoopFlattening`、`functionWrapper`、`callProxy`、`deadCodeInjection`、
+  `opaquePredicates`，顺带 `sentinelRate: 0`（哨兵要注入扁平化后的控制流，扁平化关了
+  就没有落点）。保留的是几乎不增体积、且对隐藏引导器固定名有用的那几项：
+  `logicalExpressions`、`conditionObfuscation`、`objectKeyEncoding`、
+  `templateToConcat`、`mangle`。
+- 实测收益（max，N=0 即纯启动）：壳 1 层 3235→688 ms、壳 2 层 8558→**1006 ms**、
+  壳 3 层 15615→1519 ms；产物 545 KB → 99 KB。**载荷侧的保护一点没减**，减的只是
+  "保护外壳自己"。
+- 为什么这样减不亏：外壳**自带校验尾**（`_0bd` 差分校验），篡改引导器去改载荷会在
+  外壳自己的校验处失败。所以给引导器再套 `integrityCheck`/`selfDefending` 是重复的。
+- 这不是"给 max 开后门"——它对所有预设、所有壳形态生效，且与 `shellForm` 无关。
 
 ## 目标宿主约束（2026-10-09 新增）
 
@@ -216,11 +244,11 @@ npm run build:web:cloud  # 云端执行形态（核心不进产物，Vercel 部�
 - `src/passes/vm.js` 是唯一的 VM：AST → 自定义栈机字节码 → 解释器。
   寄存器式后端（`vmRegisterVM`）与多态寄存器模型（`vmPolymorph`/`vmModel`，
   M0/M1/M2/M3）已整体移除，只保留纯栈式核心 VM。
-- 多层 VM（`vmLayers`，默认 1）：`2` 把解释器循环本身作为函数体再编译一次，
-  外层字节码的解释动作由第二份字节码执行；`3` 再套一层。内外层各自带独立的
-  G/H/K/S 表、掩码与字节码加密材料；stats 报 `layers`（实际嵌套层数）。
-  wasm 档下要嵌套的函数改走 JS 路径（桥接里无解释器可套），最内层仍以桥接进
-  模块；stats 报 `nestedJs`（让路数）。嵌套失败回退单层，不影响语义。
+- 多层 VM（`vmLayers`）：实现仍在 `vm.js` 里，但**选项层已关闭**——`>= 2` 一律钳到 1
+  （见上一节）。形态是：外层函数体把解释器循环本身再编译一次，内外层各自带独立的
+  G/H/K/S 表、掩码与字节码加密材料；stats 报 `layers`（实际嵌套层数，现恒为 1），
+  wasm 档下要嵌套的函数会改走 JS 路径让路（`nestedJs`）。要重新放开得先修外层栈的
+  运行期增长，不是把钳位删掉就行。
 - 字符串去集中化：池校验哈希基数/乘数逐组随机（`stringArray.js hashItems`，
   FNV 字面量只剩 banner 引导哈希）；accessor 解码累加与返回点各 3 形态；
   VM 位置散列（`strPosExpr`）异或结合律 3 形态。
