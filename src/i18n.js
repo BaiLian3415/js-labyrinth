@@ -69,6 +69,7 @@ const STRINGS = {
     warnEsmRelative: '产物里有 {n} 个相对模块说明符（{shown}），套壳后无法解析：' +
       '外壳把载荷放进 blob:/data: URL 再 import()，这两种地址没有目录上下文，' +
       '"./x.js" 找不到。填 moduleBase（产物所在目录的 URL）即可在构建期改写成绝对地址。',
+    warnUnknownOption: '已忽略未知选项：{keys}。未知键会被保留但不生效——拼错的键等于这一项根本没开。',
     warnVmLayersClipped: 'vmLayers 请求 {want} 层，已钳到 {got} 层。多层 VM 目前**撑不住规模**：' +
       '纯 JS 路径下循环约 200~400 次就死，wasm 路径下更早就耗尽线性内存。' +
       '小函数能正常跑，所以问题只在有循环的代码上暴露。与其给一份会在某个循环次数上死掉的产物，' +
@@ -161,6 +162,8 @@ const STRINGS = {
     jsfuckTooBig: 'JSFuck 壳形式的核心表达式超限：实际 {n} KB，上限 {max} KB'
       + '（核心源码 {bytes} 字符，约 {rate} 字符/字节）——请缩小 JSFUCK_CORE 或调高 JSFUCK_MAX_CHARS',
     vmUnknownOpcode: 'vm: 未知操作码 {kind}',
+    vmWasmTableFull: 'vm: WASM 解释器内核档的分发字空间已用尽——调大 vmDecoyOps（该档按它开槽）',
+    vmWasmTooManyParams: 'vm: 函数形参超过 64 个，WASM 解释器内核档无法为它建帧',
     badStringArrayEvolve: 'stringArrayEvolve 非法: {v}（可用 "each" / "sparse" 或 0~7 整数）',
     badStringArrayWrappersCount: 'stringArrayWrappersCount 非法: {v}（需为 0~10 的整数，null 表示不设）',
     // parser 与 generator
@@ -412,6 +415,7 @@ const STRINGS = {
       'resolve once shelled: the shell loads the payload through a blob:/data: URL, which has no ' +
       'directory context, so "./x.js" is not found. Set moduleBase to the artifact\'s directory URL ' +
       'to rewrite them to absolute at build time.',
+    warnUnknownOption: 'Unknown option(s) ignored: {keys}. Unknown keys are kept but have no effect — a typo means that option is simply off.',
     warnVmLayersClipped: 'vmLayers requested {want} layers; clipped to {got}. Multi-layer VMs currently ' +
       'do not hold up at scale: on the pure JS path a loop of roughly 200 to 400 iterations already dies, ' +
       'and on the wasm path linear memory runs out earlier still. Small functions are fine, so the problem ' +
@@ -510,6 +514,8 @@ const STRINGS = {
     jsfuckTooBig: 'JSFuck shell core expression too large: got {n} KB, limit {max} KB'
       + ' (core source {bytes} chars, ≈{rate} chars/byte) — shrink JSFUCK_CORE or raise JSFUCK_MAX_CHARS',
     vmUnknownOpcode: 'vm: unknown opcode {kind}',
+    vmWasmTableFull: 'vm: the WASM interpreter core ran out of dispatch-word slots — raise vmDecoyOps (that tier sizes its table from it)',
+    vmWasmTooManyParams: 'vm: function has more than 64 parameters; the WASM interpreter core cannot build a frame for it',
     badStringArrayEvolve: 'invalid stringArrayEvolve: {v} (use "each" / "sparse" or an integer 0..7)',
     badStringArrayWrappersCount: 'invalid stringArrayWrappersCount: {v} (must be an integer 0..10, or null for unset)',
     // parser 与 generator

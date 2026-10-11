@@ -1850,11 +1850,19 @@ function readConfig(raw) {
   if (!Number.isFinite(v) || v < 1) throw new Error('version');
   if (v > CFG_VERSION) throw new Error('newer');
 
-  // guiHide 的键，于是那些「界面上没有控件、只能经配置或 API 传入」的选项会被当成
-  // 未知键静默丢弃——导出时明明写进去了，导入时又没了。
+  // 注册表必须与导出侧同源。导出走 explicitOptions()（含全部布尔项），而这里原先
+  // 只从 VALUE_OPTIONS 建表——布尔项于是被下面的 `if (!o) skipped++` 静默丢掉，
+  // 导出→导入往返能丢掉一半配置，用户只看到"忽略 N 项"。
+  // VALUE_OPTIONS 里 kind:'bool' 的条目（htmle / numberObfuscationMBA / bannerSkip…）
+  // 本来就在表里；BOOL_OPTIONS 补的是走 BOOL_LABELS 那条旧路径的布尔项。
+  // guiHide 的键也必须留在表里：它们界面上没有控件、只能经配置或 API 传入，
+  // 丢掉就是"导出时明明写进去了、导入时又没了"。
   const meta = new Map(Object.entries(VALUE_OPTIONS).map(([k, s]) => [k, {
     kind: s.kind, values: s.values,
   }]));
+  for (const k of optionsMeta.BOOL_OPTIONS) {
+    if (!meta.has(k)) meta.set(k, { kind: 'bool' });
+  }
   const src = (raw.options && typeof raw.options === 'object') ? raw.options : {};
 
   const entries = new Map();

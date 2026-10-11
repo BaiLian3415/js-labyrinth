@@ -80,14 +80,16 @@ section('JSFuck 壳形式（shellForm）');
   // 盐由该字面量在运行期重算，改动后与构建期写下的 clean 不符，外壳密钥流错位。
   {
     const jf = obfuscate(SAMPLE, { preset: 'low', seed: 4242, shell: true, shellForm: 'jsfuck' });
-    const m = jf.code.match(/"(jr[0-9a-f]{16}[0-9a-z]+)"/);
+    // 锚点字面量形状逐构建随机（2026-10-11 起不再有 'jr' 固定前缀），按结构定位：
+    // 引导层排在最前面，取第一条 `var <名>="<纯字母数字 token>"`。
+    const m = jf.code.match(/^\s*var [A-Za-z_$][\w$]*="([A-Za-z][A-Za-z0-9]{14,30})";?\s*$/m);
     ok(!!m, 'jsfuck 产物里找得到引导锚点字面量', m ? m[1] : '(未匹配)');
     let broken = 'RUNS';
     if (m) {
       const v = m[1];
-      const hex = '0123456789abcdef';
-      const tampered = jf.code.replace('"' + v + '"',
-        '"' + v.slice(0, -1) + hex[(hex.indexOf(v[v.length - 1]) + 1) % 16] + '"');
+      // 换首字符（尾巴是 base36，换"下一位"可能换回原字符导致假失败）
+      const swapped = (v[0] === 'Z' ? 'Y' : 'Z') + v.slice(1);
+      const tampered = jf.code.replace('"' + v + '"', '"' + swapped + '"');
       try { runNode(tampered, 'jf-cut.js'); } catch (e) { broken = 'BREAKS'; }
     }
     ok(broken === 'BREAKS', 'jsfuck 产物改引导锚点字面量后失效（互锁未被形态改动破坏）', broken);

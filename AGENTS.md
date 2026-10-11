@@ -16,7 +16,7 @@ JsLabyrinth：JavaScript 代码混淆与运行时防护。完整运行于 Vercel
 | `server/`、`api/`、`vercel/` | 服务端执行端（API 路由、自混淆入口）。 |
 | `test/` | 自测。单文件可独立 `node test/<file>.js`；共享 `test/_harness.js` 的断言/执行工具。**测试 import src，方向永远单向**。 |
 | `tools/` | 维护者本地工具：发卡、构建、验收。 |
-| `dist/` | 构建产物，**不要手改**；改源码后用 `npm run build:web`（或 `:cloud`）重新生成。调试先试 `-- --plain`。 |
+| `dist/` | 构建产物，**不要手改**、也**不入库**（已 gitignore）。部署时由流水线自己跑 `build:web:cloud` 生成；本地只在要看界面时才 `npm run build:web`。调试先试 `-- --plain`。 |
 
 ## 常用命令
 
@@ -27,6 +27,16 @@ npm run bench:selfobf    # 挑 pass 前的实测基准——按实测挑 pass，
 npm run build:web        # 界面 + 自混淆核心进 dist（浏览器本地执行形态）
 npm run build:web:cloud  # 云端执行形态（核心不进产物，Vercel 部署走这支）
 ```
+
+**不要手动部署，也不用为部署预生成 `dist/`**（2026-10-11 定）：仓库已绑定 GitHub
+（`origin` = `BaiLian3415/js-labyrinth`，主分支 `main`），**push 到 `main` 即自动部署**；
+`vercel.json` 的 `buildCommand` 就是 `npm run build:web:cloud`，`outputDirectory` 是
+`dist` —— 产物由部署流水线自己构建，`dist/` 也已 gitignore、不入库。
+
+- 别跑 `npm run deploy`（`package.json` 里那条 `npx vercel --prod` 留着只是历史，
+  手动跑会绕过 GitHub 集成、也可能把本地未提交的状态推上线）；
+- 本地只有在要看界面时才跑 `build:web`，它跟部署无关；
+- 改完源码 `git push` 就完事，不需要 `dist/` 干净、也不需要本地验证部署。
 
 ## 改动铁律
 
@@ -73,10 +83,17 @@ npm run build:web:cloud  # 云端执行形态（核心不进产物，Vercel 部�
   sha256，零差异。改默认形态的任何一行都是在破坏可复现性承诺，比收益大得多。
 - **与 jsfuck 互斥**：`jsfuck` 改的正是「密钥流 + 校验尾」那段**明文**，bytecode 形态
   里那段已经不在明文里。同时指定时以 bytecode 为准（`jsfuck && !useBytecode`）。
-- 新固定名 `_0bv`（解释器）/`_0bw`（密文字节码）/`_0bt`（原语表）/`_0bc`（常量池）/
-  `_0bl`（局部表）**必须**进 `banner.js` 的 randomizeNames 名单。解释器内部的短名
-  （`_w`/`_t`/`_c`/`_k`/`_x`/`_p`）刻意不带 `_0` 前缀——`\b` 词边界匹配不到，且它们属于
-  「通用解释器」这一固定形态，变化由操作码表逐构建随机承担。
+- 字节码形态的固定名分两类，**别把两类混为一谈**（2026-10-11 修正，原文档写的 `_0bv`
+  在代码里根本不存在）：
+  - 进 `banner.js` randomizeNames 名单的：`_0bw`（密文字节码）/`_0bt`（原语表）/
+    `_0bc`（常量池）/`_0bl`（局部表）。它们在流水线内，靠名单逐构建改名。
+  - 够不着、由 `makeShellLayer` 自建名字的：**解释器本体**（`bcFn`）与 JSFuck 核心名
+    （`jsfuckCoreName`），形状都是「`identifierPrefix` + 9~13 位 hex」——长度也随机，
+    免得固定位宽变成指纹；下界 9 位刻意长于 mangle 命名族上界（8 位 hex）以避开撞名，
+    并逐名对着 `mode.usedNames` 查重（`shellWrap` 第二个入口必须把 `ctx.usedNames`
+    传进来，否则那道守卫是死的）。
+  - 解释器内部的短名（`_w`/`_t`/`_c`/`_k`/`_x`/`_p`）刻意不带 `_0` 前缀——`\b` 词边界
+    匹配不到，且它们属于「通用解释器」这一固定形态，变化由操作码表逐构建随机承担。
 - **局部表要一次性给全长度并把非输入槽填 0**：留洞的话万一读到是 `undefined` 而不是 0，
   是静默算错的典型来源。接线时最容易漏的两处是**变量名映射**（IR 槽位 ↔ `_0xx`）与
   **原语表顺序**（`xs32/mix/ipos/mul32/_0cc` 与 IR 里 `PRIM` 下标对齐），两处错了 IR
@@ -98,8 +115,8 @@ npm run build:web:cloud  # 云端执行形态（核心不进产物，Vercel 部�
     理由：流水线会把 case 标签的数字改写成带状态的逗号表达式（`controlFlow` 的
     `assignState`），标签值于是依赖可变状态 `M`——该 case 跑一次后 M 变了，**第二次**
     分发到同一操作码就连不上，落进 `default:throw "vm"`。产物跑完第一圈字节码就死，
-    报错点与病因隔三层。这也是 `_0bv` 不在 `randomizeNames` 名单里的原因（够不着），
-    它的名字由 `makeShellLayer` 自建「前缀 + 9 位 hex」。
+    报错点与病因隔三层。这也是解释器本体不在 `randomizeNames` 名单里的原因（够不着），
+    它的名字由 `makeShellLayer` 自建「`identifierPrefix` + 9~13 位 hex」。
 
 ## 预设强度与「静默变弱」（2026-10-10 实测）
 
@@ -329,5 +346,7 @@ node test/vm.js                  # 改 vm 时先跑这组
 ```
 
 新增/删除 pass 或选项时同步检查：`src/pipeline.js` 的注册顺序、
-`test/selftest.js` 的文件清单、`DEPLOY.md` 与 `README.md` 的说明、
-`dist/` 是否需要重建。
+`test/selftest.js` 的文件清单、`DEPLOY.md` 与 `README.md` 的说明。
+
+发布不用做任何额外动作：**push 到 `main` 即自动部署**（见「常用命令」），
+不需要本地重建 `dist/`、也不需要跑 `npm run deploy`。

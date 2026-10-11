@@ -6,6 +6,11 @@ import t from './ast/types.js';
 import i18n from './i18n.js';
 const { t: msg } = i18n;
 import DEFAULTS from './options.js';
+import optionsMeta from './options-meta.js';
+const { KNOWN_OPTION_KEYS } = optionsMeta;
+// 不进 KNOWN_OPTION_KEYS、但也不是"拼错"的内部键。目前只有 config：它是调用方
+// 自带的工作配置（pipeline 会把 merged.config 删掉，见 pipeline.js），不是混淆选项。
+const INTERNAL_OPTION_KEYS = new Set(['config']);
 import PRESETS from './presets.js';
 import randUtil from './utils/rand.js';
 import { isChineseNaming, wantsPropertyRename } from './utils/naming.js';
@@ -74,13 +79,51 @@ function resolveOptions(userOptions) {
 }
 
 /**
+ * 两个键名的编辑距离。只服务于"拼错的选项键"提示，所以长度差超过阈值就直接返回 3
+ * （调用方只关心 ≤2），省掉整张距离表。
+ */
+function editDistance(a, b) {
+  if (Math.abs(a.length - b.length) > 2) return 3;
+  let prev = Array.from({ length: b.length + 1 }, (_, j) => j);
+  for (let i = 1; i <= a.length; i++) {
+    const cur = [i];
+    for (let j = 1; j <= b.length; j++) {
+      cur[j] = Math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+    }
+    prev = cur;
+  }
+  return prev[b.length];
+}
+
+/**
+ * 与给定键最像的已知选项键（大小写与 -/_ 差异先归一化，再比编辑距离 ≤2）。
+ * 找不到时返回 null——宁可不猜，也不要把用户引到一个不相干的选项上。
+ */
+function closestOptionKey(key) {
+  const norm = (s) => s.toLowerCase().replace(/[-_]/g, '');
+  const target = norm(key);
+  let best = null;
+  let bestD = 3;
+  for (const cand of KNOWN_OPTION_KEYS) {
+    const d = editDistance(target, norm(cand));
+    if (d < bestD) { bestD = d; best = cand; }
+  }
+  return bestD <= 2 ? best : null;
+}
+
+/**
  * 混淆后自校验：重爬 AST 作用域找未绑定引用。mangle 直接改节点，漏改会留
  * 下悬空引用。豁免四类：typeof 守卫、内建全局、宿主全局白名单、extraGlobals。
  * hasGlobal() 会把未绑定引用注册进 globals，不能替代静态列表。
+ *
+ * 白名单里只放**真的全局**（2026-10-11 清理）：原先还混着 documentElement / body /
+ * head / title 这类 DOM **属性名**，以及 WebSocketWorker、TransformStreamDefaultTransformer
+ * 两个不存在的名字。它们豁免的是 free identifier——写错名字的悬空引用会因此静默通过，
+ * 而这道自校验唯一的产出就是"漏改的悬空引用"，白名单越松这张网就越假。
  */
 const HOST_GLOBALS = new Set(`
   window self global globalThis document navigator location history screen localStorage sessionStorage
-  console alert confirm prompt atob btoa fetch XMLHttpRequest WebSocket WebSocketWorker Worker SharedWorker
+  console alert confirm prompt atob btoa fetch XMLHttpRequest WebSocket Worker SharedWorker
   setTimeout clearTimeout setInterval clearInterval requestAnimationFrame cancelAnimationFrame
   process require module exports Buffer __dirname __filename performance queueMicrotask
   structuredClone crypto TextEncoder TextDecoder URL URLSearchParams AbortController AbortSignal
@@ -88,8 +131,8 @@ const HOST_GLOBALS = new Set(`
   postMessage importScripts addEventListener removeEventListener dispatchEvent DOMException
   ReadableStream WritableStream TransformStream ByteLengthQueuingStrategy CountQueuingStrategy
   CompressionStream DecompressionStream WritableStreamDefaultWriter WritableStreamDefaultController
-  ReadableStreamDefaultReader ReadableStreamDefaultController TransformStreamDefaultTransformer
-  Image Audio HTMLElement documentElement body head title
+  ReadableStreamDefaultReader ReadableStreamDefaultController
+  Image Audio HTMLElement
 `.split(/\s+/).filter(Boolean));
 
 // 内建全局，ES builtins 静态列表，不含用户代码产生的名字
@@ -133,7 +176,6 @@ function validateReferences(ast, traverse, options) {
  * @returns {((text:string)=>boolean)|null}
  */
 function buildKeepRaw(options) {
-  const exact = new Set();
   const res = [];
   for (const key of ['reservedNames', 'reservedStrings']) {
     for (const s of options[key] || []) {
@@ -507,9 +549,29 @@ function obfuscate(code, userOptions) {
   }
 
   const stats = [];
-  // 构建期警示（不阻断流程，但要传到界面/CLI）。目前只有一条：外壳与不混淆名单
-  // 互锁时点名跳过原因，避免用户以为名单没生效。
+  // 构建期警示（不阻断流程，但要传到界面/API）。目前有：未知选项、外壳与不混淆名单
+  // 互锁、目标降级、vmLayers 钳位。共同点都是"用户以为开了、其实没开"这类静默失效，
+  // 必须点名说清，否则用户只会看到保护莫名消失。
   const warnings = [];
+
+  // 未知/拼错的选项键：**只告警，不报错**。
+  //
+  // resolveOptions 保留未知键是既定行为（未知键不报错、也不改写），但"传了
+  // wasmInterpretr、什么都没发生"是用户最容易踩的一类静默失效——保护看着开了、
+  // 实际没开。这里点名，并顺手给出最接近的已知键（编辑距离 ≤2 才算"像"），
+  // 不改写用户的取值、不改变任何行为。
+  {
+    const unknown = Object.keys(userOptions || {})
+      .filter((k) => !KNOWN_OPTION_KEYS.has(k) && !INTERNAL_OPTION_KEYS.has(k));
+    if (unknown.length) {
+      const shown = unknown.slice(0, 5).map((k) => {
+        const near = closestOptionKey(k);
+        return near ? k + ' → ' + near : k;
+      });
+      if (unknown.length > 5) shown.push('…');
+      warnings.push(msg('warnUnknownOption', { keys: shown.join(', ') }));
+    }
+  }
 
   // 目标受限导致的降级：逐项点名，别让用户以为保护着。这里必须**说清关了什么、
   // 为什么**，否则用户只会看到"我的保护怎么没了"，而真正的原因（宿主不支持）
@@ -662,8 +724,6 @@ function obfuscate(code, userOptions) {
       options.wasmInterpreter = false;
     }
   }
-  // WASM 解释器内核档与旧 wasm 档互斥：内核档把解释器整体搬进 WASM，旧档只搬
-  // 数据与原语，两者同时开会生成两个模块与两套取指假设，故内核档优先。
   // WASM 解释器内核档与旧 wasm 档互斥：内核档把解释器整体搬进 WASM，旧档只搬
   // 数据与原语，两者同时开会生成两个模块与两套取指假设，故内核档优先。
   //
@@ -843,7 +903,8 @@ function obfuscate(code, userOptions) {
       conditionObfuscation: true, objectKeyEncoding: true,
       templateToConcat: true, mangle: true,
     });
-    const sr = shellWrap(finalCode, options, (src) => obfuscate(src, bootOpts), cjs, isModuleSrc);
+    const sr = shellWrap(finalCode, options, (src) => obfuscate(src, bootOpts), cjs, isModuleSrc,
+      ctx.usedNames);
     finalCode = sr.code;
     stats.push({
       pass: 'shell',

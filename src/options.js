@@ -280,6 +280,14 @@ export default {
   "integrityCheck": true,
   "integrityPoisonPoints": 4,
   "selfCheck": true,
+  // 内部选项：跳过引导层（盐互锁 + 健康载体 + 保留名单明文清单）。HTMLE 的逐块混淆
+  // 与部分测试用它；界面不提供控件（options-meta 里标了 guiHide），只经 API/配置传入。
+  //
+  // 为什么必须在这里声明（2026-10-11 补）：它原先只被 obfuscate.js 读，既不在
+  // DEFAULTS、也不在 options-meta，于是 KNOWN_OPTION_KEYS 里查不到——API 传进来
+  // 生效但没人知道它存在，属"被读却三处都查不到"的漂移。声明之后未知键告警也能
+  // 正确区分"内部键"与"拼错的键"。
+  "bannerSkip": false,
   "shell": true,
   "shellDepth": 1,
   // 外壳形态（Paid 档，plus+；free 档闸门锁死 classic）。classic 是原来的

@@ -32,6 +32,7 @@
  *   shell-bytecode   外壳解码链 IR：手写参考 ⟷ 朴素 JS ⟷ 密文字节码三路逐位对拍
  *   target-runtime   目标宿主识别与受限降级（Cloudflare Workers：壳 / WASM / 时序哨兵）
  *   vmp              VMP 覆盖率 / 深度 / stats 口径
+ *   fingerprint      固定形状指纹、选项键集合、i18n 引用、未知键告警
  *   live-verify      线上验收（打已部署站点）
  *
  * 拆分的理由：一个文件近 4000 行时，改一行要找半天，且任何一处语法错要等整跑
@@ -71,6 +72,7 @@ const FILES = [
   'shell-bytecode.js',
   'target-runtime.js',
   'vmp.js',
+  'fingerprint.js',
   'live-verify.js',
 ];
 

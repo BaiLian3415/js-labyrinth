@@ -350,13 +350,16 @@ const JSFUCK_CORE = 'function(_0q,_0r,_0sb,_0N,_0L,_0P1,_0P2,_0HB,_0e,_0ph,_0tn,
  *
  * 不走 rand.uniqueName：那边会产出 4~9 个字母的短名，与 mangle 的命名族同源，
  * 理论上可能与引导层里某个改名后的局部绑定撞名——撞上就是局部绑定把全局函数
- * 遮掉，产物在运行期才炸。这里固定 `<前缀>+9 位 hex`（13 字符），长于 mangle
- * 的命名族上界，撞名概率可忽略。
+ * 遮掉，产物在运行期才炸。这里用 `<前缀> + 9~13 位 hex`（总长 13~17）：**下界**
+ * 长于 mangle 命名族的上界（8 位 hex），撞名概率可忽略。
+ *
+ * 长度逐构建随机而不是固定 9（2026-10-11 改）：固定的 hex 位宽本身就是一个可
+ * grep 的形状指纹（`_0x[0-9a-f]{9}`），而随机长度不增加任何撞名风险。
  */
 export function jsfuckCoreName(used, prefix) {
   let name;
   do {
-    name = (prefix || '_0x') + randHex(9);
+    name = (prefix || '_0x') + randHex(randInt(9, 13));
   } while (used && used.has(name));
   if (used) used.add(name);
   return name;
@@ -552,19 +555,36 @@ function makeShellLayer(payload, variant, mode) {
   put('(function(){');
   put(primitivesText);
   // 装载期一次性死代码：纯字面量/纯读表达式赋给下面唯一的新暂存，值永不再读，
-  // 不触外部状态。形状（var/let/数组/三元/do-while/空循环）与数量（0~8）逐构建
+  // 不触外部状态。形状（var/let/数组/三元/do-while/空循环）与数量（0~14）逐构建
   // 随机：新增的都是骨架里少见或没有的形态，专打归一化 bigram 分布。
-  // 名 `_0qz<hex>` 每次现派、永不复用——let 重声明是 SyntaxError，固定名又怕与
+  // 名 `_0<两字母><hex>` 每次现派、永不复用——let 重声明是 SyntaxError，固定名又怕与
   // 载荷 var 同名顶撞（同上 loader 本体保留 var 的理由）。
   {
     const junkNames = new Set();
-    // 前缀三选一：死代码自己的暂存名不进 randomizeNames 名单，固定前缀本身会成
-    // 弱指纹，所以连前缀也逐个随机（三个都是 loader/载荷里不会出现的形状）。
-    const junkPrefs = ['_0qz', '_0qj', '_0qx'];
+    // 前缀逐构建随机（2026-10-11 改）。原先写死三个常量 `_0qz`/`_0qj`/`_0qx`：
+    // 这些名字不进 randomizeNames 名单（引导器在流水线之外现拼），固定前缀本身
+    // 就成了可 grep 的签名——实测每个产物残留 3~15 处。
+    // 形状 `_0` + 两个随机小写字母 + 4 位 hex，与 loader 自己的定长名（_0L/_0N/_0P1…）
+    // 和 mangle 的命名族（前缀池 + 4~8 位 hex，池里没有 `_0`+双字母这种形状）都不同形，
+    // 所以连"被当成改名产物批量识别"也说不上；同形与否都不影响下面那道硬检查。
+    // 字母池里**去掉 q**：旧签名正是 `_0q[zjx]`，留一个 q 就有约 0.4% 的概率
+    // 摇回原来的形状，去掉后那条正则永远不可能命中（可写成断言）。
+    // 撞名不看运气：名字逐个对着 mode.usedNames 查（obfuscate 会把载荷与各 pass
+    // 生成的名字都写回那里），查到就重摇——所以摇出 `_0x…` 这种与改名产物同形的
+    // 名字也不会与它顶撞。
+    const junkLetters = 'abcdefghijklmnoprstuvwxyz';
+    const junkLetter = () => junkLetters[randInt(0, junkLetters.length - 1)];
+    const junkPrefs = [];
+    while (junkPrefs.length < 3) {
+      const p = '_0' + junkLetter() + junkLetter();
+      if (junkPrefs.indexOf(p) < 0) junkPrefs.push(p);
+    }
     const junkName = () => {
       let n;
-      do { n = junkPrefs[randInt(0, junkPrefs.length - 1)] + randHex(4); } while (junkNames.has(n));
+      do { n = junkPrefs[randInt(0, junkPrefs.length - 1)] + randHex(4); }
+      while (junkNames.has(n) || (mode && mode.usedNames && mode.usedNames.has(n)));
       junkNames.add(n);
+      if (mode && mode.usedNames) mode.usedNames.add(n);
       return n;
     };
     const junkShapes = [
@@ -696,12 +716,13 @@ function makeShellLayer(payload, variant, mode) {
     const bcEnc = encryptWords(vm.words, randInt);
     // 新固定名必须进 banner.js 的 randomizeNames 名单，否则留成字面量指纹。
     // 解释器**整体在流水线之外**，所以 randomizeNames 够不着它，外层名字得自己随机
-    // （前缀 + 9 位 hex，长于 mangle 命名族上界，撞名可忽略）——与 jsfuckCoreName 同法。
+    // （前缀 + 9~13 位 hex，下界长于 mangle 命名族上界，撞名可忽略；长度同样随机，
+    // 免得固定位宽成为形状指纹）——与 jsfuckCoreName 同法。
     // 解释器内部的短名（_w/_t/_c/_k/…）刻意不带 _0 前缀、也不随机化：它们属于
     // 「通用解释器」这一固定形态，变化由名字池与操作码表承担。
     const bcEval = evalStyle === 0 ? '(0,eval)' : 'Function("return eval")()';
     let bcFn;
-    do { bcFn = (mode && mode.identifierPrefix ? mode.identifierPrefix : '_0x') + randHex(9); }
+    do { bcFn = (mode && mode.identifierPrefix ? mode.identifierPrefix : '_0x') + randHex(randInt(9, 13)); }
     while (mode && mode.usedNames && mode.usedNames.has(bcFn));
     if (mode && mode.usedNames) mode.usedNames.add(bcFn);
     mode.bytecodePrelude = 'var ' + bcFn + '=' + emitInterpreter({
@@ -901,10 +922,13 @@ function makeShellLayer(payload, variant, mode) {
  * @param {(src:string, opts:object) => {code:string}} bootObfuscate
  *        对引导器再过一遍流水线的回调，由 obfuscate.js 注入，防递归标志已在
  *        其中固定为 shell:false
+ * @param {Set<string>} [usedNames] 产物已占用的名字集合（ctx.usedNames）。传进来
+ *        才能让 bcFn 的撞名守卫真正生效：原先 shellWrap 不设 mode.usedNames，
+ *        那个 do/while 恒为假，解释器全局名只能靠"9 位 hex 够长"兜着。
  * @returns {{code:string, layers:number, jsfuckChars:number}} 套壳后的源码、
  *        实际层数与 jsfuck 预置的字符数（0 表示 classic 形态）
  */
-function shellWrap(code, options, bootObfuscate, cjs, esm) {
+function shellWrap(code, options, bootObfuscate, cjs, esm, usedNames) {
   const depth = Math.max(1, options.shellDepth | 0 || 1);
   const jsfuck = options.shellForm === 'jsfuck';
   const jfUsed = new Set();
@@ -915,7 +939,9 @@ function shellWrap(code, options, bootObfuscate, cjs, esm) {
     // esm 与 cjs 互斥：ESM 载荷本来就没有自由 CommonJS 绑定，且 import() 放行
     // 时那几个形参也无从谈起。每一层都继承形态——内层壳解密出来的是外层壳的
     // 源码，它同样需要 import() 才能跑。
-    const mode = { cjs: !esm && !!cjs, esm: !!esm, identifierPrefix: options.identifierPrefix };
+    const mode = {
+      cjs: !esm && !!cjs, esm: !!esm, identifierPrefix: options.identifierPrefix, usedNames,
+    };
     let pre = '';
     // jsfuck 与 bytecode 互斥：jsfuck 改的正是「密钥流 + 校验尾」那段**明文**语句，
     // 而 bytecode 形态里那段已经不在明文里了。两者同时要时以 bytecode 为准——

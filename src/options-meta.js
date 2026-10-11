@@ -93,6 +93,9 @@ export const VALUE_OPTIONS = {
   deadCodeProbability: { kind: 'percent', group: 'flow', zh: '死代码注入率', en: 'Dead code rate', hintZh: '注入死代码的概率（0~1）。', hintEn: 'Probability (0~1) of injecting dead code.' },
   sentinelRate: { kind: 'percent', group: 'defense', zh: '哨兵注入率', en: 'Sentinel rate', hintZh: '控制流中自检哨兵点的注入密度。', hintEn: 'Density of self-check sentinels injected into control flow.' },
   integrityPoisonPoints: { kind: 'count', group: 'defense', zh: '完整性投毒点数', en: 'Integrity poison points', hintZh: '完整性校验失败时写入投毒值的点位数。', hintEn: 'Number of poison values written when the integrity check fails.' },
+  bannerSkip: { kind: 'bool', group: 'defense', guiHide: true, zh: '跳过引导层', en: 'Skip guard layer',
+    hintZh: '内部选项：为 true 时跳过引导层（盐互锁、健康载体与保留名单清单），整条完整性耦合链路随之不启用。HTMLE 逐块混淆和测试用它；界面不提供控件，只能经 API 或配置文件传入。',
+    hintEn: 'Internal option: when true, the guard layer is skipped (salt interlock, health carrier and reserved-name manifest) and the whole integrity coupling chain is left unwired. Used by per-block HTML obfuscation and tests; no GUI control, only reachable through the API or a config file.' },
   debugProtectionInterval: { kind: 'count', group: 'defense', zh: '反调试检测间隔', en: 'Anti-debug interval', hintZh: '反调试自检的间隔（毫秒）。', hintEn: 'Interval between anti-debug self-checks, in milliseconds.' },
   vmStepLimit: { kind: 'int', min: 0, max: 1000000000, group: 'vm', zh: 'VM 步数上限', en: 'VM step limit',
     showWhen: { key: 'vmProtection', equals: true },
@@ -115,8 +118,12 @@ export const VALUE_OPTIONS = {
 
 export const VALUE_ALIASES = { intensity: 'preset' };
 
+// 「界面会渲染的布尔项」= DEFAULTS 里的布尔项。
+// 曾经在这里 concat('dirCopyOthers')：那是已删 CLI 的目录模式开关，既没有实现、也不在
+// DEFAULTS 里，而 guiOptions() 以 DEFAULTS 为准遍历，所以它永远渲染不出来——一个只在
+// 元数据里存在的幽灵选项（2026-10-11 删）。
 export const BOOL_OPTIONS = new Set(
-  Object.keys(DEFAULTS).filter((k) => typeof DEFAULTS[k] === 'boolean').concat('dirCopyOthers'),
+  Object.keys(DEFAULTS).filter((k) => typeof DEFAULTS[k] === 'boolean'),
 );
 
 export const FLAG_ALIASES = {
@@ -213,7 +220,6 @@ const BOOL_LABELS = {
   compact: ['压缩输出', 'Compact output'],
   escapeNonAscii: ['非 ASCII 转义', 'Escape non-ASCII'],
   simplify: ['AST 简化（常量折叠）', 'AST simplify (constant folding)'],
-  dirCopyOthers: ['复制非 JS 文件', 'Copy non-JS files'],
 };
 
 const BOOL_GROUPS = {
@@ -287,7 +293,6 @@ const BOOL_HINTS = {
   compact: ['输出压缩成单行，去掉多余空白与换行。', 'Compacts output to a single line.'],
   escapeNonAscii: ['把非 ASCII 字符转成 \\uXXXX 转义。', 'Escapes non-ASCII characters as \\uXXXX.'],
   simplify: ['混淆前做常量折叠、死代码消除与声明合并，缩小 AST 与产物。', 'Constant folding, dead-code elimination and declaration merging before obfuscation.'],
-  dirCopyOthers: ['目录模式下一并复制非 JS 文件到输出目录。', 'Copies non-JS files to the output directory in directory mode.'],
   vmProtection: ['把符合条件的函数体编译成自定义字节码，由注入的解释器循环执行；控制流在静态视图下消失。', 'Compiles eligible function bodies into custom bytecode run by an injected interpreter loop, so control flow disappears from the static view.'],
   vmBytecodeEncoding: ['字节码逐字加密并按调用轮换掩码。关掉则以明文整数数组存在（仅供排查），同时分块自解密与运行时密钥取值失效。', 'Encrypts each bytecode word and rotates the mask per call. Off leaves a plain integer array (troubleshooting only) and disables block self-decryption and the runtime key getter.'],
   vmDispatchEnc: ['分发字与语义动作的对应关系密文化，产物里不出现明文分发表。', 'Encrypts the dispatch word → action mapping so no plaintext table appears in the artifact.'],

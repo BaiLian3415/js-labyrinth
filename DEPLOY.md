@@ -141,13 +141,21 @@ JSLB_CODE_KEY=<base64 密钥> node tools/issue/keygen.js --plan plus --days 365
 
 ## 6. 发布
 
+**发布 = push 到 `main`，不需要手动部署**（2026-10-11 定）。仓库已绑定 GitHub，
+Vercel 集成在 push 时自动构建并上线：
+
 ```bash
 npm test                        # 改动核心后必跑（约 15 分钟）
 npm run selfdigest:check        # 改了 plan.js / plans.js / license-* 之后必跑
-npx vercel --prod               # 或 npm run deploy
+git push origin main            # 推上去即自动部署（不要再跑 npx vercel --prod / npm run deploy）
 ```
 
-首次会要求登录（`npx vercel login`）并把本目录关联到一个 Vercel 项目。
+产物由流水线自己构建：`vercel.json` 的 `buildCommand` 是 `npm run build:web:cloud`、
+`outputDirectory` 是 `dist`，`dist/` 已 gitignore、不入库——**本地不需要为部署预生成
+`dist/`**，手动跑 `npx vercel --prod` 只会绕过 GitHub 集成。
+
+首次关联项目（只做一次）用 `npx vercel link`；`npx vercel login` 是本地 CLI 登录，
+与自动部署无关。
 
 发布**不等于生效**——2026-09-19 踩过：配置里 `requireLicense: true` 写着，部署输出
 也把那条列进了环境变量，线上 `/api/plans` 返回的却是代码默认值 `false`，站点一直在
@@ -192,7 +200,7 @@ npm run verify -- https://<你的域名>
 
 | 现象 | 原因 | 处理 |
 | --- | --- | --- |
-| 点运行报一句 import 404 | 构建没走 `--cloud`，但 `/api/plans` 又说 `cloudOnly=true`（或反之） | `vercel.json` 的 `buildCommand` 必须是 `npm run build:web:cloud`；改完 `npx vercel --prod` |
+| 点运行报一句 import 404 | 构建没走 `--cloud`，但 `/api/plans` 又说 `cloudOnly=true`（或反之） | `vercel.json` 的 `buildCommand` 必须是 `npm run build:web:cloud`；改完 push（自动重新部署） |
 | 未激活界面连激活表单都渲染不出 | 公开模块没下发（挡多了） | 跑 `npm run verify`，第 5 项会指出取不到的模块 |
 | 刚激活又提示未激活 | 没装 Redis（`store: memory`） | 第 3 节 |
 | 每天次数怎么刷新都在涨 | 同上 | 同上 |

@@ -3373,8 +3373,10 @@ function vm(ast, options, ctx) {
   // 动态操作码、异步执行器、分块自解密、运行期密钥取值）在那里没有对应物。
   // vmLayers 不在此列：要嵌套的函数改走 JS 解释器路径（见桥接分支的条件），嵌套在
   // wasm 下依然生效，只是这些函数不进模块（stats.nestedJs 可见数量）。
-  // 静默失效的代价是实测出来的：max 预设里 vmBlockDecrypt 为 true，但关掉它产物
-  // 一个字节都不变——用户以为自己开了分块自解密，实际一直走的是共享分发字。
+  // 静默失效的代价是实测出来的：早先 max 预设把 vmBlockDecrypt 写成 true，而关掉它
+  // 产物一个字节都不变——用户以为自己开了分块自解密，实际一直走的是共享分发字。
+  // 现在四个预设都写 false（见 presets.js），这条只是把"为什么要报 suppressed"记下来，
+  // 别再照旧注释以为 max 开着它。
   const suppressedByWasm = [];
   if (ctx.__vmWasmShared) {
     const OFF = ['vmJumpsEncoding', 'vmStackEncoding', 'vmMacroOps', 'vmDynOpcodes',

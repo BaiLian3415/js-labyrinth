@@ -69,7 +69,6 @@ export default {
     "stringScatter": false,
     "antiLLM": false,
     "htmle": false,
-    "bannerText": '',
     "domainLock": '',
     "simplify": false
   },
@@ -151,7 +150,6 @@ export default {
     "stringScatter": false,
     "antiLLM": false,
     "htmle": false,
-    "bannerText": '',
     "domainLock": '',
     "simplify": false
   },
@@ -235,7 +233,6 @@ export default {
     "stringScatter": false,
     "antiLLM": false,
     "htmle": false,
-    "bannerText": '',
     "domainLock": '',
     "simplify": false
   },
@@ -321,7 +318,6 @@ export default {
     "stringScatter": true,
     "antiLLM": true,
     "htmle": false,
-    "bannerText": '',
     "domainLock": '',
     "simplify": false
   }

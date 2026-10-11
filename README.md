@@ -22,15 +22,21 @@ JsLabyrinth 是 JavaScript 代码混淆与运行时防护工具，**完整运行
 # 1) 自测（末段会打线上站点做验收，需 JSLB_LIVE_ORIGIN=<域名>；纯离线用 JSLB_SKIP_LIVE=1）
 npm test
 
-# 2) 构建静态产物（云端执行形态：界面 + 公开模块，混淆核心不进产物）
+# 2) 只在本地预览时才需要：构建静态产物（云端执行形态：界面 + 公开模块，核心不进产物）
+#    部署时这一步由 Vercel 流水线自己跑（vercel.json 的 buildCommand），本地可跳过
 npm run build:web:cloud
 
 # 3) 本地预览：起与线上一致的 Vercel 运行时（静态资源 + /api/*）
 npx vercel dev
 
-# 4) 发布
-npx vercel --prod
+# 4) 发布：push 到 main 即自动部署（仓库已绑定 GitHub），不需要手动发布
+git push origin main
 ```
+
+> **不要手动部署**：Vercel 集成在 push 到 `main` 时自动构建并上线——`vercel.json` 的
+> `buildCommand` 就是 `npm run build:web:cloud`，`dist/` 由流水线自己生成（它已
+> gitignore、不入库），所以本地不用为部署预生成 `dist/`，也不要跑 `npx vercel --prod`
+> （那会绕过 GitHub 集成）。
 
 `build:web:cloud` 只对**公开模块**（授权链路与选项元数据，未激活界面要靠它们渲染激活
 表单）做自混淆后下发；受保护模块（混淆核心）**根本不进产物**，混淆一律由
@@ -83,9 +89,9 @@ npx vercel --prod
 ## 部署到 Vercel
 
 ```bash
-npm run build:web:cloud        # 产出 dist/：界面 + 公开模块（核心不进产物）
+# 首次：在 Vercel 里 Import 这个 Git 仓库（或 npx vercel link 关联一次）
 npx vercel dev                 # 本地起 Vercel 运行时（静态资源 + /api/*），与线上一致
-npx vercel --prod              # 发布（npm run deploy 等价）
+git push origin main            # 发布：push 即自动部署（不要跑 npx vercel --prod）
 ```
 
 **必须先在 Marketplace 装 Redis**（Upstash 或 Vercel 官方 Redis 都行，`vercel/store.js`
@@ -170,9 +176,10 @@ import 404。
 ### 运行限制
 
 - **免费档有硬约束**，全部按 Vercel Hobby 定（数字见 `src/host-limits.js`）：函数请求体
-  4.5 MB、单次上传 2 MiB、每日 CPU 预算 300 s、函数时长 60 s。超限分别表现为 413、413、
-  503（预算用尽）、超时。`/api/obfuscate` 在入口就预检这些，所以用户看到的是可读的
-  中文/英文提示，而不是平台的 `FUNCTION_PAYLOAD_TOO_LARGE`。
+  4.5 MB、单次上传 2 MiB、单次运行 CPU 预算 240 s、每日全网 CPU 预算 500 s、函数最长
+  运行 300 s（平台硬线）。超限分别表现为 413、413、503（预算用尽）、超时。`/api/obfuscate`
+  在入口就预检这些，所以用户看到的是可读的中文/英文提示，而不是平台的
+  `FUNCTION_PAYLOAD_TOO_LARGE`。
 - **核心模块图里不能有字符串代码生成**。浏览器的 CSP 与不少函数运行时禁用 `eval` 与
   `new Function`，跑起来直接报 `EvalError: Code generation from strings disallowed`。
   `src/passes/shell.js` 原先用 `(0, eval)(PRIMITIVES)` 保证"产物文本与构建期实现不漂移"，
@@ -689,26 +696,25 @@ echo 'export default { async fetch(r,e,c){ return new Response("x"); } };' \
 | 档位 | 卡密字符 | 预设上限 | 单文件 | 每任务文件 | 每日次数 |
 | --- | --- | --- | --- | --- | --- |
 | Free | `F` | low | 128 KB | 1 | 3 |
-| Plus | `P` | high | 4 MB | 5 | 20 |
-| Team | `T` | max | 7 MB | 10 | 200 |
-| Business | `B` | max | 10 MB | 10 | 1000 |
+| Plus | `P` | high | 512 KB | 3 | 15 |
+| Team | `T` | max | 1 MB | 5 | 50 |
+| Business | `B` | max | 1.25 MB | 8 | 200 |
 
 一次性额度包（**买断总次数，用完为止**，不按日重置；卡密自带的到期时间仍是硬上限）:
 
 | 档位 | 卡密字符 | 预设上限 | 单文件 | 每任务文件 | 总额度 |
 | --- | --- | --- | --- | --- | --- |
-| Pack 100 | `S` | max | 10 MB | 10 | 100 次 |
-| Pack 1000 | `M` | max | 10 MB | 10 | 1000 次 |
-| Pack 10000 | `W` | max | 10 MB | 10 | 10000 次 |
-| Pack Custom | `C` | max | 10 MB | 10 | 联系作者 |
+| Pack 100 | `S` | max | 1.25 MB | 8 | 100 次 |
+| Pack 1000 | `M` | max | 1.25 MB | 8 | 1000 次 |
+| Pack 10000 | `W` | max | 1.25 MB | 8 | 10000 次 |
+| Pack Custom | `C` | max | 1.25 MB | 8 | 联系作者 |
 
 额度包的能力跟随 Business（`max` 预设、无闸门），买的是次数而不是能力：适合不想
 续费、只需要跑一批的场景。用尽后不会恢复，需要再买一张。
 
-另有参与闸门的新选项：Free 的外壳形态锁在 `classic`、命名策略锁在
-`random`、关掉碎片化与 Anti-LLM；Plus 可以把外壳形态切成 `jsfuck`、
-把命名策略切成 `short`、开碎片化与 Anti-LLM；碎片化与 Anti-LLM 之外的更高强度
-组合留给 Team/Business。
+另有参与闸门的新选项：Free 的外壳形态锁在 `classic`、命名策略锁在 `Mangled`、关掉碎片化与
+Anti-LLM；Plus 可以把外壳形态切成 `jsfuck`，命名策略十档全开（例如 `Hexadecimal-props`），
+并开碎片化与 Anti-LLM；碎片化与 Anti-LLM 之外的更高强度组合留给 Team/Business。
 **HTML Encrypt**（`htmle`）同样受闸门约束：**Free 不可用，Plus 及以上可用**。它会把产物内容换成密文
 并注入运行期解码器，明显改变产物形态，与 `antiLLM`、`debugProtection` 同级。配套的
 `htmleKey`（固定密钥）**刻意不加闸门**——它是 `htmle` 的附属项，没有 `htmle` 时本就不起作用，
@@ -717,8 +723,10 @@ echo 'export default { async fetch(r,e,c){ return new Response("x"); } };' \
 就会抛「预设 low 达不到闸门要求项」——这条是硬拦的，写闸门时先改 `presets.js`。
 
 Plus 的预设上限是 `high`，闸门正好卡在 `high` 预设的取值上（能用整套 high，但不能把
-单项往上调），只关掉 `consoleStub` 一个开关；Free 则关掉十二个。Team 与 Business 同为
-`max` 且都不设闸门，差别只剩配额（7 MB / 200 次 对 10 MB / 1000 次）。
+单项往上调），只关掉 3 项（`vmBlockDecrypt`、`stringArrayCallsTransform`、`consoleStub`）；
+Free 则关掉 21 项。这两个数字是 `plan.rows()` 的 `offOptions` 算出来的，改闸门后请照它对拍。
+Team 与 Business 同为 `max` 且都不设闸门，差别只剩配额（1 MB / 5 文件 / 50 次 对
+1.25 MB / 8 文件 / 200 次）。
 
 订阅档与额度包**不排在同一条阶梯上**：两者的配额口径不同（一个按日、一个按总额），
 `src/plan.js` 的档位阶梯不变式因此只在同族内比较。
@@ -895,8 +903,8 @@ curl -s -X POST https://<host>/api/free-key -H 'content-type: application/json' 
 
 - **云端执行**（本部署，Vercel）：源码 POST 到 `/api/obfuscate`，服务端跑完整流水线。
   代价是吃服务端的 CPU 与带宽预算，收益是**混淆核心不随静态资源下发**，爬站点的
-  人拿不到实现。免费档的硬约束（请求体 4.5 MB、单次上传 2 MiB、每日 CPU 300 s、
-  函数 60 s）由入口预检强制，超了给的是可读提示。
+  人拿不到实现。免费档的硬约束（请求体 4.5 MB、单次上传 2 MiB、单次运行 CPU 240 s、
+  每日全网 CPU 500 s、函数最长 300 s）由入口预检强制，超了给的是可读提示。
 - **浏览器内执行**（`build:web` 不带 `--cloud`，自建/离线用）：用访问者的 CPU，代码
   不出本机，没有服务端天花板。代价是核心随静态资源公开（已自混淆 + 模块体加密，
   但密钥也随静态资源走）。
@@ -997,7 +1005,7 @@ server/            平台无关的服务端实现（Vercel 接入层转调它）
   handler.js        /api/* 的实现：授权判定、混淆执行、机器码签发
 
 api/                Vercel 函数入口，每个路由一个文件（一行转发）
-  health.js  plans.js  license.js  machine.js  obfuscate.js
+  health.js  plans.js  license.js  machine.js  free-key.js  obfuscate.js
 
 vercel/             Vercel 接入层
   entry.js          共用入口：上传预检 / CPU 预算记账 / 流式回执 / health 上报

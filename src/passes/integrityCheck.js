@@ -133,35 +133,21 @@ export default function integrityCheck(ast, options, ctx) {
 // 三处口径曾经各不相同，于是这个洞一直没被发现——entryCandidates 传的是函数节点
 // （查得到），哈希面传的是语句节点（查不到），看着同一份代码，结果不同。
 //
-// 已知未修：max 预设产物一加载就抛 `console[...] is not a function`。
+// 这三条判据（vmStubbed）就是那一笔的收尾（2026-10-11 复核：`vmStubbed` 已把三条搬走
+// 路径全部排除在哈希面之外；max 预设 × 中文/Mangled × seed 9 的产物都能正常加载运行，
+// consoleStub 只是把 console 置空，不再出现投毒抛错）。
 //
-// 2026-10-01 用受控探针把范围收敛到两个开关的组合。注意这与中文命名无关，
-// max + Mangled 同样失败：
-//
-//   wasmInterpreter × objectKeyEncoding
-//       T / T  -> 抛错          F / T  -> 正常（wasmInterpreter:false）
-//       T / F  -> 正常          F / F  -> 正常
-//   叠加：vmProtection:false -> 正常；vmThreshold=1e9（无函数搬进 VM）-> 正常；
-//        debugProtection / stringScatter /
-//        stringArrayCallsTransform 都不影响。
-//        （当时还逐个试过 renameProperties；该布尔项已于 2026-10-09 并入 nameStyle 的
-//         -props 档位，现在要复现这一项请用 nameStyle: '<档>-props'。）
-//
-// 机制推断：vm 先跑（obfuscate.js:286）把函数体换成字节码 + 桥接桩，objectKeys
-// 后跑（:296）把 obj.log 改成 obj["l"+"og"]——改的是宿主侧那具桩，而字节码里记
-// 的还是原属性名，两边对不上，模块解出来就是错的值。
-//
-// 已排除的方向（都实测过，不要重复）：
-//   - 不是哈希面口径：运行期 hook Function.prototype.toString 逐函数比对，哈希全过。
-//   - 不是密钥耦合：健康载体实测 final - okBase = 0（dk 正确），产物照样抛错。
-//   - 不是字符串池：stringScatter / stringArrayCallsTransform 都不影响。
-//   - 不是本 pass 独有：integrityCheck:false 之所以"能修好"，是因为它顺带改变了
-//     谁在写属性访问，不是它本身有问题。
-//
-// 下一步：查 objectKeys 的 insideVmFunction 守卫（passes/vmBoundary.js）为什么
-// 没拦住 wasmInterpreter 路径。登记发生在 vm.js 的 compiledSet.add(fn)。已试过在
-// insideVmFunction 里补判 __wasmVmMeta / __vmMeta，**无效**——单测显示守卫对带
-// __wasmVmMeta 的函数，其内部节点仍返回 false。真正原因尚未找到，不要重复此路。
+// 下面留着的是当时定位过程的账，因为"看着同一份代码、结果不同"这类口径漂移还会再犯，
+// 但结论已经是历史——**不要**再照它去查 objectKeys 的 insideVmFunction：
+//   · 症状：产物加载即抛 `console[...] is not a function`，与中文命名无关；
+//   · 触发组合：wasmInterpreter × objectKeyEncoding 同时开；vmProtection:false 或把
+//     vmThreshold 调大（没有函数搬进 VM）时不复现；debugProtection / stringScatter /
+//     stringArrayCallsTransform 都不影响；
+//   · 机制：vm 先跑（obfuscate.js 的 pass 顺序）把函数体换成字节码 + 桥接桩，objectKeys
+//     之后改的是宿主侧那具桩，而字节码里记的还是原属性名，两边对不上；
+//   · 已排除的方向：哈希面口径（运行期 hook Function.prototype.toString 逐函数比对全过）、
+//     密钥耦合（健康载体实测 final - okBase = 0）、字符串池、以及"本 pass 独有"
+//     （integrityCheck:false 之所以"能修好"，是因为它顺带改了谁在写属性访问）。
 //
 // 该问题不静默：test/chinese-names.js 的「完整预设矩阵」把它钉成一条失败断言。
 const vmStubbed = (s) => !!(s.__vmMeta || s.__wasmCompiled

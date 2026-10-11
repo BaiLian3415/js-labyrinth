@@ -22,7 +22,7 @@
  * 逐次随机，两次混淆得到的引导代码不同。
  */
 import rand from '../utils/rand.js';
-const { randInt, randHex } = rand;
+const { randInt, randHex, randAlpha } = rand;
 import shell from './shell.js';
 
 /**
@@ -54,7 +54,8 @@ function randomizeNames(src, used, prefix) {
     // 字节码形态的固定名：密文字节码、原语表、常量池、局部表。同样逐构建随机化——
     // 留着就是"这个外壳是字节码形态"的一处字面量指纹。
     // 解释器本体不在名单里：它整个待在自混淆流水线之外（见 shell.js 的说明），
-    // randomizeNames 根本够不着；它的名字由 makeShellLayer 自建前缀 + 9 位 hex。
+    // randomizeNames 根本够不着；它的名字由 makeShellLayer 自建「前缀 + 9~13 位 hex」
+    // （长度也逐构建随机，免得固定位宽本身成为可 grep 的形状指纹）。
     // 解释器内部的短名（_w/_t/_c/_k/…）刻意不带 _0 前缀，也不在名单里：\b 词边界
     // 匹配不到，且它们属于「通用解释器」这一固定形态，变化由名字池与操作码表承担。
     '_0bw', '_0bt', '_0bc', '_0bl',
@@ -239,7 +240,14 @@ export function guardSource(opts) {
   const nH = uk();
   const nK = uk();
   // 随机字面量就是比对锚点：盐由它在运行期重算，与构建期写下的 clean 比对。
-  const nonce = 'jr' + randHex(16) + randInt(0x1000, 0xffff).toString(36);
+  //
+  // 形状必须逐构建随机（2026-10-11 改）。原先写死 `'jr'` 前缀：这个字面量落在
+  // 产物**第一条语句**里，不受 mangle / shell / nameStyle 任何一层影响，等于给
+  // 每条产物盖了一个可 grep 的签名——实测 12/12 seed、三种 shellForm 全部命中
+  // `/"jr[0-9a-f]{16}[0-9a-z]{3}"/`。锚点只需要「随机且够长」，不需要固定形状，
+  // 所以前缀、hex 段长度、base36 尾巴三处都随机（总长 17~26）。
+  const nonce = randAlpha(randInt(2, 4)) + randHex(randInt(12, 18))
+    + randInt(0x1000, 0xffff).toString(36);
   // 每次构建换一种等价写法（见 FNV_FORMS）。clean 仍由 canonical fnv32 算——三种写法
   // 与它逐位相等，所以引导运行期重算出来的值必须等于它，对不上就是产物被改过。
   const fnvForm = FNV_FORMS[randInt(0, FNV_FORMS.length - 1)];
@@ -298,7 +306,12 @@ export function guardLayer(code, opts) {
       salt: g.salt, saltVar: g.saltVar, wrapped: false, nonce: g.nonce,
     };
   }
-  const mode = { cjs: !opts.esm && !!opts.cjs, esm: !!opts.esm, saltVar: g.saltVar, salt: g.salt };
+  // usedNames 一并传下去：外壳层的解释器/JSFuck 全局名要避免与产物已有名字撞名
+  // （见 shell.js 里 bcFn 的守卫）。引导层自己也是壳，漏传就等于守卫失效。
+  const mode = {
+    cjs: !opts.esm && !!opts.cjs, esm: !!opts.esm, saltVar: g.saltVar, salt: g.salt,
+    identifierPrefix: ctx.identifierPrefix, usedNames: ctx.usedNames,
+  };
   let pre = '';
   if (opts.shellForm === 'jsfuck') {
     // 与 shellWrap 同一套：核心预置不进流水线（引导层本来就不进），名字先注册

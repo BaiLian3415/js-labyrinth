@@ -93,16 +93,22 @@ section('增强保护：引导层自检 / 碎片化 / Anti-LLM');
   ok(obfuscate(src, { preset: 'max', seed: 4242 }).code === r.code, '同 seed 产物逐字节可复现');
 
   // 防篡改：改引导里的锚点字面量一位 → 盐错位 → 外壳密钥流解不开
+  //
+  // 锚点的形状逐构建随机（2026-10-11 起前缀与长度都不固定，不再有 'jr' 前缀），
+  // 所以按「产物里第一条 `var <名>="<纯字母数字 token>"`」来定位：引导层永远排在
+  // 最前面，而壳里的 base64 段带 +/= 且长度远超 30，不会误命中。
+  const ANCHOR_RE = /^\s*var [A-Za-z_$][\w$]*="([A-Za-z][A-Za-z0-9]{14,30})";?\s*$/m;
   {
-    const m = r.code.match(/"(jr[0-9a-f]{16}[0-9a-z]+)"/);
+    const m = r.code.match(ANCHOR_RE);
     ok(!!m, '产物里找得到引导锚点字面量', m ? m[1] : '(未匹配)');
     let broken = 'RUNS';
     let badOut = '';
     if (m) {
       const v = m[1];
-      const hex = '0123456789abcdef';
-      const tampered = r.code.replace('"' + v + '"',
-        '"' + v.slice(0, -1) + hex[(hex.indexOf(v[v.length - 1]) + 1) % 16] + '"');
+      // 换首字符而不是尾字符：尾巴是 base36，换"下一位"可能恰好换回同一个字符，
+      // 那样产物照跑，断言会假失败。首字符确定换成另一个字母即可。
+      const swapped = (v[0] === 'Z' ? 'Y' : 'Z') + v.slice(1);
+      const tampered = r.code.replace('"' + v + '"', '"' + swapped + '"');
       try {
         const got = runNode(tampered, 'enh-tamper.js');
         badOut = '输出 ' + String(got).slice(0, 40);
@@ -114,7 +120,8 @@ section('增强保护：引导层自检 / 碎片化 / Anti-LLM');
   // 防删：整行删掉引导 → 盐变量未定义 + 健康载体没人写 → 产物失效
   {
     const lines = r.code.split('\n');
-    const gi = lines.findIndex((l) => /= ?"jr[0-9a-f]{16}/.test(l));
+    const am = r.code.match(ANCHOR_RE);
+    const gi = am ? lines.findIndex((l) => l.includes('"' + am[1] + '"')) : -1;
     ok(gi >= 0, '找得到引导所在行', '第 ' + (gi + 1) + ' 行');
     let broken = 'RUNS';
     if (gi >= 0) {
@@ -147,7 +154,11 @@ section('增强保护：引导层自检 / 碎片化 / Anti-LLM');
     ok(lines[0].startsWith('#!'), 'hashbang 仍在第一行');
     ok(/^\(function\(\)\{/.test(lines[1] || ''), '引导紧随 hashbang（IIFE 在第 2 行开）',
       '第 2 行 = ' + JSON.stringify((lines[1] || '').slice(0, 40)));
-    ok(/jr[0-9a-f]{16}/.test(lines.slice(0, 8).join('\n')), '引导 token 落在文件头部');
+    // 锚点字面量的前缀与长度逐构建随机（2026-10-11 起不再有 'jr' 固定前缀——
+    // 那正是可 grep 的签名），所以这里只钉形状：引导早期那条
+    // `var <名>="<≥12 个可见字符的随机串>"`。
+    ok(/var [A-Za-z_$][\w$]*="[\x21-\x7e]{12,}"/.test(lines.slice(0, 8).join('\n')),
+      '引导锚点字面量落在文件头部');
     ok(runNode(sh.code, 'enh-shebang.js').trim() === 'ok', '带 hashbang 的产物可执行');
   }
 }
