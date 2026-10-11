@@ -172,7 +172,8 @@ export function unpackModules(packed, keyWords) {
  * 收集一个模块对外导出的名字（不含 default）。
  *
  * 覆盖项目里实际用到的几种形态：`export { a, b as c }`、`export { a } from './x.js'`、
- * `export const/let/var/function/class NAME`、`export async function NAME`。
+ * `export const/let/var/function/class NAME`、`export async function NAME`、
+ * `export function* NAME`（生成器）。
  * `export * from` 一旦出现就无法静态枚举，这里直接抛——构建期报错远好过产物里
  * 静默少一个导出（那样只会在运行到某条路径时才炸）。
  *
@@ -210,8 +211,14 @@ export function collectExportNames(code) {
     }
   }
 
-  // export const/let/var/function/class/async function NAME
-  const declRe = /^\s*export\s+(?:async\s+)?(?:const|let|var|function|class)\s+([A-Za-z_$][\w$]*)/gm;
+  // export const/let/var/function/class NAME，含 async 与生成器（function*）两种修饰。
+  //
+  // `function*` 这一档是 2026-10-11 补的：`src/utils/cjk.js` 里 `export function* cjkNames`
+  // 之前不被匹配，于是 dist 里 utils/cjk.js 的 stub 少一个导出，而 utils/naming.js 正好
+  // import 它——浏览器执行形态（`build:web`）整份加密核心在 materialize 时链接期报错
+  // （`does not provide an export named 'cjkNames'`）。只有 `npm run verify:enc` 抓得到，
+  // 而它不在 `npm test` 的清单里，所以这个洞一直没人发现；云端形态不受影响（核心不下发）。
+  const declRe = /^\s*export\s+(?:async\s+)?(?:const|let|var|function|class)\s*\*?\s*([A-Za-z_$][\w$]*)/gm;
   while ((m = declRe.exec(code))) names.add(m[1]);
 
   return [...names].sort();

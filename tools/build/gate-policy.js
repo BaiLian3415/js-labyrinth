@@ -14,8 +14,10 @@
  * 名单怎么来的：不是拍脑袋列的，是从 web/app.js 的静态 import 链做可达性分析
  * 算出来的。起点是 app.js 顶部那批静态 import（options-meta / options-gate / plan /
  * license-web / i18n / platform / utils-zip / version / options / presets），跟随相对
- * 说明符展开。截至 2026-09-27：src/ 下 58 个模块里 16 个必须公开，其余 42 个受保护。
+ * 说明符展开。截至 2026-10-11：src 下 71 个模块里 16 个必须公开，其余 55 个受保护。
  * 改动 app.js 的静态 import 或这几处的依赖后必须重算，否则就是上面那种漂移。
+ * build-web.js 里那条「已下发但没进 modulepreload」的告警就是这条不变式的自动化
+ * 版本——它一响，先怀疑本名单，再怀疑 collectModules 的扫描。
  * 复核方法（不需要解析器，与 build-web.js 的 collectModules 同一套正则思路）：
  *   遍历 src 下的 .js（id 相对 src/，如 "passes/vm.js"），逐个喂给
  *   isGatedModuleId，确认 public 数与 dist/src/ 实际下发的文件数一致。
@@ -39,6 +41,15 @@ export const GATED_PREFIXES = [
   // 原样发给客户端——既坏了「核心不在产物里」这条，也让它形同虚设。
   // 2026-09-30 由 dist 核对发现：dist/src/htmle.js 确实被下发了。
   'htmle.js',
+  // target-runtime.js：产物目标运行时的判定（workerd 限制、时钟冻结、profile）。
+  // 它唯一的引用者是 src/obfuscate.js，而 obfuscate.js 本身是受保护模块——浏览器侧
+  // 从 web/app.js 出发根本够不着它，所以它属于核心、不属于公开模块。
+  //
+  // 2026-10-11 由构建期的「已下发但没进 modulepreload」告警发现：它不在 app.js 的
+  // 静态 import 链上，也没有任何公开模块引用它，却因为没进本名单被照发进
+  // dist/src/ 约 4 KB 死重量（浏览器永远不会去取，所以那条告警说的"串行往返"
+  // 在这个例子里不成立，真正的问题是白下发 + 一条会被无视的告警）。
+  'target-runtime.js',
   'passes/',
   'ast/',
   'utils/',

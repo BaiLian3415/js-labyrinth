@@ -343,7 +343,15 @@ npm run build:web:cloud  # 云端执行形态（核心不进产物，Vercel 部�
 JSLB_SKIP_LIVE=1 npm test        # 全绿才收工
 node test/passes-basic.js        # 改 pass 时先跑这组
 node test/vm.js                  # 改 vm 时先跑这组
+npm run build:web && npm run verify:enc   # 改 shell / 加密层 / tools/build 后必跑
 ```
+
+`verify:enc` 那一条不是可选项：`npm test` 只覆盖 `src/` 的明文源码，碰不到 `dist/`，
+而模块体加密层的静默失败模式（导出名枚举漏一个、相对说明符改写漏一种形态）在构建期
+一个都拦不住。2026-10-11 就是它揪出来的：`enc-loader` 的静态导出枚举不认
+`export function*`，`utils/cjk.js` 的 `cjkNames` 因此没进 stub，浏览器执行形态
+（`build:web`）整份加密核心在 materialize 时链接期报错——而 `npm test` 全绿。
+改 `tools/build/` 下任何东西之后，跑一遍再收工。
 
 新增/删除 pass 或选项时同步检查：`src/pipeline.js` 的注册顺序、
 `test/selftest.js` 的文件清单、`DEPLOY.md` 与 `README.md` 的说明。
