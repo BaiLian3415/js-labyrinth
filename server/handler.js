@@ -35,8 +35,11 @@ import platform from '../src/platform.js';
 import licenseWeb from '../src/license-web.js';
 import pipeline from '../src/pipeline.js';
 import plan from '../src/plan.js';
+import pricing from '../src/pricing.js';
+import orders from '../src/orders.js';
 import i18n from '../src/i18n.js';
 import { VERSION } from '../src/version.js';
+import { timingSafeEqualText } from '../src/utils/hash.js';
 
 const { runJob } = pipeline;
 const { t } = i18n;
@@ -427,6 +430,302 @@ async function handleLicense(request) {
 }
 
 /** 路由分发。静态资源不在 /api/ 前缀下，由 Worker 的 assets 绑定接管。 */
+/**
+ * 收款与客服信息。全部可用环境变量覆盖，默认值是"内置收款码 + 人工核验"这一形态
+ * ——个人收款码没有商户回调，这是默认能跑通的那条路。
+ *
+ *   JSLB_PAY_QR          收款码图片路径（默认 /assets/pay-wechat.png，随 dist 下发）
+ *   JSLB_PAY_PAYEE       收款方显示名（买家核对用）
+ *   JSLB_PAY_CONTACT     客服联系方式（可选，显示在订单页）
+ *   JSLB_ADMIN_TOKEN     管理端令牌（配了才启用 /api/admin-order）
+ *   JSLB_PAY_WEBHOOK_SECRET  收款回调签名密钥（配了才启用 /api/pay-notify）
+ */
+function payInfo(env) {
+  const e = env || {};
+  return {
+    qr: String(e.JSLB_PAY_QR || '/assets/pay-wechat.png'),
+    payee: String(e.JSLB_PAY_PAYEE || 'JsLabyrinth'),
+    contact: String(e.JSLB_PAY_CONTACT || ''),
+    auto: !!e.JSLB_PAY_WEBHOOK_SECRET,
+    admin: !!e.JSLB_ADMIN_TOKEN,
+  };
+}
+
+/**
+ * 订单来源标识，用于限流。
+ *
+ * 设备码优先（同一浏览器的多次下单算一个人），没有就退回 X-Forwarded-For 的首个
+ * 地址（Vercel 上这是真实客户端 IP）。两者都没有时归到 anon——**不阻断下单**，
+ * 只是少一层限流：把"取不到来源"当成攻击会让正常用户（隐私模式、代理）下不了单。
+ */
+function orderScope(request) {
+  const dev = request.headers.get('x-jslb-device') || cookieDevice(request);
+  if (dev) return 'd:' + String(dev).slice(0, 40);
+  const xff = String(request.headers.get('x-forwarded-for') || '').split(',')[0].trim();
+  if (xff) return 'i:' + xff.slice(0, 45);
+  return 'anon';
+}
+
+/** 管理端令牌校验。未配置令牌时一律拒绝——"没配就等于谁都能管"是不能接受的默认。 */
+function adminOk(env, request) {
+  const want = String((env && env.JSLB_ADMIN_TOKEN) || '');
+  if (!want) return false;
+  const got = String(request.headers.get('authorization') || '').replace(/^Bearer\s+/i, '').trim();
+  return !!got && timingSafeEqualText(want, got);
+}
+
+/** 把订单转成给买家看的响应体（金额另给格式化文本，界面不用自己算分）。 */
+function orderPayload(order, extra) {
+  return {
+    ...order,
+    planName: plan.displayName(order.plan),
+    amountText: pricing.formatFen(order.amount, true),
+    currency: order.currency || pricing.CURRENCY,
+    ...(extra || {}),
+  };
+}
+
+/** /api/pricing：价目表 + 收款信息。定价页一次拿全，不用两次往返。 */
+function handlePricing(request, env) {
+  return json({
+    ok: true,
+    currency: pricing.CURRENCY,
+    plans: pricing.rows(plan),
+    terms: Object.keys(pricing.TERMS).map((id) => ({
+      id, days: pricing.TERMS[id].days, kind: pricing.TERMS[id].kind,
+    })),
+    pay: payInfo(env),
+  }, 200, corsHeaders(env));
+}
+
+/**
+ * /api/order：创建订单、提交付款凭证、查询/取卡。
+ *
+ * 三个动作都在这一条路由上（Vercel 按文件建函数，多一个动作就多一个函数文件）：
+ *   POST {action:'create', plan, term}                  → 建单，**只在这次响应里**给查询码
+ *   POST {action:'claim', id, q, txid, amount, ...}     → 提交凭证（需查询码）
+ *   POST {action:'pickup', id, q} / GET ?id=&q=         → 查状态；已签发时取卡
+ */
+async function handleOrder(request, env) {
+  const kv = platform.getKv();
+  const cors = corsHeaders(env);
+  const url = new URL(request.url);
+
+  if (request.method === 'GET') {
+    const id = url.searchParams.get('id') || '';
+    const q = url.searchParams.get('q') || '';
+    const order = await orders.loadOrder(kv, id);
+    const r = orders.pickupView(order, q, Date.now());
+    if (!r.ok) {
+      const status = r.reason === 'notFound' ? 404 : 403;
+      return json({ ok: false, reason: r.reason, message: t(orders.reasonKey(r.reason)) }, status, cors);
+    }
+    return json({ ok: true, order: orderPayload(r.view) }, 200, cors);
+  }
+
+  const body = await readBody(request);
+  const action = String((body && body.action) || 'create').toLowerCase();
+
+  if (action === 'create') {
+    const kvOk = !!kv;
+    if (!kvOk) {
+      // 没有持久化存储时**不建单**：订单活不过一个实例，买家付了钱却查不到单，
+      // 那比"暂时不能下单"糟得多。这里明确报错并让运维去配 Redis。
+      return json({ ok: false, reason: 'noStore', message: t('orderErrStore') }, 503, cors);
+    }
+    const scope = orderScope(request);
+    const rl = await orders.rateLimit(kv, scope, Date.now(), {});
+    if (!rl.ok) {
+      return json({ ok: false, reason: 'rateLimited', message: t('orderErrRate') }, 429, cors);
+    }
+    const made = orders.createOrder({
+      planName: String((body && body.plan) || '').toLowerCase(),
+      term: String((body && body.term) || '').toLowerCase(),
+      now: Date.now(),
+      device: scope,
+    });
+    if (!made.ok) {
+      return json({ ok: false, reason: made.reason, message: t(orders.reasonKey(made.reason)) }, 400, cors);
+    }
+    const saved = await orders.saveOrder(kv, made.order);
+    await orders.indexAdd(kv, made.order.id);
+    if (!saved) return json({ ok: false, reason: 'noStore', message: t('orderErrStore') }, 503, cors);
+    return json({
+      ok: true,
+      order: orderPayload(made.order),
+      // 查询码只在这里出现一次：它是取卡凭据，页面要提示用户保存
+      queryCode: made.queryCode,
+      pay: payInfo(env),
+    }, 200, cors);
+  }
+
+  if (action === 'claim') {
+    const id = String((body && body.id) || '').toUpperCase();
+    const order = await orders.loadOrder(kv, id);
+    if (!order) return json({ ok: false, reason: 'notFound', message: t('orderErrNotFound') }, 404, cors);
+    // 先验查询码再改状态：只凭订单号就能提交凭证的话，别人可以拿它的订单号乱提交，
+    // 把真实买家挤成"待核验"状态。
+    const auth = orders.pickupView(order, body && body.q, Date.now());
+    if (!auth.ok) return json({ ok: false, reason: auth.reason, message: t(orders.reasonKey(auth.reason)) }, 403, cors);
+    const claimed = orders.applyClaim(order, {
+      txid: body && body.txid,
+      amount: body && body.amount,
+      paidAt: body && body.paidAt,
+      payer: body && body.payer,
+      note: body && body.note,
+    }, Date.now());
+    if (!claimed.ok) {
+      return json({ ok: false, reason: claimed.reason, message: t(orders.reasonKey(claimed.reason)) }, 400, cors);
+    }
+    const txid = orders.normalizeTxid(body && body.txid);
+    if (txid && !(await orders.claimTxid(kv, txid, order.id))) {
+      // 回滚刚写进去的凭证，让买家能改正单号重提，而不是卡在"待核验"里
+      order.status = 'pending';
+      order.claim = null;
+      await orders.saveOrder(kv, order);
+      return json({ ok: false, reason: 'txidUsed', message: t('orderErrTxidUsed') }, 409, cors);
+    }
+    await orders.saveOrder(kv, order);
+    const view = orders.pickupView(order, body && body.q, Date.now());
+    return json({ ok: true, order: orderPayload(view.view) }, 200, cors);
+  }
+
+  if (action === 'pickup') {
+    const id = String((body && body.id) || '').toUpperCase();
+    const order = await orders.loadOrder(kv, id);
+    const r = orders.pickupView(order, body && body.q, Date.now());
+    if (!r.ok) {
+      const status = r.reason === 'notFound' ? 404 : 403;
+      return json({ ok: false, reason: r.reason, message: t(orders.reasonKey(r.reason)) }, status, cors);
+    }
+    return json({ ok: true, order: orderPayload(r.view) }, 200, cors);
+  }
+
+  return json({ ok: false, reason: 'badAction', message: t('orderErrGeneric') }, 400, cors);
+}
+
+/**
+ * /api/pay-notify：收款回调（微信支付 V3 / 服务商 / 自建对账脚本都能用）。
+ *
+ * 签名是 HMAC-SHA256(JSLB_PAY_WEBHOOK_SECRET, **原始请求体**)，放在
+ * `X-JSLB-Signature` 头里。用原始文本而不是重新序列化的对象：键序与空白一变，
+ * 签名必然对不上，而那种失败会被误判成"密钥配错了"。
+ *
+ * 回调成功即幂等签发卡密，但**响应里不回卡密**——回调方不是买家，卡密只经
+ * 查询码交付。
+ */
+async function handlePayNotify(request, env) {
+  const cors = corsHeaders(env);
+  const raw = await request.text().catch(() => '');
+  const provided = request.headers.get('x-jslb-signature') || request.headers.get('x-signature') || '';
+  if (!orders.verifyWebhook(env && env.JSLB_PAY_WEBHOOK_SECRET, raw, provided)) {
+    return json({ ok: false, reason: 'badSignature', message: t('orderErrSignature') }, 401, cors);
+  }
+  let body = null;
+  try { body = JSON.parse(raw); } catch (e) { body = null; }
+  if (!body || !body.orderId) {
+    return json({ ok: false, reason: 'badJson', message: t('orderErrGeneric') }, 400, cors);
+  }
+  const kv = platform.getKv();
+  const order = await orders.loadOrder(kv, String(body.orderId).toUpperCase());
+  if (!order) return json({ ok: false, reason: 'notFound', message: t('orderErrNotFound') }, 404, cors);
+  const paid = orders.applyPayment(order, {
+    txid: body.txid, amount: body.amount, paidAt: body.paidAt, source: 'webhook', note: body.note,
+  }, Date.now());
+  if (!paid.ok) {
+    return json({ ok: false, reason: paid.reason, message: t(orders.reasonKey(paid.reason)) }, 409, cors);
+  }
+  const txid = orders.normalizeTxid(body.txid);
+  if (txid && !(await orders.claimTxid(kv, txid, order.id))) {
+    return json({ ok: false, reason: 'txidUsed', message: t('orderErrTxidUsed') }, 409, cors);
+  }
+  const issued = orders.issueKey(order, { keyB64: licenseWeb.activeCodeKey() });
+  if (!issued.ok) {
+    return json({ ok: false, reason: issued.reason, message: t(orders.reasonKey(issued.reason)) }, 500, cors);
+  }
+  await orders.saveOrder(kv, order);
+  return json({ ok: true, orderId: order.id, status: order.status, fresh: issued.fresh }, 200, cors);
+}
+
+/**
+ * /api/admin-order：管理端（人工核验付款、列表、拒绝）。
+ *
+ * 认证是 Bearer 令牌 + 定长比较。没配 JSLB_ADMIN_TOKEN 时这个端点恒为 403——
+ * 默认关闭，而不是默认开启等运维想起来配。
+ *
+ *   POST {action:'list', status?, limit?}      列出最近订单（不含查询码散列）
+ *   POST {action:'get', id}                    单张订单详情
+ *   POST {action:'confirm', id, txid?, amount?, note?}  确认收款 → 幂等签发，返回卡密
+ *   POST {action:'reject', id, reason}         拒绝订单
+ */
+async function handleAdminOrder(request, env) {
+  const cors = corsHeaders(env);
+  if (!adminOk(env, request)) {
+    return json({ ok: false, reason: 'forbidden', message: t('orderErrForbidden') }, 403, cors);
+  }
+  const body = await readBody(request);
+  const action = String((body && body.action) || 'list').toLowerCase();
+  const kv = platform.getKv();
+  if (!kv) return json({ ok: false, reason: 'noStore', message: t('orderErrStore') }, 503, cors);
+
+  if (action === 'list') {
+    const want = String((body && body.status) || '').toLowerCase();
+    const limit = Math.min(Number((body && body.limit) || 50) || 50, orders.MAX_INDEX);
+    const ids = (await orders.indexList(kv)).slice(0, limit);
+    const list = [];
+    for (const id of ids) {
+      const o = await orders.loadOrder(kv, id);
+      if (!o) continue;
+      const view = orders.adminView(o, Date.now());
+      if (want && view.status !== want) continue;
+      list.push(view);
+    }
+    return json({ ok: true, count: list.length, orders: list }, 200, cors);
+  }
+
+  if (action === 'get') {
+    const o = await orders.loadOrder(kv, String((body && body.id) || '').toUpperCase());
+    if (!o) return json({ ok: false, reason: 'notFound', message: t('orderErrNotFound') }, 404, cors);
+    return json({ ok: true, order: orders.adminView(o, Date.now()) }, 200, cors);
+  }
+
+  if (action === 'confirm') {
+    const o = await orders.loadOrder(kv, String((body && body.id) || '').toUpperCase());
+    if (!o) return json({ ok: false, reason: 'notFound', message: t('orderErrNotFound') }, 404, cors);
+    const paid = orders.applyPayment(o, {
+      txid: body && body.txid, amount: body && body.amount, paidAt: body && body.paidAt,
+      source: 'admin', note: body && body.note,
+    }, Date.now());
+    if (!paid.ok) {
+      return json({ ok: false, reason: paid.reason, message: t(orders.reasonKey(paid.reason)) }, 409, cors);
+    }
+    const txid = orders.normalizeTxid((body && body.txid) || (o.claim && o.claim.txid));
+    if (txid && !(await orders.claimTxid(kv, txid, o.id))) {
+      return json({ ok: false, reason: 'txidUsed', message: t('orderErrTxidUsed') }, 409, cors);
+    }
+    const issued = orders.issueKey(o, { keyB64: licenseWeb.activeCodeKey() });
+    if (!issued.ok) {
+      return json({ ok: false, reason: issued.reason, message: t(orders.reasonKey(issued.reason)) }, 500, cors);
+    }
+    await orders.saveOrder(kv, o);
+    // 管理端拿得到卡密：买家丢查询码时客服要能补发
+    return json({ ok: true, order: orders.adminView(o, Date.now()), key: issued.key, fresh: issued.fresh }, 200, cors);
+  }
+
+  if (action === 'reject') {
+    const o = await orders.loadOrder(kv, String((body && body.id) || '').toUpperCase());
+    if (!o) return json({ ok: false, reason: 'notFound', message: t('orderErrNotFound') }, 404, cors);
+    const rej = orders.rejectOrder(o, (body && body.reason) || '', Date.now());
+    if (!rej.ok) {
+      return json({ ok: false, reason: rej.reason, message: t(orders.reasonKey(rej.reason)) }, 409, cors);
+    }
+    await orders.saveOrder(kv, o);
+    return json({ ok: true, order: orders.adminView(o, Date.now()) }, 200, cors);
+  }
+
+  return json({ ok: false, reason: 'badAction', message: t('orderErrGeneric') }, 400, cors);
+}
+
 async function handleApi(request, env) {
   const url = new URL(request.url);
   const path = url.pathname.replace(/\/+$/, '') || '/api';
@@ -446,12 +745,38 @@ async function handleApi(request, env) {
   }
 
   if (path === '/api/plans') {
-    // 套餐对照表是公开信息，发卡方的定价页可以直接取
+    // 套餐对照表是公开信息，发卡方的定价页可以直接取。
+    // 2026-10-11 起一并带上价格与收款信息：定价页只要拿到这一条就能渲染整页，
+    // 于是"老部署只有 /api/plans、没有 /api/pricing"也不会白屏（界面里有回落）。
     return json({
       ok: true,
       plans: plan.rows(),
+      pricing: pricing.rows(plan),
+      pay: payInfo(env),
       web: platform.getWebConfig(),
     }, 200, corsHeaders(env));
+  }
+
+  if (path === '/api/pricing') {
+    return handlePricing(request, env);
+  }
+
+  if (path === '/api/order') {
+    const res = await handleOrder(request, env);
+    for (const [k, v] of Object.entries(corsHeaders(env))) res.headers.set(k, v);
+    return res;
+  }
+
+  if (path === '/api/pay-notify' && request.method === 'POST') {
+    const res = await handlePayNotify(request, env);
+    for (const [k, v] of Object.entries(corsHeaders(env))) res.headers.set(k, v);
+    return res;
+  }
+
+  if (path === '/api/admin-order') {
+    const res = await handleAdminOrder(request, env);
+    for (const [k, v] of Object.entries(corsHeaders(env))) res.headers.set(k, v);
+    return res;
   }
 
   if (path === '/api/free-key') {

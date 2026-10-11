@@ -31,6 +31,7 @@ import optionsMeta from './src/options-meta.js';
 import { VALUE_OPTIONS } from './src/options-meta.js';
 import optionsGate from './src/options-gate.js';
 import plan from './src/plan.js';
+import pricing from './src/pricing.js';
 import licenseWeb from './src/license-web.js';
 import i18n from './src/i18n.js';
 import platform from './src/platform.js';
@@ -124,6 +125,12 @@ const state = {
   paneOrder: [],         // 输入/输出面板的 id 顺序
   files: [],            // {name, code, out, status, stats, info, warnings, error}
   active: 0,
+  // 定价页与购买订单（2026-10-11）：prices/pay 来自 /api/pricing，order 是当前订单
+  // （含查询码，进 localStorage），orderTimer 是状态轮询句柄。
+  prices: null,
+  pay: null,
+  order: null,
+  orderTimer: 0,
 };
 
 const $ = (id) => document.getElementById(id);
@@ -1753,6 +1760,9 @@ function saveState() {
       touched: [...state.touched],
       cardOrder: state.cardOrder,
       paneOrder: state.paneOrder,
+      // 订单号 + 查询码：买家关掉页面后还能回来取卡。查询码是凭据，但它只对
+      // "这一张订单"有效，且没有它就取不到卡——存本地换来的是"刷新不丢单"。
+      order: state.order ? { id: state.order.id, q: state.order.q } : null,
     }));
   } catch (e) { /* 隐私模式下写不了，不影响使用 */ }
 }
@@ -1772,6 +1782,11 @@ function loadState() {
       if (Array.isArray(s.touched)) state.touched = new Map(s.touched);
       if (Array.isArray(s.cardOrder)) state.cardOrder = s.cardOrder.filter((x) => typeof x === 'string');
       if (Array.isArray(s.paneOrder)) state.paneOrder = s.paneOrder.filter((x) => typeof x === 'string');
+      // 上次的订单：只恢复订单号与查询码，状态等打开定价页时向服务端问（本地不缓存
+      // 卡密——它可能在别处已激活，也可能已被拒绝）。
+      if (s.order && typeof s.order.id === 'string' && typeof s.order.q === 'string') {
+        state.order = { id: s.order.id, q: s.order.q, view: null };
+      }
     }
     // 授权模块自己也要知道服务地址：机器码是向它要的，界面在 A、机器码去 B 取
     // 就会出现"激活前后两个机器码"。
@@ -1944,6 +1959,369 @@ async function importConfig(file) {
   setStatus(t('guiCfgImported', { n: cfg.applied, skipped: cfg.skipped }), 'ok');
 }
 
+// ---------- 定价页与购买订单 ----------
+
+/**
+ * 购买流程的运行时状态。
+ *
+ * 为什么订单号与查询码要进 localStorage（state.order）：买家付完款常常关掉页面，
+ * 或者换台设备回来取卡。"查询码只显示一次"是安全要求，但如果刷新就丢，正常买家
+ * 会以为钱白付了——所以存在本地，并在定价页顶部提供"继续上次订单"的入口。
+ * （真正的凭据仍在服务端：只凭订单号取不到卡，必须带查询码。）
+ */
+const ORDER_POLL_MS = 6000;
+
+/** 转义：任何拼进 innerHTML 的文本都过一遍（订单号/查询码来自服务端，仍不例外）。 */
+function esc(s) {
+  return String(s == null ? '' : s)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+
+/** 金额显示：价目表里是分，展示成 ¥29.00。 */
+function money(fen) {
+  return '¥' + pricing.formatFen(fen, true);
+}
+
+/**
+ * 周期文案：必须是**字面量**键，不能拼 `'priceTerm' + Capitalized(id)`。
+ * 构建期的 i18n 扫描器只认字面量，拼出来的键它看不见——那种键漏加了文案也没人发现，
+ * 而界面上会直接显示 "priceTermMonth"。
+ */
+const TERM_KEYS = {
+  month: 'priceTermMonth',
+  year: 'priceTermYear',
+  perpetual: 'priceTermPerpetual',
+  once: 'priceTermOnce',
+};
+
+function termLabel(id) {
+  return t(TERM_KEYS[id] || 'priceTermOnce');
+}
+
+/** 订单状态 → 文案 + 颜色类。 */
+function statusInfo(status) {
+  const map = {
+    pending: ['orderStatusPending', 'warn'],
+    claimed: ['orderStatusClaimed', 'warn'],
+    paid: ['orderStatusPaid', 'ok'],
+    issued: ['orderStatusIssued', 'ok'],
+    rejected: ['orderStatusRejected', 'err'],
+    expired: ['orderStatusExpired', 'err'],
+  };
+  const hit = map[status] || [null, ''];
+  return { text: hit[0] ? t(hit[0]) : String(status || ''), kind: hit[1] };
+}
+
+/** 当前套餐（用于在卡片上打"当前套餐"标记）。 */
+function currentPlanName() {
+  const ent = currentEntitlements();
+  return ent && ent.plan ? ent.plan : 'free';
+}
+
+/**
+ * 渲染价目表卡片。
+ *
+ * 价格优先取服务端 /api/pricing（部署方可能改了 payInfo），拿不到就用本地的
+ * src/pricing.js 渲染——后者与前者是同一个模块，所以价格不会两处不一致。
+ */
+function renderPriceGrid() {
+  const host = els.priceGrid;
+  if (!host) return;
+  const rows = (state.prices && state.prices.length) ? state.prices : pricing.rows(plan);
+  const cur = currentPlanName();
+  const pay = state.pay || null;
+
+  host.innerHTML = rows.map((r) => {
+    const isCurrent = r.name === cur;
+    const priceCell = r.free
+      ? '<div class="price-amount"><span class="price-num">' + esc(t('priceFree')) + '</span></div>'
+      : r.contact
+        ? '<div class="price-amount"><span class="price-num price-small">' + esc(t('priceContact')) + '</span></div>'
+        : r.prices.map((p) => {
+          const suffix = p.term === 'month' ? t('pricePerMonth')
+            : p.term === 'year' ? t('pricePerYear') : '';
+          const save = (p.term === 'year' && r.yearlySaving)
+            ? '<span class="price-save">' + esc(t('priceSaving', { pct: Math.round(r.yearlySaving * 100) })) + '</span>'
+            : '';
+          return '<button class="price-opt" type="button" data-plan="' + esc(r.name) + '" data-term="' + esc(p.term) + '"'
+            + (pay === null ? ' disabled' : '') + '>'
+            + '<span class="price-num">¥' + esc(p.text) + '</span>'
+            + '<span class="price-suffix">' + esc(suffix || t('priceOnce')) + '</span>' + save + '</button>';
+        }).join('');
+    const facts = [
+      t('pricePreset') + ': ' + esc(r.presetCeiling || r.preset),
+      t('priceQuota') + ': ' + esc(r.quotaText || ''),
+      t('priceFile') + ': ' + (r.maxFileBytes ? esc(plan.humanBytes(r.maxFileBytes)) : '∞'),
+      t('priceFiles') + ': ' + (r.maxFilesPerRun ? r.maxFilesPerRun : '∞'),
+    ];
+    return '<div class="price-card' + (isCurrent ? ' is-current' : '') + '">'
+      + '<div class="price-head"><h3>' + esc(r.display) + '</h3>'
+      + (isCurrent ? '<span class="price-tag">' + esc(t('priceCurrent')) + '</span>' : '')
+      + '</div>'
+      + '<div class="price-terms">' + priceCell + '</div>'
+      + '<ul class="price-facts">' + facts.map((f) => '<li>' + f + '</li>').join('') + '</ul>'
+      + (r.contact ? '<button class="mini" type="button" disabled>' + esc(t('priceContactAction')) + '</button>' : '')
+      + '</div>';
+  }).join('');
+
+  for (const btn of host.querySelectorAll('.price-opt')) {
+    btn.addEventListener('click', () => startOrder(btn.dataset.plan, btn.dataset.term));
+  }
+}
+
+/** 渲染订单面板：金额 + 收款码 + 订单号/查询码 + 凭证提交 + 状态 + 卡密。 */
+function renderOrderPanel(notice) {
+  const host = els.orderPanel;
+  if (!host) return;
+  const o = state.order && state.order.view;
+  if (!o) { host.hidden = true; host.innerHTML = ''; return; }
+  host.hidden = false;
+  const st = statusInfo(o.status);
+  const pay = state.pay || {};
+  const qr = pay.qr || '/assets/pay-wechat.png';
+  const rows = [];
+  rows.push('<div class="order-head"><h3>' + esc(t('orderTitle', { id: o.id })) + '</h3>'
+    + '<span class="order-status ' + esc(st.kind) + '">' + esc(st.text) + '</span></div>');
+  rows.push('<div class="order-amount"><span>' + esc(t('orderAmount')) + '</span>'
+    + '<strong>' + esc(o.amountText || money(o.amount)) + '</strong></div>');
+  if (o.status === 'pending') {
+    rows.push('<p class="hint">' + esc(t('orderPayHint')) + '</p>');
+    rows.push('<div class="order-pay">'
+      + '<img class="order-qr" src="' + esc(qr) + '" alt="' + esc(t('orderQrAlt')) + '" width="220" height="220">'
+      + '<div class="order-pay-side">'
+      + '<div class="order-kv"><span>' + esc(t('orderPayee')) + '</span><b>' + esc(pay.payee || '') + '</b></div>'
+      + '<div class="order-kv"><span>' + esc(t('orderIdLabel')) + '</span><b class="mono">' + esc(o.id) + '</b></div>'
+      + '<div class="order-kv"><span>' + esc(t('orderQueryLabel')) + '</span><b class="mono">' + esc(state.order.q || '') + '</b></div>'
+      + '<p class="hint">' + esc(t('orderSaveHint')) + '</p>'
+      + '<button class="mini" type="button" id="orderCopyBtn">' + esc(t('orderCopy')) + '</button>'
+      + '</div></div>');
+  }
+  if (o.status === 'pending' || o.status === 'claimed') {
+    rows.push('<div class="order-claim"><h4>' + esc(t('orderClaimTitle')) + '</h4>'
+      + '<label class="row field"><span>' + esc(t('orderTxidLabel')) + '</span>'
+      + '<input id="orderTxid" class="text" type="text" spellcheck="false" placeholder="' + esc(t('orderTxidPh')) + '"></label>'
+      + '<label class="row field"><span>' + esc(t('orderPayerLabel')) + '</span>'
+      + '<input id="orderPayer" class="text" type="text" spellcheck="false"></label>'
+      + '<button class="mini primary" type="button" id="orderClaimBtn">' + esc(t('orderSubmit')) + '</button></div>');
+    rows.push('<p class="hint">' + esc(pay.auto ? t('orderAutoNote') : t('orderManualNote')) + '</p>');
+  }
+  if (o.status === 'issued' && o.key) {
+    rows.push('<div class="order-key"><h4>' + esc(t('orderKeyTitle')) + '</h4>'
+      + '<code class="mono" id="orderKeyText">' + esc(o.key) + '</code>'
+      + '<p class="hint">' + esc(t('orderKeyHint')) + '</p>'
+      + '<button class="mini primary" type="button" id="orderActBtn">' + esc(t('orderActivateNow')) + '</button></div>');
+  }
+  if (o.status === 'rejected' && o.rejectedReason) {
+    rows.push('<p class="hint err">' + esc(o.rejectedReason) + '</p>');
+  }
+  if (notice) rows.push('<p class="hint err">' + esc(notice) + '</p>');
+  host.innerHTML = rows.join('');
+
+  const copyBtn = $('orderCopyBtn');
+  if (copyBtn) {
+    copyBtn.addEventListener('click', async () => {
+      const text = o.id + ' / ' + (state.order.q || '');
+      try {
+        await navigator.clipboard.writeText(text);
+        setStatus(t('orderCopied'), 'ok');
+      } catch (e) {
+        // 剪贴板 API 在非安全上下文不可用：退化成提示用户手动抄
+        setStatus(o.id + ' / ' + (state.order.q || ''), 'warn');
+      }
+    });
+  }
+  const claimBtn = $('orderClaimBtn');
+  if (claimBtn) claimBtn.addEventListener('click', submitClaim);
+  const actBtn = $('orderActBtn');
+  if (actBtn) {
+    actBtn.addEventListener('click', () => {
+      els.licKey.value = o.key;
+      closePricing();
+      activate();
+    });
+  }
+}
+
+/** 打开定价页：先渲染本地价目表（离线也能看），再尝试拉服务端收款信息。 */
+async function openPricing() {
+  els.pricingModal.hidden = false;
+  if (!state.prices) {
+    els.priceGrid.innerHTML = '<p class="hint">' + esc(t('priceLoading')) + '</p>';
+  }
+  renderPriceGrid();
+  renderOrderPanel();
+  // 有上次的订单但还没查到状态时，立刻问一次服务端（本地不缓存状态）
+  if (state.order && !state.order.view) startOrderPoll();
+  else if (state.order && (state.order.view.status === 'pending' || state.order.view.status === 'claimed')) startOrderPoll();
+  await loadPricing();
+}
+
+function closePricing() {
+  els.pricingModal.hidden = true;
+  stopOrderPoll();
+}
+
+/**
+ * 拉服务端价目表与收款信息。
+ *
+ * 失败时先试 /api/plans（2026-10-11 起它带 `pricing` + `pay`，见 server/handler.js），
+ * 再退回本地的 src/pricing.js——本地那份与接口同源，所以价格不会两处不一致。
+ * 购买按钮只在**拿到服务端收款信息**后可用：收款码路径、收款方、是否已接回调都是
+ * 部署期配置，浏览器猜不出来，猜错就是"扫了个不存在的码"。
+ */
+async function loadPricing() {
+  const base = (state.apiBase || '').replace(/\/+$/, '');
+  const tryFetch = async (path) => {
+    const res = await fetch(base + path, { headers: { accept: 'application/json', ...langHeader() } });
+    const data = res.ok ? await res.json().catch(() => null) : null;
+    return data && data.ok ? data : null;
+  };
+  try {
+    let data = await tryFetch('/api/pricing');
+    if (!data) data = await tryFetch('/api/plans');
+    if (data && data.ok && (data.plans || data.pricing)) {
+      if (data.pricing) state.prices = data.pricing;
+      if (data.pay) state.pay = data.pay;
+      renderPriceGrid();
+      renderOrderPanel();
+      return;
+    }
+    throw new Error('HTTP ' + (base || '') + '/api/pricing');
+  } catch (e) {
+    state.pay = null;
+    renderPriceGrid();
+    if (!state.prices) {
+      els.priceGrid.innerHTML = '<p class="hint err">'
+        + esc(t('priceLoadFailed', { msg: (e && e.message) || String(e) })) + '</p>';
+    }
+  }
+}
+
+/** 下单。成功后把订单号 + 查询码存本地（见文件头的说明）。 */
+async function startOrder(planName, term) {
+  const base = (state.apiBase || '').replace(/\/+$/, '');
+  renderOrderPanel(t('orderSubmitting'));
+  try {
+    const res = await fetch(base + '/api/order', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', accept: 'application/json', ...langHeader() },
+      body: JSON.stringify({ action: 'create', plan: planName, term }),
+    });
+    const data = await res.json().catch(() => null);
+    if (!data || !data.ok) {
+      renderOrderPanel((data && data.message) || t('orderErrGeneric'));
+      return;
+    }
+    if (data.pay) state.pay = data.pay;
+    state.order = { id: data.order.id, q: data.queryCode, view: data.order };
+    saveState();
+    renderOrderPanel();
+    startOrderPoll();
+    setStatus(t('orderTitle', { id: data.order.id }), 'ok');
+  } catch (e) {
+    renderOrderPanel((e && e.message) || String(e));
+  }
+}
+
+/** 提交交易单号。提交后状态变"待核验"，轮询会继续跑。 */
+async function submitClaim() {
+  const base = (state.apiBase || '').replace(/\/+$/, '');
+  const txid = ($('orderTxid') && $('orderTxid').value || '').trim();
+  if (!state.order || !txid) return;
+  const btn = $('orderClaimBtn');
+  if (btn) { btn.disabled = true; btn.textContent = t('orderSubmitting'); }
+  try {
+    const res = await fetch(base + '/api/order', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', accept: 'application/json', ...langHeader() },
+      body: JSON.stringify({
+        action: 'claim', id: state.order.id, q: state.order.q, txid,
+        payer: ($('orderPayer') && $('orderPayer').value || '').trim(),
+      }),
+    });
+    const data = await res.json().catch(() => null);
+    if (!data || !data.ok) {
+      renderOrderPanel((data && data.message) || t('orderErrGeneric'));
+      return;
+    }
+    state.order.view = data.order;
+    saveState();
+    renderOrderPanel();
+    startOrderPoll();
+  } catch (e) {
+    renderOrderPanel((e && e.message) || String(e));
+  }
+}
+
+/** 轮询订单状态；到终态（已发卡/已拒绝/已过期）自动停。 */
+function startOrderPoll() {
+  stopOrderPoll();
+  const tick = async () => {
+    if (!state.order || els.pricingModal.hidden) return;
+    const base = (state.apiBase || '').replace(/\/+$/, '');
+    try {
+      const res = await fetch(base + '/api/order', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', accept: 'application/json', ...langHeader() },
+        body: JSON.stringify({ action: 'pickup', id: state.order.id, q: state.order.q }),
+      });
+      const data = await res.json().catch(() => null);
+      if (data && data.ok) {
+        const changed = !state.order.view || state.order.view.status !== data.order.status;
+        state.order.view = data.order;
+        if (changed) {
+          saveState();
+          renderOrderPanel();
+          if (data.order.status === 'issued') setStatus(t('orderStatusIssued'), 'ok');
+        }
+        if (data.order.status === 'issued' || data.order.status === 'rejected') stopOrderPoll();
+      } else if (data && (data.reason === 'notFound' || data.reason === 'badQuery')) {
+        // 订单查不到 / 查询码失效（换过站点、服务端换了存储、查询码抄错）：
+        // 继续轮询只会每 6 秒失败一次，界面还停在旧状态上。停掉并说清楚，
+        // 让用户用下面的"订单号 + 查询码"重新查一次。
+        stopOrderPoll();
+        state.order = null;
+        saveState();
+        renderOrderPanel();
+        setStatus((data && data.message) || t('orderErrNotFound'), 'err');
+      }
+    } catch (e) { /* 网络抖动就等下一轮 */ }
+  };
+  state.orderTimer = setInterval(tick, ORDER_POLL_MS);
+  tick();
+}
+
+function stopOrderPoll() {
+  if (state.orderTimer) { clearInterval(state.orderTimer); state.orderTimer = 0; }
+}
+
+/** 用订单号 + 查询码取卡（换设备回来的买家走这条）。 */
+async function pickupByHand() {
+  const base = (state.apiBase || '').replace(/\/+$/, '');
+  const id = (els.pickupId.value || '').trim().toUpperCase();
+  const q = (els.pickupQ.value || '').trim().toUpperCase();
+  if (!id || !q) return;
+  try {
+    const res = await fetch(base + '/api/order', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', accept: 'application/json', ...langHeader() },
+      body: JSON.stringify({ action: 'pickup', id, q }),
+    });
+    const data = await res.json().catch(() => null);
+    if (!data || !data.ok) {
+      setStatus((data && data.message) || t('orderErrGeneric'), 'err');
+      return;
+    }
+    state.order = { id, q, view: data.order };
+    saveState();
+    renderOrderPanel();
+    if (data.order.status !== 'issued' && data.order.status !== 'rejected') startOrderPoll();
+  } catch (e) {
+    setStatus((e && e.message) || String(e), 'err');
+  }
+}
+
 // ---------- 初始化 ----------
 
 /** 输入/输出面板在文档里的默认先后。恢复默认布局按它摆回去。 */
@@ -2004,7 +2382,9 @@ async function init() {
     'licKey', 'actBtn', 'deactBtn', 'licInfo', 'licDevice', 'licBadge', 'seed', 'presetHint',
     'layoutHint', 'layoutResetBtn', 'cfgImportBtn', 'cfgExportBtn', 'cfgFile',
     'resetBtn', 'status', 'quota', 'ver', 'inputPane', 'outputPane', 'apiState', 'shortcutHint',
-    'compareBtn', 'compareModal', 'compareClose', 'compareBackdrop', 'emptyHint', 'sampleLinks']) {
+    'compareBtn', 'compareModal', 'compareClose', 'compareBackdrop', 'emptyHint', 'sampleLinks',
+    'pricingBtn', 'pricingModal', 'pricingClose', 'pricingBackdrop', 'priceGrid', 'orderPanel',
+    'pickupId', 'pickupQ', 'pickupBtn']) {
     els[id] = $(id);
   }
 
@@ -2016,6 +2396,11 @@ async function init() {
   els.mode.value = state.mode;
   els.apiBase.value = state.apiBase;
   els.seed.value = state.seed;
+  // 上次的订单号/查询码填进取卡行：买家回来时少一步手抄
+  if (state.order) {
+    els.pickupId.value = state.order.id;
+    els.pickupQ.value = state.order.q;
+  }
 
   applyI18n();
   renderThemeBtn();   // 必须在 applyI18n() 之后：见 renderThemeBtn 的说明
@@ -2037,6 +2422,9 @@ async function init() {
     renderApiState();
     renderShortcutHint();
     renderSamples();
+    // 定价页与订单面板的文案是运行时拼的（不走 data-i18n），切语言要重渲染
+    renderPriceGrid();
+    renderOrderPanel();
     // 授权面板与配额、状态栏都是"渲染一次"的（不走 data-i18n），切语言必须重刷，
     // 否则英文界面下这三处会一直停在初始化时的中文。
     await refreshLicensePanel();
@@ -2059,6 +2447,13 @@ async function init() {
   const openCompare = () => { els.compareModal.hidden = false; };
   const closeCompare = () => { els.compareModal.hidden = true; };
   els.compareBtn.addEventListener('click', openCompare);
+
+  // 定价页：按钮开、✕/背景关；Esc 在下面的键盘处理里一并关（与对比弹窗同一处）。
+  const openPricingModal = () => { openPricing(); };
+  els.pricingBtn.addEventListener('click', openPricingModal);
+  els.pricingClose.addEventListener('click', closePricing);
+  els.pricingBackdrop.addEventListener('click', closePricing);
+  els.pickupBtn.addEventListener('click', pickupByHand);
   els.compareClose.addEventListener('click', closeCompare);
   els.compareBackdrop.addEventListener('click', closeCompare);
 
@@ -2135,6 +2530,7 @@ async function init() {
   // Ctrl/Cmd + Enter 运行
   document.addEventListener('keydown', (e) => {
     if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') { e.preventDefault(); run(); }
+    else if (e.key === 'Escape' && !els.pricingModal.hidden) { closePricing(); }
     else if (e.key === 'Escape' && !els.compareModal.hidden) { els.compareModal.hidden = true; }
   });
 

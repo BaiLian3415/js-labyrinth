@@ -139,6 +139,50 @@ JSLB_CODE_KEY=<base64 密钥> node tools/issue/keygen.js --plan plus --days 365
 
 ---
 
+## 5.5 定价页与购买订单（2026-10-11）
+
+定价页在界面顶部条「套餐定价」，价格数据源是 `src/pricing.js`：**改价只改 `PRICES` 一处**
+（金额单位是分）。收款码图片在 `web/assets/pay-wechat.png`，替换该文件即可换成自己的码；
+也可以配 `JSLB_PAY_QR` 指向别的路径。
+
+**收款方式与"购买验证"的关系（重要）**：个人微信收款码**没有商户回调**，也没有订单查询
+接口，所以默认形态是"买家提交交易单号 → 你核验 → 服务端发卡"。核验发卡有两条路：
+
+```bash
+# 路 1：走已部署的管理接口（不需要 Redis 凭据，适合在任意机器上核单）
+JSLB_ADMIN_URL=https://<站点> JSLB_ADMIN_TOKEN=<令牌> \
+  node tools/issue/orders.js list --status claimed
+JSLB_ADMIN_URL=https://<站点> JSLB_ADMIN_TOKEN=<令牌> \
+  node tools/issue/orders.js confirm <订单号> --txid <交易单号> --amount <分>
+
+# 路 2：直连云存储（手里有 Upstash/REDIS_URL 时，连站点都不用开）
+node tools/issue/orders.js list --kv
+node tools/issue/orders.js confirm <订单号> --amount 29900 --kv
+```
+
+买家随后在定价页凭**订单号 + 查询码**自助取卡（查询码只在建单响应里出现一次，页面提示
+截图保存）。查询码在 KV 里只存 sha256；交易单号全局唯一（防一张截图领多次卡）。
+
+想改成**自动发卡**：接一个能拿到支付回调的通道（微信支付商户号 / 服务商 / 自建对账脚本），
+然后：
+
+1. 在 Vercel 环境变量里加 `JSLB_PAY_WEBHOOK_SECRET=<随机密钥>`（**机密**）；
+2. 让回调方以 `POST /api/pay-notify` 通知，正文 JSON 至少含 `orderId`、`txid`、`amount`（分），
+   头 `X-JSLB-Signature: <hex(HMAC-SHA256(密钥, 原始请求体))>`；
+3. 定价页会自动把提示文案从"人工核验"换成"通常几秒内自动发卡"（读 `/api/pricing` 的 `pay.auto`）。
+
+> 签名必须对**原始请求体**计算。先 JSON.parse 再 JSON.stringify 会因键序/空白变化导致
+> 签名失配，而那种失败看起来像"密钥配错了"。
+
+需要开放管理接口时再加 `JSLB_ADMIN_TOKEN=<随机令牌>`（**机密**）：不配时
+`/api/admin-order` 恒返回 403，配了才启用。可选文案项：`JSLB_PAY_PAYEE`（收款方显示名）、
+`JSLB_PAY_CONTACT`（客服联系方式）。
+
+订单必须落在云存储里（见第 3 节）：`/api/order` 在没有 KV 时直接返回 503 而不是"建一张
+活不过一个实例的单"——买家付了钱查不到单，比暂时不能下单糟得多。
+
+---
+
 ## 6. 发布
 
 **发布 = push 到 `main`，不需要手动部署**（2026-10-11 定）。仓库已绑定 GitHub，

@@ -74,6 +74,7 @@
         <span>深色</span>
       </button>
       <button id="compareBtn" class="mini" type="button" data-i18n="cmpOpen">对比 obfuscator.io</button>
+      <button id="pricingBtn" class="mini" type="button" data-i18n="guiPricing">套餐定价</button>
     </header>
 
     <header class="mainbar">
@@ -194,6 +195,37 @@
       <span id="shortcutHint" class="hint"></span>
       <span id="quota" class="dim right"></span>
     </footer>
+  </div>
+</div>
+
+<!-- 定价页与购买订单（2026-10-11）。
+     内容由 app.js 渲染：价目表来自 src/pricing.js（与 /api/pricing 同一数据源，
+     离线也能看），收款信息与订单流程走 /api/pricing 与 /api/order。
+     收款走个人微信收款码——它没有商户回调，所以流程是"扫码付款 → 提交交易单号 →
+     核验 → 凭订单号 + 查询码自助取卡"；配了 JSLB_PAY_WEBHOOK_SECRET 的部署会自动发卡。 -->
+<div class="pricing-modal" id="pricingModal" hidden role="dialog" aria-modal="true" aria-labelledby="pricingTitle">
+  <div class="pricing-backdrop" id="pricingBackdrop"></div>
+  <div class="pricing-card">
+    <div class="pricing-head">
+      <h2 id="pricingTitle" data-i18n="priceTitle">套餐定价</h2>
+      <button id="pricingClose" class="mini" type="button" data-i18n-aria="priceClose" aria-label="close">✕</button>
+    </div>
+    <p class="pricing-note" data-i18n="priceNote">价格为人民币（CNY）。扫码付款后提交交易单号，核验通过即可在本页自助取卡。</p>
+    <p class="pricing-sub" data-i18n="priceSubtitle">同一套混淆核心，区别只在强度上限与用量。</p>
+    <div class="pricing-body">
+      <div class="price-grid" id="priceGrid"></div>
+      <div class="order-panel" id="orderPanel" hidden></div>
+    </div>
+    <div class="pickup-row">
+      <h3 data-i18n="orderPickupTitle">已有订单？输入订单号取卡</h3>
+      <div class="pickup-fields">
+        <input id="pickupId" class="text" type="text" maxlength="14" spellcheck="false"
+          autocomplete="off" data-i18n-ph="orderPickupPh" placeholder="订单号（14 位）">
+        <input id="pickupQ" class="text" type="text" maxlength="12" spellcheck="false"
+          autocomplete="off" data-i18n-ph="orderQueryPh" placeholder="查询码（10 位）">
+        <button id="pickupBtn" class="mini" type="button" data-i18n="orderPickupBtn">查询 / 取卡</button>
+      </div>
+    </div>
   </div>
 </div>
 

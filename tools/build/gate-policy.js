@@ -13,9 +13,9 @@
  *
  * 名单怎么来的：不是拍脑袋列的，是从 web/app.js 的静态 import 链做可达性分析
  * 算出来的。起点是 app.js 顶部那批静态 import（options-meta / options-gate / plan /
- * license-web / i18n / platform / utils-zip / version / options / presets），跟随相对
- * 说明符展开。截至 2026-10-11：src 下 71 个模块里 16 个必须公开，其余 55 个受保护。
- * 改动 app.js 的静态 import 或这几处的依赖后必须重算，否则就是上面那种漂移。
+ * pricing / license-web / i18n / platform / utils-zip / version / options / presets），
+ * 跟随相对说明符展开。截至 2026-10-11：src 下 73 个模块里 17 个必须公开，其余 56 个
+ * 受保护。改动 app.js 的静态 import 或这几处的依赖后必须重算，否则就是上面那种漂移。
  * build-web.js 里那条「已下发但没进 modulepreload」的告警就是这条不变式的自动化
  * 版本——它一响，先怀疑本名单，再怀疑 collectModules 的扫描。
  * 复核方法（不需要解析器，与 build-web.js 的 collectModules 同一套正则思路）：
@@ -50,6 +50,11 @@ export const GATED_PREFIXES = [
   // dist/src/ 约 4 KB 死重量（浏览器永远不会去取，所以那条告警说的"串行往返"
   // 在这个例子里不成立，真正的问题是白下发 + 一条会被无视的告警）。
   'target-runtime.js',
+  // orders.js：购买订单的状态机与核验规则。它是**服务端**逻辑（server/handler.js 与
+  // tools/issue/orders.js 用），浏览器侧一行都不需要——界面只调 /api/order。
+  // 不挡它的话就是白下发一份"订单/取卡鉴权"的实现，且会触发构建期那条
+  // 「已下发但没进 modulepreload」告警（2026-10-11 加定价页时顺手挡住）。
+  'orders.js',
   'passes/',
   'ast/',
   'utils/',

@@ -1208,9 +1208,26 @@ export async function bannerText() {
   });
 }
 
+/**
+ * 当前生效的卡密密钥（base64）。
+ *
+ * 给**服务端签发**用（购买订单确认后签发卡密，见 src/orders.js）：签发与校验必须
+ * 同源，否则签出来的卡在浏览器端一律解析失败。这里导出的是"当前生效的那把"，
+ * 而不是让调用方各自去读 JSLB_CODE_KEY——两处各判一遍，迟早漂移成
+ * "订单签发的卡客服端不认"这种最难查的不一致。
+ *
+ * 不是秘密：这把对称密钥本来就随静态资源分发（见文件头说明）。
+ *
+ * @returns {string} 卡密密钥的 base64
+ */
+export function activeCodeKey() {
+  return codeKey;
+}
+
 export default {
   setKeyMaterial,
   loadKeysFromEnv,
+  activeCodeKey,
   setRequestDeviceId,
   resetRequestState,
   usingExternalKeys,

@@ -33,6 +33,8 @@
  *   target-runtime   目标宿主识别与受限降级（Cloudflare Workers：壳 / WASM / 时序哨兵）
  *   vmp              VMP 覆盖率 / 深度 / stats 口径
  *   fingerprint      固定形状指纹、选项键集合、i18n 引用、未知键告警
+ *   pricing          价目表一致性、订单状态机、取卡鉴权、防重放、限流、回调签名
+ *   orders-api       购买服务的 HTTP 层（server/handler.js 当黑盒：状态码/鉴权/幂等）
  *   live-verify      线上验收（打已部署站点）
  *
  * 拆分的理由：一个文件近 4000 行时，改一行要找半天，且任何一处语法错要等整跑
@@ -52,6 +54,8 @@ const FILES = [
   'core-obfuscate.js',
   'license-codec.js',
   'license-web.js',
+  'pricing.js',
+  'orders-api.js',
   'issue-cli.js',
   'web-pipeline.js',
   'zip.js',
