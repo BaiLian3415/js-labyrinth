@@ -552,7 +552,7 @@ function main(argv) {
     }
     console.log('  首页已注入 ' + mods + ' 条 modulepreload（原生 ESM 的请求瀑布在构建期拉平）');
     if (cloud) {
-      console.log('  Vercel: npx vercel --prod（构建命令与区域见 vercel.json）');
+      console.log('  发布：push 到 main 即自动部署（GitHub 集成）；不要手动跑 npx vercel --prod');
     } else {
       console.log('  静态托管：把 dist/ 整个目录发到任意静态托管即可');
     }
