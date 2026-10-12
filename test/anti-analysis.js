@@ -91,6 +91,43 @@ process.stdout.write(a + '|' + b + '\\n');
   }
   ok(cdpWeakBad === '', '弱证据（单次触发）不投毒不误伤', cdpWeakBad);
 
+  // stealth 伪装（2026-10-12）：判据 ② —— navigator **实例**上存在自有 webdriver
+  // 属性。HTML 规范把 webdriver 定义在 Navigator.prototype 上，实例上不该有同名
+  // 自有属性；stealth 框架的标准手法正是 `Object.defineProperty(navigator,
+  // 'webdriver', {get:()=>false})`，它把判据 ①（=== true）整个绕过去了。
+  // 依据是实测（headless Chromium，自动化已开）：stock 形态 ownDescriptor=null、
+  // 原型上是访问器；注入后实例上出现自有访问器。
+  //
+  // 判别口径：
+  //   stealth / stealth-v 两种注入形态都必须投毒（旧码两个都不投）；
+  //   stock-proto（原型访问器 + 实例干净）必须**不投**——这是防误报的基准形态。
+  //     基准形态不能用 { webdriver: false } 代替，那本身就是自有数据属性、恰好会被
+  //     判据 ② 命中，拿它测"不误报"是无效的；
+  //   stealth-p（原型级覆盖，实例无痕迹）是**已知残余**：纯 JS 侧与原生访问器无法
+  //     区分，断言它不投毒，等于把这条残余钉在测试里，将来有人补上要一并改这里。
+  for (const [mode, shouldPoison, label] of [
+    ['stealth', true, 'stealth 自有访问器（get:()=>false）'],
+    ['stealth-v', true, 'stealth 自有数据属性（{value:false}）'],
+    ['stock-proto', false, 'stock 原型形态零误报'],
+    ['stealth-p', false, '原型级覆盖（已知残余，不投毒）'],
+  ]) {
+    let hit = 0, total = 0, first = '';
+    for (let seed = 1; seed <= 2; seed++) {
+      const code = obfuscate(cdpSample, { preset: 'high', shell: false, antiCDP: true, seed }).code;
+      const got = cdpRun(code, mode, String(seed));
+      total++;
+      if (got !== cdpWant) { hit++; if (!first) first = 'seed=' + seed; }
+    }
+    if (shouldPoison) ok(hit === total, label + ' → 投毒', '命中 ' + hit + '/' + total);
+    else ok(hit === 0, label, '误报 ' + hit + '/' + total + (first ? '（' + first + '）' : ''));
+  }
+  // 判据 ② 必须在产物里真的生成（防止被 gate 掐掉后测试仍靠判据 ① 蒙对）
+  {
+    const stOwn = rCdpOn.stats.find((s) => s.pass === 'antiCDP');
+    ok(stOwn && stOwn.result && stOwn.result.v2OwnCheck === true,
+      'antiCDP stats 报出 v2OwnCheck（判据 ② 在位）', JSON.stringify(stOwn && stOwn.result));
+  }
+
   // V1 低频周期重跑（2026-10-11）：启动版之外，定时器里还有第二份同形探针，
   // 尾巴是衰减累加器（持续在场 3 轮累计≥4 投毒，单次偶发自然衰减），修"启动后
   // 才 attach 的 CDP 过去漏检"。判据用 AST：defineProperty(obj,"x",{...get:fn})

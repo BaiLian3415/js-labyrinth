@@ -11,8 +11,11 @@
  *      目标）；单次触发只算弱证据，走隐蔽断点不投毒。原生 console 引用在
  *      头部最先捕获——本 pass 先于 debugProtection 注入，头部执行顺序等于
  *      pass 调用顺序，consoleStub 的失效化不影响探针；
- *   V2 navigator.webdriver —— 自动化驱动默认带 --enable-automation 启动，
- *      该属性为 true，人工浏览永远是 undefined；
+ *   V2 navigator.webdriver —— 两条判据：① 属性为 true（自动化驱动默认带
+ *      --enable-automation 启动，人工浏览永远是 false/undefined）；② navigator
+ *      实例上存在自有 webdriver 属性（stealth 框架的标准伪装手法，规范把该属性
+ *      定义在 Navigator.prototype 上，实例上不该有）。判据 ② 的实测依据见 v2Src
+ *      处的注释，含一条**已知残余**（原型级覆盖查不到）；
  *   V3 自动化痕迹扫描 —— window / navigator / document 上的驱动注入属性
  *      （__webdriver_evaluate、$chrome_asyncScriptInfo、__lastWatirAlert 等）
  *      逐一精确比对，再对 "cdc_" 子串做一遍枚举扫描（ChromeDriver 注入的
@@ -72,9 +75,31 @@ export default function antiCDP(ast, options, ctx) {
     : 'var _0hs=' + NOW + ';while((' + NOW + ')-_0hs<' + HANG_MS + '){}') + '_0xdg();';
 
   // V2/V3 的源码被启动首遍与周期复查共用
+  //
+  // V2 有两条判据，第二条是 2026-10-12 加的 stealth 反探测：
+  //   ① navigator.webdriver === true —— 自动化驱动默认带 --enable-automation；
+  //   ② navigator 实例上存在**自有** webdriver 属性 —— stealth 框架的标准手法就是
+  //      `Object.defineProperty(navigator,'webdriver',{get:()=>false})`，① 恰好被它
+  //      整个绕过。
+  // ② 成立的基础是 HTML 规范把 webdriver 定义在 **Navigator.prototype** 上，实例上
+  // 不该有同名自有属性。实测（headless Chromium，自动化已开）：
+  //   stock 形态          ownDescriptor=null，原型上是访问器，in navigator=true
+  //   实例上 defineProperty ownDescriptor={get:function}，webdriver=false
+  // 也就是说"自动化本身"不产生自有属性，只有注入才会——所以 ② 是硬证据，可以和 ①
+  // 同等对待（直接投毒），不需要衰减计数。
+  //
+  // 实测同时排除了两条想当然的判据：
+  //   · `delete navigator.webdriver` 在 Chromium 里根本无效（原型属性还在，读到的仍是
+  //     true），所以"属性缺失"不是现实 evasion 路径；而按缺失判假又会在 2018 年前
+  //     的浏览器上大面积误报，误报即投毒，不做。
+  //   · 原型级覆盖（delete Navigator.prototype.webdriver 再 defineProperty）
+  //     实例上不留任何痕迹，纯 JS 侧无法与引擎原生访问器区分——这条是**已知残余**，
+  //     按可枚举性/可配置性去猜会踩到 Safari 等引擎的实现差异，风险不对称，不做。
   const v2Src =
     '(function(){if(typeof navigator===typeof void 0||!navigator){return;}' +
-    'if(navigator[' + M('webdriver') + ']===true){' + hitSrc('_0xG') + '}})();';
+    'var _0wdh=navigator[' + M('webdriver') + ']===true;' +
+    'if(!_0wdh){try{_0wdh=!!Object.getOwnPropertyDescriptor(navigator,' + M('webdriver') + ');}catch(_0e){}}' +
+    'if(_0wdh){' + hitSrc('_0xG') + '}})();';
   const v3Src =
     '(function(){if(typeof window===typeof void 0){return;}' +
     'var _0os=[window,(typeof navigator!==typeof void 0&&navigator)?navigator:null,' +
@@ -155,6 +180,9 @@ export default function antiCDP(ast, options, ctx) {
     periodic: true,
     period: PERIOD,
     v1Every: V1EVERY,
+    // V2 第二条判据（navigator 实例上的自有 webdriver 属性）是否在位。
+    // 消费方用它确认"stealth 反探测"这条链真的生成了，而不是被 gate 掐掉。
+    v2OwnCheck: true,
     poison: poisonable,
     headFn: headFnName,
   };

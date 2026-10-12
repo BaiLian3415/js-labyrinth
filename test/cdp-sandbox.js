@@ -10,6 +10,12 @@
  *   cdp       console 序列化模拟 Runtime.enable（log 触发 1 次访问器，debug
  *             触发 2 次——真实 CDP 的 consoleAPICalled 预览 + 缓冲双读特征）
  *   weak      仅 log 触发 1 次（弱证据，不应投毒）
+ *   stealth   stealth 伪装：navigator 实例上 defineProperty 一个返回 false 的
+ *             webdriver 访问器（原型形态见 stock-proto，判据见 antiCDP 的 v2Src）
+ *   stealth-v 同上但用自有**数据**属性（{value:false}），另一派 stealth 库的做法
+ *   stealth-p 原型级覆盖：实例上不留任何痕迹（**已知残余**，不应被判为命中）
+ *   stock-proto 真实浏览器形态：webdriver 是原型上的可枚举可配置访问器，实例上
+ *             没有任何同名自有属性。**这是防误报的基准形态，必须不投毒**
  *
  * 产物在 node:vm 新上下文里执行：不提供 performance / setInterval 为真实
  * 定时器（返回带 unref 的假句柄，不排期），process.stdout.write 被收集，
@@ -60,9 +66,30 @@ sandbox.self = sandbox;
 sandbox.outerWidth = 100; sandbox.innerWidth = 100;
 sandbox.outerHeight = 200; sandbox.innerHeight = 200;
 sandbox.document = { visibilityState: 'visible' };
-sandbox.navigator = mode === 'webdriver'
-  ? { webdriver: true, userAgent: 'Mozilla/5.0' }
-  : { userAgent: 'Mozilla/5.0' };
+// navigator 形态。四种 stealth/基准形态都要按真实浏览器的描述符布局搭，不能图
+// 简单写成 { webdriver: false }——那是**自有数据属性**，恰好会被新增判据命中，
+// 用来测"不误报"是无效的（基准形态必须是 webdriver 在原型上、实例上什么都没有）。
+function makeNavigator(kind) {
+  const proto = {};
+  const stockProto = () => Object.defineProperty(proto, 'webdriver',
+    { configurable: true, enumerable: true, get() { return false; } });
+  if (kind === 'stock-proto' || kind === 'stealth' || kind === 'stealth-v' || kind === 'stealth-p') stockProto();
+  const nav = Object.create(proto);
+  Object.defineProperty(nav, 'userAgent', { value: 'Mozilla/5.0', enumerable: true, configurable: true });
+  if (kind === 'webdriver') {
+    Object.defineProperty(nav, 'webdriver', { value: true, enumerable: true, configurable: true });
+  } else if (kind === 'stealth') {
+    Object.defineProperty(nav, 'webdriver', { configurable: true, get() { return false; } });
+  } else if (kind === 'stealth-v') {
+    Object.defineProperty(nav, 'webdriver', { value: false, enumerable: true, configurable: true });
+  } else if (kind === 'stealth-p') {
+    // 原型级覆盖：实例上不留任何痕迹，纯 JS 侧与原生访问器无法区分
+    Object.defineProperty(proto, 'webdriver', { configurable: true, enumerable: true, get() { return false; } });
+  }
+  return nav;
+}
+
+sandbox.navigator = makeNavigator(mode);
 
 try {
   vm.runInNewContext(code, sandbox, { timeout: 30000 });
