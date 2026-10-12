@@ -75,13 +75,49 @@ export default function objectKeys(ast, options, ctx) {
     .filter(Boolean);
   // 命中就保持字面。标 __noPool：stringArray 认这个标记（见 isEligible），否则靠这里
   // 保护住的串会被池收走，产物里只剩一个解码调用，等于这条保留白设。
+  // Identifier 形态的键（方法名 / 类字段名 mostly 是这种）也要查同一份名单：
+  // 拆段同样会让原名从产物里消失，用户在 reservedStrings 里点名保它就必须留明文。
+  const keepName = (v) => keepStrRe.length > 0 && keepStrRe.some((re) => re.test(v));
   const keepLiteral = (node) => {
-    const v = node.value;
-    if (keepStrRe.length && keepStrRe.some((re) => re.test(v))) {
-      node.__noPool = true;
-      return true;
-    }
-    return false;
+    if (!keepName(node.value)) return false;
+    node.__noPool = true;
+    return true;
+  };
+
+  // 方法名/类字段名（ObjectMethod / ClassMethod / ClassProperty）的键转计算形态。
+  // objectKeys 原先只处理 ObjectProperty 与 MemberExpression：成员访问（调用点）早就
+  // 转了下标并入了池，但**定义点的键**一直是明文——`{render(){}}`、`class{render(){}}`
+  // 里的方法名是产物里唯一剩下的可 grep 标识符面，静态就能读出 API 面。这里把三者
+  // 的键也转成 `["render"]` 计算形态，随后由 stringArray 收进池。
+  //
+  // 各自的禁改面（错了就静默坏语义，不是报错）：
+  //   · ClassMethod 的 constructor 不能转计算键——计算形态的 "constructor" 只是普通
+  //     方法，类会丢掉构造函数，`new` 直接抛；
+  //   · ObjectMethod 的 __proto__ 保守跳过（方法形态本不触发原型设置，与 ObjectProperty
+  //     的 __proto__ 语义不同，但保持"这个键名不动"的统一口径更省心）；
+  //   · 私有名（PrivateName）、数字键、本来就是表达式的键一律不动。
+  const convertKey = (path) => {
+    // 守卫只看**容器**（对象/类字面量）在不在 VM 函数体内，不看方法自身。
+    // 方法体被 VM 编译时 `isVMCompiled(方法节点)` 为真，但那说的是"方法体是字节码
+    // 桥接"，而键仍在字面量上、不在字节码里——拿方法自身判定会把最常见的情形
+    //（普通类/对象方法进 VM）整个跳过，等于没做。真正要挡的是"位于 VM 片段 thunk
+    // 内部的对象字面量"（那整段是字节码的一部分），此时容器在 VM 内、守卫成立。
+    if (insideVmFunction(path.parentPath)) return;
+    const n = path.node;
+    if (n.computed) return;
+    const key = n.key;
+    if (!key) return;
+    let name = null;
+    if (t.isIdentifier(key)) { if (keepName(key.name)) return; name = key.name; }
+    else if (t.isStringLiteral(key)) { if (keepLiteral(key)) return; name = key.value; }
+    else return;
+    if (n.type === 'ClassMethod' && name === 'constructor') return;
+    if (n.type === 'ObjectMethod' && name === '__proto__') return;
+    const expr = makeConcat(name);
+    if (!expr) return;
+    n.key = expr;
+    n.computed = true;
+    changed++;
   };
 
   traverse(ast, {
@@ -122,6 +158,9 @@ export default function objectKeys(ast, options, ctx) {
         changed++;
       }
     },
+    ObjectMethod(path) { convertKey(path); },
+    ClassMethod(path) { convertKey(path); },
+    ClassProperty(path) { convertKey(path); },
     MemberExpression(path) {
       if (insideVmFunction(path)) return;
       const n = path.node;

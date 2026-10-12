@@ -562,6 +562,192 @@ section('条件混淆：Yoda 式（字面量左置）真实出现');
   ok(!bad, 'Yoda 式出现且语义正确（3 seed）', bad);
 }
 
+section('方法名/类字段名入池（objectKeys 的定义点）');
+{
+  // objectKeys 原先只转 ObjectProperty 与 MemberExpression：调用点早就是下标形态，
+  // 但**定义点**的键一直是明文，`{zzRender(){}}` / `class{zzRender(){}}` 是产物里唯一
+  // 还能被静态 grep 出来的 API 面。下面这组按老码必 FAIL / 新码必 PASS 的口径写。
+  //
+  // 判别样本用 zz 前缀的自造名：产物里的机器名是 hex 十六进制，不可能含非 hex 字母，
+  // 所以明文计数不会被 `identifierPrefix` 生成的 `_0x…` 误伤。
+  const mkSrc = [
+    'const zzObj = {',
+    '  zzGreet(n) { return "hi " + n; },',
+    '  get zzSize() { return 3; },',
+    '  async zzLoad() { return 1; },',
+    '};',
+    'class ZzWidget {',
+    '  constructor(v) { this.v = v; }',
+    '  zzRender(m) { let s = 0; for (let i = 0; i < 3; i++) s += i; return "r:" + m + this.v + s; }',
+    '  static zzMake() { return new ZzWidget(1); }',
+    '  get zzLabel() { return "L"; }',
+    '  zzField = 7;',
+    '  static zzStatic = 8;',
+    '};',
+    'process.stdout.write([',
+    '  zzObj.zzGreet("a"), zzObj.zzSize, new ZzWidget(2).zzLabel,',
+    '  ZzWidget.zzMake().v, new ZzWidget(3).zzRender("x"), new ZzWidget(1).zzField,',
+    '  ZzWidget.zzStatic,',
+    '].join("|"));',
+  ].join('\n');
+  const NAMES = ['zzGreet', 'zzSize', 'zzLoad', 'zzRender', 'zzMake', 'zzLabel', 'zzField', 'zzStatic'];
+  const plainCount = (code) => NAMES.reduce((n, name) => n +
+    (code.match(new RegExp('(?<![A-Za-z0-9_$])' + name + '(?![A-Za-z0-9_$])', 'g')) || []).length, 0);
+
+  const base = { preset: 'high', shell: false, integrityCheck: false };
+
+  // ① 明文方法名/字段名必须归零。老码基线：定义点各留 1 处（调用点早已转下标）。
+  {
+    let bad = '';
+    for (const seed of [1, 2, 3]) {
+      const n = plainCount(obfuscate(mkSrc, { ...base, seed }).code);
+      if (n > 0) { bad = 'seed=' + seed + ' 仍留 ' + n + ' 处明文方法名'; break; }
+    }
+    ok(!bad, '方法名与类字段名不落明文（3 seed，老码各留 1 处）', bad);
+  }
+
+  // ② 生成器必须成对支持 computed 类键。直接喂"键不是合法属性名"的计算键：
+  // 老生成器忽略 computed 直接印 key，产出的 class 体是语法错误（`"a"+"b"(){}`），
+  // 重新解析即炸——这正是接线时最容易漏、且只在解析期才暴露的一处。
+  {
+    let bad = '';
+    const cases = [
+      'class A { ["a"+"b"](){} }',
+      'class A { ["p"+"q"]=1; }',
+      'class A { static ["s"+"t"](){} }',
+      'class A { get ["g"+"h"](){ return 1; } }',
+      'var o = { ["x"+"y"](){}, ["m"+"n"]: 1 };',
+    ];
+    for (const c of cases) {
+      const out = generate(parse(c, { sourceType: 'script' })).code;
+      try { parse(out, { sourceType: 'script' }); } catch (e) { bad = c + ' → 往返后不可解析：' + out.slice(0, 60); break; }
+    }
+    ok(!bad, '生成器支持 computed 类方法/类字段/对象方法键', bad);
+  }
+
+  // ③ VM 已编译的方法，其键同样要转。这条单独钉住"守卫看方法自身"的写法：
+  //   insideVmFunction 从节点向上找，方法体被 VM 编译时方法节点自身即命中，
+  //   于是最常见的情形（普通类方法进 VM）被整个跳过，实测 8 个方法名漏 7 个。
+  //   先断言 vm 确实编译了这些方法，防止将来 vm 阈值变化让本用例空转。
+  //   stats 是 [{pass, result, ms}] 数组，不是按 pass 名的对象。
+  {
+    let bad = '';
+    const r = obfuscate(mkSrc, { ...base, seed: 5, vmProtection: true });
+    const entry = (r.stats || []).find((e) => e.pass === 'vm');
+    const compiled = entry && entry.result ? entry.result.compiled : 0;
+    if (!(compiled > 0)) { bad = 'vm 未编译任何函数（compiled=' + compiled + '），本用例失去判别力'; }
+    else {
+      const n = plainCount(r.code);
+      if (n > 0) bad = 'vm 已编译 ' + compiled + ' 个函数，仍留 ' + n + ' 处明文方法名';
+    }
+    ok(!bad, 'VM 编译过的方法其键照样转（守卫只看容器）', bad);
+  }
+
+  // ④ 语义逐位不变：把全部形态一次跑齐（构造/取值/静态/字段/异步/生成器/私有名）。
+  {
+    const src = [
+      'const zzObj = {',
+      '  zzGreet(n) { return "hi " + n; },',
+      '  get zzSize() { return 3; },',
+      '  set zzSize(v) { this._s = v; },',
+      '  async zzLoad() { return 1; },',
+      '  *zzGen() { yield 1; yield 2; },',
+      "  'zz-dash'() { return 'dash'; },",
+      '  constructor() { return "ctor"; },',
+      '  __proto__() { return "proto"; },',
+      '};',
+      'class ZzWidget {',
+      '  constructor(v) { this.v = v; }',
+      '  zzRender(m) { let s = 0; for (let i = 0; i < 3; i++) s += i; return "r:" + m + this.v + s; }',
+      '  static zzMake() { return new ZzWidget(1); }',
+      '  get zzLabel() { return "L"; }',
+      '  static async zzFetch() { return 5; }',
+      '  *zzIter() { yield 9; }',
+      '  zzField = 7;',
+      '  static zzStatic = 8;',
+      '  #zzPriv = 9;',
+      '  zzPriv() { return this.#zzPriv; }',
+      '}',
+      'const zzW = new ZzWidget(2);',
+      'zzObj.zzSize = 11;',
+      'const zzOut = [zzObj.zzGreet("a"), zzObj.zzSize, zzObj._s, zzW.zzLabel, ZzWidget.zzMake().v,',
+      '  zzW.zzRender("x"), zzW.zzField, ZzWidget.zzStatic, zzW.zzPriv(),',
+      '  zzObj["zz-dash"](), zzObj.constructor(), zzObj.__proto__()].join("|");',
+      'let zzIt = [];',
+      'for (const x of zzObj.zzGen()) zzIt.push(x);',
+      'for (const y of zzW.zzIter()) zzIt.push(y);',
+      'Promise.all([zzObj.zzLoad(), ZzWidget.zzFetch()]).then((v) => {',
+      '  process.stdout.write(zzOut + "|" + zzIt.join(",") + "|" + v.join(","));',
+      '});',
+    ].join('\n');
+    const want = runNode(src, 'mk-want.js').trim();
+    let bad = '';
+    const cases = [
+      ['low', {}, {}], ['medium', {}, {}], ['high', {}, {}], ['max', {}, {}],
+      ['high', { nameStyle: 'Mangled-props' }, {}],
+      ['max', { nameStyle: 'Mangled-shuffled-props' }, {}],
+      ['low', { vmProtection: false }, {}],
+      ['high', { stringArray: false }, {}],
+      ['high', { objectKeyEncoding: true, reservedStrings: ['^zzRender$'] }, { expectPlain: ['zzRender'] }],
+    ];
+    for (const [preset, extra, expect] of cases) {
+      const r = obfuscate(src, { preset, seed: 7, shell: false, integrityCheck: false, ...extra });
+      let got;
+      try { got = runNode(r.code, 'mk-' + preset + '-' + Object.keys(extra).join('')).trim(); }
+      catch (e) { got = 'THREW'; }
+      if (got !== want) { bad = preset + ' ' + JSON.stringify(extra) + ' 实得 ' + got.slice(0, 60) + '，应为 ' + want.slice(0, 60); break; }
+      // ⑤ 选项面：关掉 objectKeyEncoding 就必须回到明文（选项被尊重）。
+      if (extra.objectKeyEncoding === false && plainCount(r.code) === 0) {
+        bad = 'objectKeyEncoding:false 仍把方法名藏起来了，选项没被尊重'; break;
+      }
+      // ⑥ reservedStrings 承诺"该串不收集/不拆分"，方法键命中即必须保持明文。
+      for (const nm of (expect.expectPlain || [])) {
+        const c = (r.code.match(new RegExp('(?<![A-Za-z0-9_$])' + nm + '(?![A-Za-z0-9_$])', 'g')) || []).length;
+        if (c === 0) { bad = 'reservedStrings 命中的 ' + nm + ' 仍被隐藏，保留名单失效'; break; }
+      }
+      if (bad) break;
+    }
+    ok(!bad, '方法名入池后语义逐位不变 + 选项面被尊重（9 组配置）', bad);
+  }
+
+  // ⑦ 三处禁改面：类 constructor（转计算键会让类丢掉构造函数）、对象 __proto__ 方法、
+  //    私有名键。三者共同点是老码天然满足、新码一旦写错就静默坏语义——
+  //    constructor 那条最毒：`new` 直接抛，而产物在构建期完全正常。
+  {
+    let bad = '';
+    const src = [
+      'class ZzC { constructor(v) { this.v = v; } zzM() { return this.v * 2; } }',
+      'var zzO = { __proto__() { return "pm"; } };',
+      'class ZzD { #zzP = 3; zzGet() { return this.#zzP; } }',
+      'process.stdout.write(new ZzC(21).zzM() + zzO.__proto__() + new ZzD().zzGet());',
+    ].join('\n');
+    const want = runNode(src, 'mk-skip-want.js').trim();
+    const r = obfuscate(src, { preset: 'high', seed: 11, shell: false, integrityCheck: false });
+    // constructor 键必须保持非计算
+    const ctorComputed = (() => {
+      const walk = (n, fn) => {
+        if (!n || typeof n !== 'object') return;
+        if (Array.isArray(n)) { n.forEach((c) => walk(c, fn)); return; }
+        if (n.type) fn(n);
+        for (const k of Object.keys(n)) { if (k === 'loc' || k === 'start' || k === 'end') continue; walk(n[k], fn); }
+      };
+      let hit = false;
+      walk(parse(src, { sourceType: 'script' }), (x) => {
+        if (x.type === 'ClassMethod' && x.key && x.key.name === 'constructor' && x.computed) hit = true;
+      });
+      return hit;
+    })();
+    // 这是对**源码**的静态核对：确认源里的 constructor 键确实是非计算的，
+    // 从而产物里它一定保持明文 constructor —— 即下面的明文断言才有判别力。
+    if (ctorComputed) bad = '样本前提错误：源里的 constructor 键是计算键';
+    else if (!/(?<![A-Za-z0-9_$])constructor(?![A-Za-z0-9_$])/.test(r.code)) bad = 'constructor 键被隐藏了（不该转）';
+    let got;
+    try { got = runNode(r.code, 'mk-skip.js').trim(); } catch (e) { got = 'THREW'; }
+    if (!bad && got !== want) bad = '禁改面样本语义不对：实得 ' + got.slice(0, 40) + '，应为 ' + want;
+    ok(!bad, 'constructor / __proto__ / 私有名键不转，语义正确', bad);
+  }
+}
+
 if (process.argv[1] && process.argv[1].endsWith('passes-basic.js')) {
   const bad = report();
   cleanTmp();
