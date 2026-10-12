@@ -126,6 +126,102 @@ process.stdout.write(String(a) + '|' + String(b) + '|' + c + '\\n');`, 'Infinity
   ok(obfuscate(simCases[0][0], { preset: 'high', shell: false, simplify: true, seed: 97 }).code ===
     obfuscate(simCases[0][0], { preset: 'high', shell: false, simplify: true, seed: 97 }).code,
     'simplify 固定 seed 可复现');
+
+  // 死代码闸门放宽 + 不可达语句清除（2026-10-12）。
+  //
+  // 原来的闸门是 `test.type === 'BooleanLiteral'`，于是只有 if(false)/while(false)
+  // 能删；`if (0)`、`if ('')`、`if (null)`、`if (void 0)`、`while (0)`、
+  // `do..while(0)`、`for(;false;)` 全部漏掉——真实代码里这些写法一点也不比
+  // if(false) 少。另外没有任何"return 之后的语句"处理。
+  // 实测：下面这组样例老码 removed=2，新码 removed=12。
+  {
+    const src = [
+      'var calls = 0;',
+      'function bump(){ calls++; return 1; }',
+      'function f1(){ var r = typeof x; return r; var x = 1; }',
+      'function f2(){ return 1; var {a} = {}; }',
+      'function f4(){ var r = typeof later; return r; function later(){ return 1; } }',
+      'function f5(){ var n = 0; do { n += 2; } while (0); return n; }',
+      'function f6(){ var s = 0; for (var i = 0; false; i++) { s += i; } return s + "|" + typeof i; }',
+      'function f7(){ var s = 0; for (let j = 0; false; j++) { s += j; } return s; }',
+      'function f8(){ var o = {}; o.k = 1; for (o.k; false; ) { } return o.k; }',
+      'function f9(){ if (void bump()) { calls += 100; } return calls; }',
+      'function f10(){ var undefined = 5; var out = 0; if (undefined) { out = 1; } return out; }',
+      'function f11(x){ var out = ""; switch (x) { case 1: out += "a"; break; out += "dead"; case 2: out += "b"; return out; } return out; }',
+      'function f13(){ var out = 0; if (!0) { out = 1; } if (``) { out = 2; } if (`x`) { out += 10; } if (-0) { out = 3; } if (0.0) { out = 4; } return out; }',
+      'function f14(){ var out = 0; if (0) { out = 1; } else { out = 2; } if (1) { out += 10; } else { out = 99; } return out; }',
+      'function f15(){ try { return 7; } finally { } }',
+      'var res = [f1(), f2(), f4(), f5(), f6(), f7(), f8(), f9(), f10(), f11(1), f11(2), f13(), f14(), f15()].join("~");',
+      'process.stdout.write(res);',
+    ].join('\n');
+    const want = runNode(src, 'dce-want.js').trim();
+
+    const plain = { preset: 'low', shell: false, simplify: true, seed: 1, reservedNames: ['^mk[0-9]$'] };
+
+    // 判别 1：七类"静态可判假"的写法，调用点必须全部消失。
+    // 标记函数名走 reservedNames 保住（mangle 会改名，靠名字计数就废了）。
+    const marks = ['mk1', 'mk2', 'mk3', 'mk4', 'mk5', 'mk6', 'mk7'];
+    const deadSrc = [
+      'function mk1(){} function mk2(){} function mk3(){} function mk4(){} function mk5(){}',
+      'function mk6(){} function mk7(){}',
+      'function pack(a, b) {',
+      '  if (false) { mk1(); }',
+      '  if (0) { mk2(); }',
+      "  if ('') { mk3(); }",
+      '  if (null) { mk4(); }',
+      '  if (void 0) { mk5(); }',
+      '  while (0) { mk6(); }',
+      '  for (; false; ) { mk7(); }',
+      '  return a + b;',
+      '}',
+      'process.stdout.write(String(pack(2, 3)));',
+    ].join('\n');
+    const rDead = obfuscate(deadSrc, { ...plain, controlFlowFlattening: false, deadCodeInjection: false, stringArray: false, objectKeyEncoding: false, mangle: false });
+    const callCount = (code, n) => (code.match(new RegExp('(?<![A-Za-z0-9_$])' + n + '\\s*\\(', 'g')) || []).length;
+    const stillAlive = marks.filter((n) => callCount(rDead.code, n) > 1);
+    ok(stillAlive.length === 0,
+      '七类静态可判假的写法全部删掉（旧码只删得掉 if(false)）',
+      '仍留调用点：' + (stillAlive.join(',') || '-') + '；removed=' +
+      ((rDead.stats.find((s) => s.pass === 'simplify') || {}).result || {}).removed);
+
+    // 判别 2：return 之后的语句必须清掉（老码完全没有这一步）
+    const tailSrc = 'function g(){ return 1; h1(); var t = 2; if (t) { h2(); } }\n'
+      + 'function h1(){}\nfunction h2(){}\nprocess.stdout.write(String(g()));';
+    const rTail = obfuscate(tailSrc, { ...plain, reservedNames: ['^h[12]$'] });
+    const tailAlive = ['h1', 'h2'].filter((n) => callCount(rTail.code, n) > 1);
+    ok(tailAlive.length === 0, 'return 之后的语句被清除（旧码完全不做）', '仍留：' + tailAlive.join(','));
+
+    // 守卫：15 组语义逐位不变。里面每一条都对应一个"删错了就出事"的边界：
+    //   f1  var 提升（删掉声明 → typeof x 从 undefined 变 ReferenceError）
+    //   f2  不可达代码里的解构 var（摘成 `var {a}` 是语法错误）
+    //   f4  return 之后的函数声明（提升，删掉 → typeof later 变 undefined）
+    //   f5  do-while(0) 体照跑一次
+    //   f6  for(;false;) 的 var init 要留（提升 + 初始化器要跑）
+    //   f7  for(;false;) 的 let init 可整条删（循环作用域随之消失）
+    //   f8  for(;false;) 的表达式 init 要留（赋值副作用）
+    //   f9  `void f()` 不判假——调用本身有副作用，判假就等于把它吃掉
+    //   f10 被遮蔽的 undefined 不判假（`var undefined = 5` 是合法代码）
+    //   f11 switch case 穿透不能被误删
+    let semBad = '';
+    for (const preset of ['low', 'medium', 'high', 'max']) {
+      for (const seed of [1, 2, 3]) {
+        let got;
+        try {
+          const code = obfuscate(src, {
+            preset, seed, shell: false, simplify: true, integrityCheck: false,
+            controlFlowFlattening: false, deadCodeInjection: false, opaquePredicates: false,
+            selfDefending: false, debugProtection: false, sentinelRate: 0,
+          }).code;
+          got = runNode(code, 'dce-' + preset + '-' + seed + '.js').trim();
+        } catch (e) { got = 'THREW'; }
+        if (got !== want) { semBad = preset + '/' + seed + ' → ' + got.slice(0, 60); break; }
+      }
+      if (semBad) break;
+    }
+    ok(semBad === '', '放宽闸门 + 不可达清除后语义逐位不变（15 组）', semBad || '');
+    ok(want === 'undefined~1~function~2~0|number~0~1~1~1~a~b~11~12~7',
+      '样例本身的期望值（防止 want 取错导致整组断言空转）', want);
+  }
 }
 
 section('AST 简化：无用声明消除（DCE）');

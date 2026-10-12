@@ -7,10 +7,16 @@ import t from '../ast/types.js';
  *   常量折叠 —— 数值/字符串/位运算/严格比较/一元/逻辑/条件，两侧都是字面量才
  *     折。结果必须有限（除零、取模 0、幂溢出这些 NaN/Infinity 不折），且避开
  *     -0（-0 与 0 在 Object.is 下不等，`1/x` 会因此分岔到 ±Infinity）。
- *   死代码消除 —— if(false){...}、while(false){...} 整块删除；if(true)A、if(true)
- *     A else B 这类直接换成保留下来的那一支。被删块永不执行，删除不改变任何
- *     可观察行为；替换时保留 block 原样（不展开 body），let/const/class 的块
- *     作用域不变。
+ *   死代码消除 —— 条件静态可判假的 if/while/do-while/for 整块删除，判真的 if 直接
+ *     换成保留下来的那一支。判据是 staticTruthiness（覆盖布尔/数值/字符串/null/
+ *     模板/`void <字面量>`/`!字面量`/一元运算后的字面量），不是"必须是布尔字面量"
+ *     ——`if (0)`、`if ('')`、`if (void 0)` 这些在真实代码里和 if(false) 一样常见。
+ *     被删块永不执行，删除不改变任何可观察行为；替换时保留 block 原样（不展开
+ *     body），let/const/class 的块作用域不变。
+ *   不可达语句清除 —— 同一条语句列表里 return/throw/break/continue 之后的语句删掉。
+ *     `var` 声明保留但摘掉初始化器（提升语义要留，`var {a} = f()` 这类解构不能摘，
+ *     原样保留），let/const 直接删（块级 + TDZ，活的代码根本引用不到），
+ *     函数/类声明保留（提升）。
  *   空语句清除 —— 只清 Program / BlockStatement 体内的空语句，循环体/if 体的
  *     `;` 必须保留（for(;;); 删了会变语法错误）。
  *   声明合并 —— 相邻的 `var a; var b;` 并成 `var a,b;`（初始化器求值顺序不变）。
@@ -24,7 +30,12 @@ import t from '../ast/types.js';
  *   - `==`/`!=` 只在两侧同类型字面量时折（隐式转换规则易错）；
  *   - `&&`/`||`/`??` 只在「被丢弃的一侧是字面量」时才折，避免丢函数调用副作用；
  *   - 条件表达式折叠同样要求被丢弃侧是字面量；
- *   - for 循环条件为 false 不删（init 的副作用必须保留）。
+ *   - `void f()` 不参与判假：调用本身有副作用，删掉整条 if 就把它吃了。只有
+ *     `void <字面量>`（`void 0` 是最常见的一种）才判假；
+ *   - 名字叫 `undefined` 的标识符不判假：它可以被遮蔽（`var undefined = 1`），
+ *     按"就是 undefined"处理会在遮蔽的代码里删掉活的分支；
+ *   - for 循环条件为 false 时保留 init：`var` 声明原样留下（提升 + 初始化器要跑），
+ *     `let/const` 与 null init 整条删除（循环作用域随之消失，体外引用不到）。
  *
  * 本 pass 确定性、无随机，固定 seed 可复现不受影响；只缩小/不变产物体积。
  */
@@ -165,6 +176,48 @@ function foldConditional(path) {
   return true;
 }
 
+/**
+ * 静态真值：true / false / null（判不出）。
+ *
+ * 死代码闸门原先只认 BooleanLiteral，于是 `if (0)`、`if ('')`、`if (null)`、
+ * `if (void 0)`、`while (0)` 全部漏掉——这些和 if(false) 一样常见，只是没人
+ * 特意写成布尔字面量。判据必须是"这个表达式的 ToBoolean 结果是不是编译期已知的"。
+ *
+ * 两条硬边界：
+ *   · `void f()` 不判假。void 任何操作数都是 undefined，但**调用本身有副作用**，
+ *     判假之后删掉整条 if 就等于把这次调用吃掉。只认 `void <字面量>`（`void 0` 是
+ *     最常见的一种，它恰好就是本项目到处在用的 undefined 写法）。
+ *   · 名字叫 `undefined` 的标识符不判假。它可以被遮蔽（`var undefined = 1` 也合法），
+ *     当成"就是 undefined"会在遮蔽处删掉活的分支。
+ */
+function staticTruthiness(node) {
+  if (!node) return null;
+  switch (node.type) {
+    case 'BooleanLiteral': return node.value === true;
+    case 'NullLiteral': return false;
+    // 0 与 NaN 都假；-0 也假（ToBoolean 视角下 -0 === 0）
+    case 'NumericLiteral': return node.value !== 0 && !Number.isNaN(node.value);
+    case 'StringLiteral': return node.value.length > 0;
+    case 'TemplateLiteral':
+      if (node.expressions.length !== 0 || !node.quasis.length) return null;
+      return String(node.quasis[0].value.cooked).length > 0;
+    case 'UnaryExpression': {
+      const op = node.operator;
+      if (op === 'void') return isFoldable(node.argument) ? false : null;
+      if (op === '!') {
+        const inner = staticTruthiness(node.argument);
+        return inner === null ? null : !inner;
+      }
+      if ((op === '-' || op === '+' || op === '~') && node.argument.type === 'NumericLiteral') {
+        const v = op === '-' ? -node.argument.value : op === '+' ? +node.argument.value : ~node.argument.value;
+        return v !== 0 && !Number.isNaN(v);
+      }
+      return null;
+    }
+    default: return null;
+  }
+}
+
 /** 相邻 var/let/const 声明合并。就地改 declarations，求值顺序保持不变。 */
 function mergeVarScopes(scopes, stat) {
   for (const node of scopes) {
@@ -235,6 +288,58 @@ function statementParent(path) {
   const p = decl && decl.parentPath;
   if (!p || !(p.isProgram() || p.isBlockStatement())) return null;
   return p.node.body.indexOf(decl.node) >= 0 ? p : null;
+}
+
+/**
+ * 不可达语句清除。
+ *
+ * 同一条语句列表（Program 体 / 块体 / switch case 的 consequent / 静态块）里，
+ * 一旦出现 return / throw / break / continue，它之后的语句永远不执行。
+ *
+ * 三类不能一并删掉：
+ *   · `var` 声明 —— var 是函数级提升。`function f(){ g(x); return; var x = 1; }`
+ *     里的 `g(x)` 读的是提升后的 x；删掉声明会让 x 变成未解析名字，严格模式下直接
+ *     ReferenceError。所以保留声明、只摘掉初始化器（初始化器本来也不执行）。
+ *     解构声明（`var {a} = f()`）不能摘成 `var {a}`，那种形态非法，原样留着。
+ *   · `let` / `const` —— 块级 + TDZ，活的代码根本引用不到它们，整条删掉即可。
+ *   · 函数 / 类声明 —— 提升，删了会改掉后面（不可达但仍被提升可见）的绑定。
+ */
+const isExitStmt = (n) => n.type === 'ReturnStatement' || n.type === 'ThrowStatement'
+  || n.type === 'BreakStatement' || n.type === 'ContinueStatement';
+
+function sweepUnreachable(body, stat) {
+  if (!Array.isArray(body)) return;
+  let exitAt = -1;
+  for (let i = 0; i < body.length; i++) {
+    if (isExitStmt(body[i])) { exitAt = i; break; }
+  }
+  if (exitAt < 0) return;
+  for (let j = body.length - 1; j > exitAt; j--) {
+    const s = body[j];
+    if (!s) continue;
+    if (s.type === 'VariableDeclaration') {
+      if (s.kind === 'let' || s.kind === 'const') { body.splice(j, 1); stat.removed++; continue; }
+      let stripped = false;
+      for (const d of s.declarations) {
+        if (d.init !== null && d.id.type === 'Identifier') { d.init = null; stripped = true; }
+      }
+      if (stripped) stat.removed++;
+      continue;
+    }
+    if (s.type === 'FunctionDeclaration' || s.type === 'ClassDeclaration') continue;
+    body.splice(j, 1);
+    stat.removed++;
+  }
+}
+
+function dropUnreachable(ast, traverse, stat) {
+  traverse(ast, {
+    Program(path) { sweepUnreachable(path.node.body, stat); },
+    BlockStatement(path) { sweepUnreachable(path.node.body, stat); },
+    SwitchCase(path) { sweepUnreachable(path.node.consequent, stat); },
+    StaticBlock(path) { sweepUnreachable(path.node.body, stat); },
+    noScope: true,
+  });
 }
 
 /**
@@ -372,10 +477,20 @@ export default function simplify(ast, options, ctx) {
   // 死代码消除 + 空语句清除：先收集再倒序处理，避免数组位移干扰遍历
   const dead = [];
   traverse(ast, {
-    IfStatement(path) { if (path.node.test.type === 'BooleanLiteral') dead.push(path); },
-    WhileStatement(path) {
-      const test = path.node.test;
-      if (test.type === 'BooleanLiteral' && test.value === false) dead.push(path);
+    // 闸门是"条件静态可判假"，不是"必须是布尔字面量"。staticTruthiness 判不出来时
+    // 一律不动（判错方向的后果是不可达代码里漏删，可判真的场景被误删才是事故）。
+    IfStatement(path) { if (staticTruthiness(path.node.test) !== null) dead.push(path); },
+    WhileStatement(path) { if (staticTruthiness(path.node.test) === false) dead.push(path); },
+    // do-while 判假 → 体照跑一次，条件求值无副作用，换成体本身
+    DoWhileStatement(path) { if (staticTruthiness(path.node.test) === false) dead.push(path); },
+    // for 判假 → 体永不执行。init 要单独处理：var 声明要留（提升 + 初始化器要跑），
+    // let/const 与 null init 整条删（循环作用域随之消失，体外引用不到那个变量）。
+    ForStatement(path) {
+      if (staticTruthiness(path.node.test) !== false) return;
+      const init = path.node.init;
+      dead.push({ path, initKind: init && init.type === 'VariableDeclaration'
+        ? (init.kind === 'var' ? 'varDecl' : 'drop')
+        : (init ? 'expr' : 'none') });
     },
     EmptyStatement(path) {
       const p = path.parentPath;
@@ -390,20 +505,38 @@ export default function simplify(ast, options, ctx) {
     noScope: true,
   });
   for (let i = dead.length - 1; i >= 0; i--) {
-    const path = dead[i];
+    const item = dead[i];
+    // dead 里混着两种东西：普通 NodePath，以及 ForStatement 判假时带 initKind 的
+    // 包装对象。统一取出 path 与 initKind，后面按 initKind 分支。
+    const path = item.path || item;
+    const initKind = item.initKind;
+    // ForStatement 的判假处理要连 init 一起决定，单独走一支
+    if (initKind !== undefined) {
+      const n = path.node;
+      if (initKind === 'varDecl') path.replaceWith(n.init);
+      else if (initKind === 'expr') path.replaceWith(t.expressionStatement(n.init));
+      else path.remove();
+      stat.removed++;
+      continue;
+    }
     const n = path.node;
     if (n.type === 'EmptyStatement' || n.type === 'BlockStatement') { path.remove(); stat.removed++; continue; }
     if (n.type === 'WhileStatement') { path.remove(); stat.removed++; continue; }
-    // IfStatement：test 已折叠成 BooleanLiteral
-    if (n.test.value) {
-      path.replaceWith(n.consequent);   // if(true) A [else B] → A
+    if (n.type === 'DoWhileStatement') { path.replaceWith(n.body); stat.removed++; continue; }
+    // IfStatement：条件静态可判
+    if (staticTruthiness(n.test)) {
+      path.replaceWith(n.consequent);   // if(真) A [else B] → A
     } else if (n.alternate) {
-      path.replaceWith(n.alternate);    // if(false) A else B → B
+      path.replaceWith(n.alternate);    // if(假) A else B → B
     } else {
-      path.remove();                    // if(false) A → 删除
+      path.remove();                    // if(假) A → 删除
     }
     stat.removed++;
   }
+
+  // 不可达语句清除排在死代码之后：这样"return 之后的 if(0){…}"已经被上一趟删掉了，
+  // 这一趟只需处理真正活不到的部分。
+  dropUnreachable(ast, traverse, stat);
 
   // 无用声明消除放在死代码阶段之后：`if(false){ use(x) }` 这类块先被删掉，
   // 于是只被死块引用的函数/变量这一趟就变成"无人引用"，可以一起删干净。
