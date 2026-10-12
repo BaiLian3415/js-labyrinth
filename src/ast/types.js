@@ -105,8 +105,11 @@ const functionDeclaration = (id, params, body, generator, async) =>
 const classBody = (body) => node('ClassBody', { body });
 const classMethod = (kind, key, params, body, computed, staticFlag) =>
   node('ClassMethod', { kind, key, params, body, computed: !!computed, static: !!staticFlag });
-const classProperty = (key, value, staticFlag) =>
-  node('ClassProperty', { key, value: value || null, static: !!staticFlag });
+// computed 必须带出来：objectKeys 会把类字段名转成计算键（`class A { ["f"]=1 }`），
+// 生成器靠这个标记决定要不要印中括号。少了它，解析进来的计算键会被打成
+// `class A { ("f")=1; }`——括号在、括号对没了，第二轮解析直接报"无效的属性键"。
+const classProperty = (key, value, staticFlag, computed) =>
+  node('ClassProperty', { key, value: value || null, static: !!staticFlag, computed: !!computed });
 // 类静态块，static { ... }。body 与 directives 分开存，与 BlockStatement 一致
 const staticBlock = (body, directives) =>
   node('StaticBlock', { body, directives: directives || [] });

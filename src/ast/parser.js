@@ -609,13 +609,18 @@ class Parser {
   _lookaheadIs(v) { return this._lookahead(() => { this.next(); return this.isPunct(v); }); }
   _lookaheadIsName(v) { return this._lookahead(() => { this.next(); return this.isName(v); }); }
 
-  // 探测后面是否依次跟着标识符和左括号，get/set/async 方法靠它区分
-  _nameThenParen() {
+  // 探测后面是否跟着一个属性名（名字/字符串/数字/[/#），async 另允许 `*`。
+  // get/set/async 靠它区分"修饰符"与"成员名本身"：`get(){}` 里 get 是成员名，
+  // `get x(){}` 与 `get ["x"](){}` 里 get 是修饰符。原来的判定只认
+  // "标识符 + 左括号"，遇到计算键就误判成成员名，接着在 `[` 上报"期望分号"。
+  // objectKeys 现在会把 getter/setter 的键也转成计算形态，这条判定必须跟上。
+  _nameThenKey(isAsync) {
     return this._lookahead(() => {
       this.next();
-      if (this.peek().type !== 'name') return false;
-      this.next();
-      return this.isPunct('(');
+      const t0 = this.peek();
+      if (isAsync && t0.type === 'punct' && t0.value === '*') return true;
+      if (t0.type === 'name' || t0.type === 'str' || t0.type === 'num') return true;
+      return t0.type === 'punct' && (t0.value === '[' || t0.value === '#');
     });
   }
 
@@ -1102,13 +1107,13 @@ class Parser {
         this.next();
         isStatic = true;
       }
-      if ((this.isName('get') || this.isName('set')) && this._nameThenParen()) {
+      if ((this.isName('get') || this.isName('set')) && this._nameThenKey(false)) {
         const gs = this.peek().value;
         this.next();
         if (gs === 'get') isGet = true;
         else isSet = true;
       }
-      if (this.isName('async') && this._nameThenParen()) {
+      if (this.isName('async') && this._nameThenKey(true)) {
         this.next();
         isAsync = true;
       }
@@ -1126,8 +1131,9 @@ class Parser {
         let value = null;
         if (this.eatPunct('=')) value = this.parseExpression();
         // isStatic 必须传下去，丢掉静态标记会让静态字段变成实例字段，
-        // 类名上的属性取不到，实例上反而多出一个
-        members.push(t.classProperty(key, value, isStatic));
+        // 类名上的属性取不到，实例上反而多出一个。computed 同理：丢了它生成器
+        // 不会印中括号，产物往返一次就坏掉。
+        members.push(t.classProperty(key, value, isStatic, computed));
         this._consumeSemi();
       }
     }
@@ -1719,20 +1725,24 @@ class Parser {
   }
 
   parseObjectProperty() {
-    if ((this.isName('get') || this.isName('set')) && this._nameThenParen()) {
+    // 键走 parsePropertyKey 而不是 parseIdentifier：计算键与字符串键的
+    // getter/setter 同样是合法的，objectKeys 也会把这类键转成计算形态。
+    if ((this.isName('get') || this.isName('set')) && this._nameThenKey(false)) {
       const kind = this.peek().value;
       this.next();
-      const key = this.parseIdentifier();
+      const { key, computed } = this.parsePropertyKey();
       const params = this.parseParams();
       const body = this.parseBlockStatement();
-      return t.objectMethod(kind, key, params, body);
+      return t.objectMethod(kind, key, params, body, computed);
     }
-    if (this.isName('async') && this._nameThenParen()) {
+    if (this.isName('async') && this._nameThenKey(true)) {
       this.next();
-      const key = this.parseIdentifier();
+      const isGenerator = !!this.eatPunct('*');
+      const { key, computed } = this.parsePropertyKey();
       const params = this.parseParams();
       const body = this.parseBlockStatement();
-      const m = t.objectMethod('method', key, params, body);
+      const m = t.objectMethod('method', key, params, body, computed);
+      if (isGenerator) m.generator = true;
       m.async = true;
       return m;
     }

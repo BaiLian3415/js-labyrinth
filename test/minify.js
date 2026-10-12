@@ -916,6 +916,95 @@ section('其他');
   }
 }
 
+section('生成器优先级：赋值级以下的位置必须给逗号表达式补括号');
+{
+  // 根因：AST 里 SequenceExpression 是合法节点，但**打印**出来的语法层级未必容纳它。
+  // 生成器多数表达式位置走 _str(expr, minPrec)（优先级不够就补括号），少数位置直接
+  // _node(expr) —— 那几处漏掉一次括号，产出的代码会重新解析成**另一个结构**，
+  // 而且不报错、不在构建期暴露，只在运行期表现为"某个值算错了"。
+  //
+  // 2026-10-12 实测到的就是这类：numberObfuscation 的运行期状态形态产出逗号表达式
+  // `upd, expr`，而 _yieldExpression 直接印操作数，于是
+  //   class A { *it() { yield 9; } }
+  // 被改成
+  //   class A { *it() { yield C=C*48769+51123&131071, 126054494^C^(126054494^9^C); } }
+  // `yield a, b` 的 b 是逗号的右操作数，yield 只拿到 a —— 于是 yield 出去的是计数器
+  // 状态（65571）而不是 9。实测 preset high/medium 在 30 个 seed 里各错 1 个
+  // （seed 6）、max 错 1 个（seed 10），与 VM、扁平化都无关。
+  //
+  // 判据用**运行结果**而不是文本：每个用例的逗号表达式左侧都有可观测副作用
+  // （赋值 / push），所以"少一对括号"必然改变值或抛错，老码逐条都不通过。
+  const parserMod = await import('../src/ast/parser.js');
+  const generatorMod = await import('../src/ast/generator.js');
+  const { parse } = parserMod.default || parserMod;
+  const generate = (ast) => (generatorMod.default || generatorMod)(ast).code;
+
+  const CASES = [
+    // yield 操作数：少括号 → yield 出去的是左操作数
+    ['yield 操作数', 'function* gy(){ var a; yield (a=1, 7); }\nout([...gy()].join(","));', '7'],
+    // await 操作数：少括号 → await 的是左操作数，值变成 Promise 对象
+    ['await 操作数',
+      'async function aw(){ var a; var p = (a=1, Promise.resolve(2)); return String(await p); }\naw().then(function(v){ out(v); });',
+      '2'],
+    // 展开元素：少括号 → ... 展开的是左操作数（数字），抛 TypeError
+    ['展开元素', 'var a=0; out([...(a=0, [1,2])].join(","));', '1,2'],
+    // 解构剩余：同上
+    ['解构剩余', 'var a=0; var t=[...(a=0, [1,2])]; out(t.join(","));', '1,2'],
+    // 默认值：少括号 → 变成两个实参
+    ['解构默认值', 'var a=0; function f(v=(a=1, 5)){ return v; } out(String(f()));', '5'],
+    // 计算属性键：少括号 → 键取左操作数
+    ['对象计算键', 'var a=0; var o={[(a=0,"k")]: 9}; out(String(o.k));', '9'],
+    ['对象方法计算键', 'var a=0; var o={[(a=0,"m")](){ return 4; }}; out(String(o.m()));', '4'],
+    ['类方法计算键', 'var a=0; class M { [(a=0,"cm")](){ return 5; } } out(String(new M().cm()));', '5'],
+    ['类字段计算键', 'var a=0; class P { [(a=0,"cp")]=6; } out(String(new P().cp));', '6'],
+    // 类字段初值：少括号 → 逗号被读成下一个字段声明
+    ['类字段初值', 'var a=0; class Q { v=(a=0, 7); } out(String(new Q().v));', '7'],
+    // 标签模板的 tag：少括号 → 模板套在右操作数上，左侧不产生调用
+    ['标签模板 tag',
+      'var n=0; function tg(){ n++; return "x"; } var a=0; (a=0, tg)`tpl`; out(String(n));', '1'],
+    // 计算下标：少括号 → 下标取左操作数
+    ['成员计算下标', 'var a=0; var o={k:3}; out(String(o[(a=0,"k")]));', '3'],
+  ];
+
+  // 预置 out()：每个用例只写自己那一行。输出挂在 exit 上，async 用例的 then
+  // 回调（微任务）才来得及跑完——挂在 try 块之后同步输出的话 async 用例恒为空串。
+  const wrap = (body) => 'var __o=[]; function out(v){ __o.push(String(v)); }\n'
+    + 'process.on("exit", function(){ process.stdout.write(__o.join("~")); });\n'
+    + 'try{\n' + body + '\n}catch(e){ __o.push("THREW:"+(e&&e.constructor&&e.constructor.name)); }';
+
+  let bad = '';
+  for (const [name, body, want] of CASES) {
+    const src = wrap(body);
+    let got;
+    try {
+      // 两轮往返：生成 → 解析 → 再生成。要求两轮文本一致，且都能跑出 want。
+      const g1 = generate(parse(src, { sourceType: 'script' }));
+      const g2 = generate(parse(g1, { sourceType: 'script' }));
+      if (g1 !== g2) { bad = name + '：往返两轮文本不一致（第一轮丢了括号）'; break; }
+      got = runNode(g1, 'genprec-' + name + '.js').trim();
+    } catch (e) {
+      bad = name + '：生成/解析抛错 ' + String(e.message).split('\n')[0].slice(0, 60); break;
+    }
+    if (got !== want) { bad = name + '：实得 ' + got + '，应为 ' + want; break; }
+  }
+  ok(!bad, '逗号表达式在 ' + CASES.length + ' 个赋值级以下位置都补括号（老码逐条算错）', bad);
+
+  // 反向确认：断言不是恒真的。把生成结果里的括号去掉（等价于老码的打印方式），
+  // 值必须变。判据取 yield 这一条——它是 2026-10-12 实测真实踩到的那一处。
+  {
+    const body = 'function* gy(){ var a; yield (a=1, 7); }\nout([...gy()].join(","));';
+    const g = generate(parse(wrap(body), { sourceType: 'script' }));
+    const old = g.replace(/yield \(([^()]*)\)/, 'yield $1');
+    let okParen = false, oldDiffers = false;
+    try {
+      okParen = runNode(g, 'genprec-good.js').trim() === '7';
+      oldDiffers = runNode(old, 'genprec-old.js').trim() !== '7';
+    } catch (e) { oldDiffers = true; }
+    ok(okParen && oldDiffers, '去掉括号后值确实改变（老打印方式必错，断言非恒真）',
+      '带括号=' + okParen + ' 去括号后是否不同=' + oldDiffers);
+  }
+}
+
 section('选项元数据：说明完整性');
 {
   // 每个选项都必须有中英文名称与中英文说明，缺一不可。

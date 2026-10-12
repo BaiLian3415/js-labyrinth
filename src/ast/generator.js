@@ -252,13 +252,16 @@ class Generator {
       case 'MemberExpression': this._memberExpression(node); break;
       case 'OptionalMemberExpression': this._memberExpression(node); break;
       case 'SequenceExpression': this._sequenceExpression(node); break;
-      case 'SpreadElement': this._s('...'); this._node(node.argument); break;
-      case 'RestElement': this._s('...'); this._node(node.argument); break;
-      case 'AssignmentPattern': this._node(node.left); this._s('='); this._node(node.right); break;
+      // 展开/解构默认值/await 的操作数都只到"赋值级"，序列表达式（逗号）在这些
+      // 位置必须自带括号。漏掉的表现是静默改语义而不是报错，见 _yieldExpression
+      // 的注释与 _str 的定义。
+      case 'SpreadElement': this._s('...'); this._str(node.argument, PREC.Assignment); break;
+      case 'RestElement': this._s('...'); this._str(node.argument, PREC.Assignment); break;
+      case 'AssignmentPattern': this._node(node.left); this._s('='); this._str(node.right, PREC.Assignment); break;
       case 'ObjectPattern': this._objectExpression(node); break;
       case 'ArrayPattern': this._arrayExpression(node); break;
       case 'YieldExpression': this._yieldExpression(node); break;
-      case 'AwaitExpression': this._s('await '); this._node(node.argument); break;
+      case 'AwaitExpression': this._s('await '); this._str(node.argument, PREC.Unary); break;
       case 'ParenthesizedExpression': this._s('('); this._node(node.expression); this._s(')'); break;
       case 'MetaProperty': this._s(node.meta.name + '.' + node.property.name); break;
       case 'Import': this._s('import'); break;
@@ -592,7 +595,12 @@ class Generator {
     if (node.kind === 'get' || node.kind === 'set') { this._s(node.kind + ' '); }
     if (node.async) { this._s('async '); }
     if (node.generator) { this._s('*'); }
-    this._node(node.key);
+    // computed 键（`["foo"](){}`）：objectKeys 会把方法名转成计算键并入字符串池，
+    // 与 _objectMethod 同一形态。缺了这对中括号，转出来的产物是 `decode()(){}`
+    // 这种语法错误，而错误点在生成期而不是解析期，表现为"构建产物无法解析"。
+    if (node.computed) this._s('[');
+    this._str(node.key, PREC.Assignment);
+    if (node.computed) this._s(']');
     this._s('(');
     for (let i = 0; i < node.params.length; i++) {
       if (i > 0) this._s(',');
@@ -604,8 +612,12 @@ class Generator {
 
   _classProperty(node) {
     if (node.static) { this._s('static '); }
-    this._node(node.key);
-    if (node.value !== null) { this._sep(); this._s('='); this._sep(); this._node(node.value); }
+    // 同上：类字段名也可转计算键（`class A { ["x"] = 1 }`），生成器必须成对补中括号
+    if (node.computed) this._s('[');
+    this._str(node.key, PREC.Assignment);
+    if (node.computed) this._s(']');
+    // 字段初值的位置是赋值级：逗号表达式不补括号会被读成同一声明块里的下一个字段
+    if (node.value !== null) { this._sep(); this._s('='); this._sep(); this._str(node.value, PREC.Assignment); }
     this._stmtEnd();
   }
 
@@ -813,7 +825,7 @@ class Generator {
   }
 
   _taggedTemplate(node) {
-    this._node(node.tag);
+    this._str(node.tag, PREC.Member);
     this._templateLiteral(node.quasi);
   }
 
@@ -838,14 +850,16 @@ class Generator {
   }
 
   _objectProperty(node) {
+    // computed 键（`["foo"]`）：键位置的语法层级是赋值级，序列表达式必须补括号。
+    // 非计算键是标识符/字符串/数字，优先级恒高于赋值级，这一分支对它们是恒等变换。
     if (node.computed) this._s('[');
-    this._node(node.key);
+    this._str(node.key, PREC.Assignment);
     if (node.computed) this._s(']');
     if (node.shorthand) {
       // 带默认值的简写只在等号右边取值，等号左边的名字已经打过了
       if (node.value && node.value.type === 'AssignmentPattern') {
         this._s('=');
-        this._node(node.value.right);
+        this._str(node.value.right, PREC.Assignment);
       }
       return;
     }
@@ -859,7 +873,7 @@ class Generator {
     if (node.async) { this._s('async '); }
     if (node.generator) { this._s('*'); }
     if (node.computed) this._s('[');
-    this._node(node.key);
+    this._str(node.key, PREC.Assignment);
     if (node.computed) this._s(']');
     this._s('(');
     for (let i = 0; i < node.params.length; i++) {
@@ -1006,7 +1020,8 @@ class Generator {
     }
     if (node.computed) {
       this._s('[');
-      this._node(node.property);
+      // 下标位置的语法层级是赋值级，序列表达式不补括号会写到括号外面去
+      this._str(node.property, PREC.Assignment);
       this._s(']');
     } else {
       if (node.optional) this._s('?.');
@@ -1027,7 +1042,15 @@ class Generator {
   _yieldExpression(node) {
     this._s('yield');
     if (node.delegate) this._s('*');
-    if (node.argument) { this._s(' '); this._node(node.argument); }
+    // yield 的操作数只到赋值级。`yield a, b` 会被读成 `(yield a), b`——逗号的优先级
+    // 比 yield 的操作数低，于是 yield 出去的是 a 而不是整个逗号表达式。
+    // numberObfuscation 的运行期状态形态（`upd, expr`）正好是逗号表达式，
+    // 2026-10-12 实测：`class A { *it(){ yield 9; } }` 在 preset high/medium 的
+    // seed 6、max 的 seed 10（30 个 seed 里各错 1 个）被改成
+    // `yield C=C*48769+51123&131071, 126054494^C^(126054494^9^C)`，
+    // yield 出去的是计数器状态 65571 而不是 9。**产物不报错、构建期全绿**，
+    // 症状是"某个数字常量算错了"，与病因隔三层。
+    if (node.argument) { this._s(' '); this._str(node.argument, PREC.Assignment); }
   }
 }
 
