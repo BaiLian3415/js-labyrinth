@@ -491,6 +491,30 @@ npm run build:web:cloud  # 云端执行形态（核心不进产物，Vercel 部�
   加 `jslb:` 前缀（只暴露 get/put/del）。走 `platform.getKv()` 才是线上同一层，
   直接读裸键会永远读到空——`test/orders-api.js` 的过期用例踩过这个坑。
 
+## Anti-CDP 的 stealth 判据与已知残余（2026-10-12 实测）
+
+- **V2 现在两条判据**：① `navigator.webdriver === true`；② **navigator 实例上存在
+  自有 `webdriver` 属性**。② 针对的是 stealth 框架的标准手法
+  `Object.defineProperty(navigator,'webdriver',{get:()=>false})`——它把 ① 整个绕过去。
+- **② 的依据是实测过的，不是推理**：headless Chromium（自动化已开）下
+  `Object.getOwnPropertyDescriptor(navigator,'webdriver')` 为 `null`，该属性是
+  `Navigator.prototype` 上的访问器（`in navigator` 为 true）；在实例上 defineProperty
+  之后实例上才出现自有访问器。规范也把 webdriver 定义在原型上。**"自动化本身不产生
+  自有属性，只有注入才会"** ——所以 ② 是硬证据，可以直接投毒，不必走衰减计数。
+- **两条想当然的判据，实测否掉**：
+  - `delete navigator.webdriver` 在 Chromium 里**根本无效**（原型属性还在，读到的仍是
+    true），所以"属性缺失"不是现实 evasion 路径。而按缺失判假又会在 2018 年前的
+    浏览器上大面积误报——误报即投毒（内核 `pois` 置位、值语义入口全返回 0），不做。
+  - **原型级覆盖**（`delete Navigator.prototype.webdriver` 后重新 defineProperty）
+    实例上不留任何痕迹，纯 JS 侧无法与引擎原生访问器区分。这是**已知残余**，按可
+    枚举性/可配置性去猜会踩到 Safari 等引擎的实现差异，风险不对称，不做。
+    `test/anti-analysis.js` 有一条断言专门把这个残余钉住（原型级覆盖不投毒），
+    将来有人补上要一并改那条断言。
+- **沙箱基准形态不能用 `{ webdriver: false }`**：那本身就是自有数据属性，恰好会被
+  判据 ② 命中，拿它测"不误报"是无效的。真实形态是 `Object.create(proto)`，proto 上
+  是可枚举可配置的访问器、实例上什么都没有（`cdp-sandbox.js` 的 `makeNavigator`）。
+  两种注入形态都要测：`{get:()=>false}` 与 `{value:false}`。
+
 ## 提交前自检
 
 ```bash
