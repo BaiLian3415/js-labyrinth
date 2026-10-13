@@ -655,6 +655,16 @@ function obfuscate(code, userOptions) {
   // 控制流扁平化
   if (options.controlFlowFlattening) applyPass(controlFlow, 'controlFlow');
 
+  // Anti-LLM 加固：误导性注记 + 伪业务分支。必须排在 objectKeys / stringArray
+  // 之前：注入的字符串字面量（注记全文、FLAG 名、'-trace'）随后被收进池里加密，
+  // 不额外留下明文；伪分支里的点形态成员属性（process.env、Date.now 等）随后
+  // 被 objectKeys 转成计算下标。2026-10-13 之前这一块排在 stringArray 之后，
+  // 注释却写着"排在 stringArray 之前"，注记与 FLAG 在任何配置下都是明文
+  // （max 档实测：注记 2/2 明文，process.env.CFG_PATH_PATH 之类原样可见）。
+  // 位置约束：必须在 vm（649）之后——insideVmFunction 判定依赖已编译标记；
+  // deadCode / opaquePredicates 只插入/包裹不删除已存在语句，排它们之前安全。
+  if (options.antiLLM) applyPass(antiLLM, 'antiLLM');
+
   // 对象键编码
   if (options.objectKeyEncoding) applyPass(objectKeys, 'objectKeys');
 
@@ -701,10 +711,6 @@ function obfuscate(code, userOptions) {
   // 排在 integrityCheck 之前：注入的根级函数声明要进完整性哈希面。pass 内部
   // 走早带注入（rtlib.insertHeadEarly），授权贡献在任何字符串池访问之前落位
   if (options.domainLock && options.domainLock.length) applyPass(domainLock, 'domainLock');
-
-  // Anti-LLM 加固：误导性注记 + 伪业务分支。排在 stringArray 之前，
-  // 注入的字符串字面量随后会被收进池里加密，不额外留下明文
-  if (options.antiLLM) applyPass(antiLLM, 'antiLLM');
 
   // Anti-CDP：CDP / 自动化框架检测。必须先于 debugProtection 注入：头部执行
   // 顺序等于 pass 调用顺序，原生 console 引用要在反调试的 consoleStub 之前捕获

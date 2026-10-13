@@ -411,8 +411,10 @@ section('Anti-LLM：注记与 FLAG 词表逐构建变化（非常量）');
   // randInt（构建已播种），同 seed 复现。
   //
   // 判据：8 个 seed 的去重注记数 > 10 且去重 FLAG 数 > 8——旧码恒不超过
-  // 10/8（数组长度即硬上限），天然可区分。stringArray 关掉以便在明文层计数；
-  // FLAG 只认 `process.env.X` 形态，避免别的 pass 的标识符混入。
+  // 10/8（数组长度即硬上限），天然可区分。stringArray 与 objectKeyEncoding 都
+  // 关掉以便在明文层计数（池收走或拆段后整串就数不到了）；FLAG 只认
+  // `process.env["X"]` 计算键形态——2026-10-13 起 FLAG 即按此形态注入（点形态
+  // 在任何配置下都不进池），避免别的 pass 的标识符混入。
   const src = [
     'function a(x){var s=x+1;if(s>2){s+=x;}else{s-=1;}return s;}',
     'function b(x){var s=0;for(var i=0;i<x;i++){if(i%2){s+=i;}else{s-=2;}}return s;}',
@@ -423,23 +425,39 @@ section('Anti-LLM：注记与 FLAG 词表逐构建变化（非常量）');
   for (let seed = 1; seed <= 8; seed++) {
     const code = obfuscate(src, {
       preset: 'low', seed, shell: false, bannerSkip: true,
-      stringArray: false, antiLLM: true,
+      stringArray: false, objectKeyEncoding: false, antiLLM: true,
     }).code;
     for (const m of code.matchAll(/['"](\/\/[^'"]*)['"]/g)) notes.add(m[1]);
-    for (const m of code.matchAll(/\.env\.((?:JSLB_|APP_|CFG_)[A-Za-z0-9_]*)/g)) flags.add(m[1]);
+    for (const m of code.matchAll(/\.env\["((?:JSLB_|APP_|CFG_)[^"']*)"\]/g)) flags.add(m[1]);
   }
   ok(notes.size > 10, '注记文本跨构建变化（去重 > 10，旧码硬上限即 10）', 'distinct=' + notes.size);
   ok(flags.size > 8, 'FLAG 名跨构建变化（去重 > 8，旧码硬上限即 8）', 'distinct=' + flags.size);
   // 可复现：同 seed 两次构建逐字节相同（组合随机性必须来自构建种子流）
   const c1 = obfuscate(src, {
-    preset: 'low', seed: 3, shell: false, bannerSkip: true, stringArray: false, antiLLM: true,
+    preset: 'low', seed: 3, shell: false, bannerSkip: true,
+    stringArray: false, objectKeyEncoding: false, antiLLM: true,
   }).code;
   const c2 = obfuscate(src, {
-    preset: 'low', seed: 3, shell: false, bannerSkip: true, stringArray: false, antiLLM: true,
+    preset: 'low', seed: 3, shell: false, bannerSkip: true,
+    stringArray: false, objectKeyEncoding: false, antiLLM: true,
   }).code;
   ok(c1 === c2, '同 seed 注记/FLAG 组合逐字节可复现');
   // 语义：注记是无害字符串语句，伪分支恒假，产物输出与原文一致
   ok(runNode(c1, 'llm-sem.js').trim() === runNode(src, 'llm-want.js').trim(), '注记/伪分支不改变语义');
+
+  // 入池（2026-10-13）：antiLLM 排到 objectKeys / stringArray 之前后，注记全文
+  // 与 FLAG 名在默认管线里必须零明文。旧码（antiLLM 在 stringArray 之后注入、
+  // FLAG 为点形态）注记 2/2 明文、FLAG 全部可见，本条在其上必挂。
+  {
+    let plainNotes = 0, plainFlags = 0;
+    for (let seed = 1; seed <= 3; seed++) {
+      const code = obfuscate(src, { preset: 'max', seed, shell: false }).code;
+      plainNotes += (code.match(/['"]\/\/\s*(TODO|NOTE|FIXME|PERF|SECURITY|COMPAT|WARNING|LEGACY)\s*:/g) || []).length;
+      plainFlags += (code.match(/(JSLB_|APP_|CFG_)(TRACE|DIAG|COMPAT|REBUILD|FALLBACK|INDEX|LAYERS|PATH)/g) || []).length;
+    }
+    ok(plainNotes === 0, '默认管线下注记零明文（旧码每构建都有明文）', '明文 ' + plainNotes + ' 条');
+    ok(plainFlags === 0, '默认管线下 FLAG 零明文（旧码全部可见）', '明文 ' + plainFlags + ' 处');
+  }
 }
 
 if (process.argv[1] && process.argv[1].endsWith('anti-analysis.js')) {

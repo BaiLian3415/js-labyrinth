@@ -3,8 +3,8 @@
  * 业务句式。本 pass 直接对着这三样做对耗：
  *
  *   1) 误导性注记：以字符串字面量语句形式注入（生成器会丢真注释，字符串语句
- *      留得住，且 stringArray 会把它收进池里加密），内容是可读的工程口气，
- *      但与真实逻辑无关；
+ *      留得住；本 pass 排在 objectKeys / stringArray 之前，注记随后被收进池里
+ *      加密，不留明文），内容是可读的工程口气，但与真实逻辑无关；
  *   2) 伪业务分支：不透明守卫（宿主探针 + 假环境变量比对）包住的整段"业务"
  *      计算，只引用内建全局与自己声明的局部，永不执行、被摘要时却很像正片；
  *   3) 命名污染：诱饵变量名走 uniqueName，与真实标识符同分布，人工分层命名
@@ -75,9 +75,15 @@ export default function antiLLM(ast, options, ctx) {
       t.logicalExpression('&&',
         t.memberExpression(t.identifier('process'), t.identifier('env'), false),
         t.binaryExpression('===',
+          // FLAG 名用计算键字符串字面量，而不是点形态标识符。两个原因：
+          //   ① stringArray 的 isEligible 对非计算成员属性直接拒收，点形态的
+          //      FLAG 在任何配置下都不进池（2026-10-13 实测：max 档产物里
+          //      process.env.CFG_PATH_PATH 等原样可见）；
+          //   ② objectKeyEncoding 关掉时点形态同样留明文，计算键则恒进池。
+          // computed 成员下标由生成器直接支持，解析往返无碍（passes-basic 有断言）。
           t.memberExpression(
             t.memberExpression(t.identifier('process'), t.identifier('env'), false),
-            t.identifier(flag), false),
+            t.stringLiteral(flag), true),
           t.stringLiteral('1'))));
     const body = t.blockStatement([
       t.variableDeclaration('var', [
@@ -148,9 +154,23 @@ export default function antiLLM(ast, options, ctx) {
   // 顶层也铺一层：纯表达式脚本（没有函数）同样需要误导面
   const prog = ast.type === 'File' ? ast.program : ast;
   if (Array.isArray(prog.body) && prog.body.length >= 2) {
+    // 落点必须在头部区之后。注记/伪分支随后会被 stringArray 收进池（访问器调用
+    // 在 load 期立即执行），而池解码器经 insertHead 插在"内核+早带+晚带"之后——
+    // 注记若拼进头部区之前，访问器调用会跑在解码器定义之前，产物 load 即抛
+    // "X is not a function"（2026-10-13 max 档实测：注记被收池拆成两段，
+    // `_0ae(..)+_0ae(..);` 落在解码器定义之前）。
+    // 锚点与 insertHead 同口径（节点身份，不记下标）：内核+早带+晚带节点在 body
+    // 里出现的最大下标+1，且不越过开头的 Directive（"use strict" 必须保持前导）。
+    // 本 pass 之后再有人 insertHead，锚点仍在注记之前——注记恒在所有头部内容之后。
+    const anchors = new Set([...(ctx.rtKernelStmts || []), ...(ctx.earlyStmts || []), ...(ctx.headStmts || [])]);
+    let last = -1;
+    for (let i = 0; i < prog.body.length; i++) if (anchors.has(prog.body[i])) last = i;
+    let d = 0;
+    while (d < prog.body.length && prog.body[d].type === 'Directive') d++;
+    const floor = Math.max(last + 1, d);
     const rounds = randInt(1, 2);
     for (let r = 0; r < rounds; r++) {
-      const at = randInt(0, prog.body.length);
+      const at = randInt(floor, prog.body.length);
       if (randInt(0, 1) === 0) { prog.body.splice(at, 0, noteStmt()); notes++; }
       else { prog.body.splice(at, 0, decoyStmt()); decoys++; }
     }
