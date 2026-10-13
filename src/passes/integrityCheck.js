@@ -103,6 +103,10 @@ export default function integrityCheck(ast, options, ctx) {
   const program = ast.type === 'File' ? ast.program : ast;
 
   // 根作用域定位，functionWrapper 的产物是单条 IIFE 调用表达式语句。
+  // catch 形参名逐构建随机（antiCDP 处同理）：本 pass 在 mangle 之后注入，
+  // 模板里的 `catch(_0w){}` 会跨构建固定。空 catch，任何名都安全。
+  const cw = '_0' + randHex(3);
+  if (ctx.usedNames) ctx.usedNames.add(cw);
   let rootBody = program.body;
   if (program.body.length === 1 && program.body[0].type === 'ExpressionStatement') {
     const ex = program.body[0].expression;
@@ -458,7 +462,7 @@ const targets = rootBody.filter((s) => s.type === 'FunctionDeclaration' && s.id 
     ];
     const probes = ['(typeof Function===typeof void 0||!Function.prototype?true:' + isNative('Function.prototype.toString') + ')']
       .concat([pool[randInt(0, pool.length - 1)]]);
-    headLines.push('try{if(!(' + probes.join('&&') + ')){' + setPoisonSrc() + '}}catch(_0w){}');
+    headLines.push('try{if(!(' + probes.join('&&') + ')){' + setPoisonSrc() + '}}catch(' + cw + '){}');
   }
   headLines.push('})();');
   const verifierParsed = parse(

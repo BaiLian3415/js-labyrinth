@@ -30,7 +30,7 @@
 import parser from '../ast/parser.js';
 const { parse } = parser;
 import rand from '../utils/rand.js';
-const { randInt, uniqueName } = rand;
+const { randInt, uniqueName, randHex } = rand;
 import hide from '../utils/hide.js';
 const { makeDbgHelpers, obfStrExpr, GLOBAL_EXPR } = hide;
 import rtlib from './rtlib.js';
@@ -57,6 +57,14 @@ export default function antiCDP(ast, options, ctx) {
   // 原生字符串原语改走 RT 内核调用，无内核时回退原生，保证降级后仍可运行
   const IOF = (s, needle) => rt.iof ? rt.iof + '(' + s + ',' + needle + ')' : '(' + s + ').indexOf(' + needle + ')';
   const { varSource: cdpVarSource } = makeDbgHelpers(rt.tblCall);
+
+  // catch 形参名逐构建随机。模板里的 `catch(_0w){}` 是空 catch，名字只出现一次，
+  // 但跨构建固定就是可 grep 的头部指纹（mangle 够不着已注入的头部，改不了它）。
+  // `_0` + 3 位 hex：不可能是 RESERVED 关键字；空 catch 作用域内无引用，任何名
+  // 都安全。登记进 usedNames，免得后置 pass 抽中同名（同一构建内重名即遮蔽，
+  // 虽不改语义，但少一次巧合）。随机性走构建种子流，同 seed 可复现。
+  const cw = '_0' + randHex(3);
+  if (ctx.usedNames) ctx.usedNames.add(cw);
 
   // 毒药联动：stringArray（pass 4）已在 program 上登记毒药属性键，本 pass
   // 写同一组键，解码器下次解码即损坏。头部执行顺序先于 debugProtection，
@@ -160,7 +168,7 @@ export default function antiCDP(ast, options, ctx) {
   parts.push('if(typeof window!==typeof void 0&&typeof setInterval==="function"){try{' +
     'var _0th=setInterval(function(){try{_0tick++;' + v2Src + v3Src + '}catch(_0e){}' +
     'try{if(_0tick%' + V1EVERY + '===0){' + v1PeriodicSrc + '}}catch(_0e){}},' + PERIOD + ');' +
-    'try{if(_0th&&typeof _0th.unref==="function"){_0th.unref();}}catch(_0w){}}catch(_0w){}}');
+    'try{if(_0th&&typeof _0th.unref==="function"){_0th.unref();}}catch(' + cw + '){}}catch(' + cw + '){}}');
 
   const headFnName = uniqueName(ctx.usedNames, '_0x');
   const headSrc = 'function ' + headFnName + '(){' + parts.join('') + '}' +

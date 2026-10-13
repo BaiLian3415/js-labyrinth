@@ -64,6 +64,52 @@ section('指纹：固定形状不得跨构建复现');
     for (const n of c.match(/_0x[0-9a-f]{9,13}\b/g) || []) hexLens.add(n.length - 3);
   }
   ok(hexLens.size >= 3, '预置名的 hex 位宽逐构建分散', '观察到位宽 ' + [...hexLens].sort().join(','));
+
+  // 外壳层固定短名：randomizeNames 名单漏一项，产物里就多一个跨构建固定的
+  // `_0x` 名。2026-10-13 实测 shell:true（classic/bytecode）3 seed 交集
+  // {_0b,_0f,_0ts,_0x}：_0b 是 mul32 形参、_0x 是 lcg 形参、_0f/_0ts 是 _0ph
+  // 探针模板的形参与局部量——它们的兄弟（_0a/_0n/_0e/_0g）都在名单里，唯独
+  // 这几个漏了。_0x0.._0x3（mul32 8 位拆分版局部量）同批补进，做全覆盖。
+  // \b 安全性已在名单注释里论证（_0xG 载体、_0x1a2b 机器名都不匹配）。
+  {
+    const FIXED = ['_0b', '_0f', '_0ts', '_0x', '_0x0', '_0x1', '_0x2', '_0x3'];
+    let bad = '';
+    for (const form of [undefined, 'bytecode']) {
+      const sets = [];
+      for (let seed = 1; seed <= 3; seed++) {
+        const c = obfuscate(SRC, { preset: 'high', seed, shell: true, ...(form ? { shellForm: form } : {}) }).code;
+        const names = new Set();
+        for (const m of c.matchAll(/(?<![A-Za-z0-9_$])_0[A-Za-z0-9]{1,9}(?![A-Za-z0-9_$])/g)) names.add(m[0]);
+        sets.push(names);
+      }
+      const leaked = FIXED.filter((n) => sets.every((s) => s.has(n)));
+      if (leaked.length) { bad = 'shell:' + (form || 'classic') + ' 仍固定 ' + leaked.join(' '); break; }
+    }
+    ok(!bad, '外壳层短名无跨构建固定项（旧码交集 {_0b,_0f,_0ts,_0x}）', bad);
+  }
+
+  // 掩码串 IIFE 形人与 catch 形参：hide.js 的 `_0T` 与三处 header 模板的
+  // `catch(_0w)` 都是纯文本模板里的固定名，mangle 够不着 mangle 之后才注入的
+  // integrityCheck 头部，跨构建固定（2026-10-13 实测：单个产物 163 处 `_0T`、
+  // integrityCheck 开关对照确认来源）。现逐构建随机，判据是"多 seed 交集为空"。
+  // 注意与 stringArray 短名区分：`_0x` + 1 位 hex 只有 16 个槽位，每构建十几次
+  // 抽取，3 seed 交集非空是生日碰撞的数学必然，不是固定指纹——不断言它。
+  {
+    const tSets = [], wSets = [];
+    for (let seed = 1; seed <= 3; seed++) {
+      const c = obfuscate(SRC, { preset: 'high', seed, shell: false }).code;
+      const t = new Set();
+      for (const m of c.matchAll(/(?<![A-Za-z0-9_$])_0[A-Za-z]{1,4}(?![A-Za-z0-9_$])/g)) t.add(m[0]);
+      tSets.push(t);
+      const w = new Set();
+      for (const m of c.matchAll(/catch\((_0[A-Za-z0-9]+)\)/g)) w.add(m[1]);
+      wSets.push(w);
+    }
+    const tCommon = [...tSets[0]].filter((n) => tSets.every((s) => s.has(n) && n !== '_0x'));
+    const wCommon = [...wSets[0]].filter((n) => wSets.every((s) => s.has(n)));
+    ok(!tCommon.includes('_0T'), '掩码串 IIFE 形参逐构建变化（旧码每构建固定 _0T）', '交集 ' + tCommon.join(' '));
+    ok(!wCommon.includes('_0w'), 'header catch 形参逐构建变化（旧码每构建固定 _0w）', '交集 ' + wCommon.join(' '));
+  }
 }
 
 // ---------------------------------------------------------- 2. 选项键集合

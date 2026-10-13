@@ -63,6 +63,14 @@ function randomizeNames(src, used, prefix) {
     // 匹配不到，且它们属于「通用解释器」这一固定形态，变化由名字池与操作码表承担。
     '_0bw', '_0bt', '_0bc', '_0bl',
     'mul32', 'lcg', 'xs32', 'shfl', 'ipos', 'mix',
+    // 原语模板的形参与局部名（shell.js 的 MUL32/LCG/XS32/SHFL/MIX FORMS 与
+    // _0ph 探针模板）。模板经本函数统一随机化，占位名必须全进名单，漏一个即
+    // 跨构建固定：2026-10-13 实测 shell:true 产物 3 seed 交集 {_0b,_0f,_0ts,_0x}
+    // （_0a/_0n/_0e/_0g/_0ts 的兄弟们在名单里，唯独这几个漏了）。
+    // _0x0.._0x3 是 mul32 8 位拆分版的局部量（imul 版没有，进名单做全覆盖）。
+    // \b 安全性：_0x 后面跟十六进制位（机器名 _0x1a2b、载体 _0xG）时无词边界，
+    // 不会误伤；_0f/_0fc、_0ts/_0t、_0b/_0bd 靠"最长优先"分支消解（见上面注释 2）。
+    '_0b', '_0f', '_0ts', '_0x', '_0x0', '_0x1', '_0x2', '_0x3',
   ];
   const mapa = new Map();
   const re = new RegExp('\\b(?:' + names.slice().sort((a, b) => b.length - a.length)

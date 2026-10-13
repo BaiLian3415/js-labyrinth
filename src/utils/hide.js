@@ -1,5 +1,5 @@
 import rand from './rand.js';
-const { randInt } = rand;
+const { randInt, randHex } = rand;
 import parser from '../ast/parser.js';
 const { parse } = parser;
 /**
@@ -67,8 +67,14 @@ function obfStrExpr(s, tbl, fcc) {
     // 数十万次内核调用，实测占关 VMP 产物总耗时约 70%。掩码、取字与拼接
     // 顺序都不变。
     if (parts.length > 2) {
-      return '((function(_0T){return ' +
-        parts.map((x) => x.wide ? wideRef(x) : '_0T[' + x.p + ']').join('+') + ';})(' + tbl + '))';
+      // IIFE 形参名逐调用随机（`_0` + 2~4 位 hex）。它是纯文本模板里的固定名，
+      // mangle 够不着的位置（mangle 之后才注入的 integrityCheck 头部）会让它跨
+      // 构建固定（2026-10-13 实测：单个产物里 163 处 `_0T`）。形参遮蔽恒安全：
+      // 任何名字填进来，IIFE 体内的引用都指向该形参，不存在撞名改语义；
+      // `_0` 开头避开 RESERVED 关键字。随机性走构建种子流，同 seed 可复现。
+      const T = '_0' + randHex(randInt(2, 4));
+      return '((function(' + T + '){return ' +
+        parts.map((x) => x.wide ? wideRef(x) : T + '[' + x.p + ']').join('+') + ';})(' + tbl + '))';
     }
     return '(' + parts.map((x) => x.wide ? wideRef(x) : tbl + '[' + x.p + ']').join('+') + ')';
   }

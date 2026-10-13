@@ -37,6 +37,13 @@ export default function debugProtection(ast, options, ctx) {
   const IOF = (s, needle) => rt.iof ? rt.iof + '(' + s + ',' + needle + ')' : '(' + s + ').indexOf(' + needle + ')';
   const { varSource: dbgVarSource } = makeDbgHelpers(rt.tblCall);
 
+  // catch 形参名（含 `var _0w=window` 那个实变量）逐构建随机：模板在 mangle
+  // 之前注入的，mangle 会照常改名，无碍；关键是将来若有模板移到 mangle 之后，
+  // 名字仍逐构建变化。`_0` + 3 位 hex 不可能是关键字；各模板自包含，声明与
+  // 引用同现，一处定义全文件通用（每个 catch/IIFE 都是独立作用域）。
+  const cw = '_0' + randHex(3);
+  if (ctx.usedNames) ctx.usedNames.add(cw);
+
   // 毒药联动：stringArray（pass 4）已在 program 上登记毒药属性键，本
   // pass 直接写同一组键，解码器下次解码即损坏。无键（stringArray 关闭）或
   // 显式 --no-debug-poison 时降级为隐蔽断点加有界拖慢。
@@ -114,9 +121,9 @@ export default function debugProtection(ast, options, ctx) {
   // 可选检测点，源码形态，命中动作为 _0xdg()，构建级子集抽取
   const checks = [
     // 尺寸检测，看浏览器 DevTools 停靠占位，属性名掩码重组后经计算下标访问
-    '(function(){if(typeof window!==typeof void 0){var _0w=window;' +
-    'var _0dx=_0w[' + M('outerWidth') + ']-_0w[' + M('innerWidth') + '];' +
-    'var _0dy=_0w[' + M('outerHeight') + ']-_0w[' + M('innerHeight') + '];' +
+    '(function(){if(typeof window!==typeof void 0){var ' + cw + '=window;' +
+    'var _0dx=' + cw + '[' + M('outerWidth') + ']-' + cw + '[' + M('innerWidth') + '];' +
+    'var _0dy=' + cw + '[' + M('outerHeight') + ']-' + cw + '[' + M('innerHeight') + '];' +
     'if(_0dx>' + SIZE_ALLOW + '||_0dy>' + SIZE_ALLOW + '){_0xdg();}}})();',
     // Function.prototype.toString 防 hook
     '(function(){if(' + IOF('(Function.prototype.toString.toString()+"")', M('native')) + '===-1){_0xdg();}})();',
@@ -243,13 +250,13 @@ export default function debugProtection(ast, options, ctx) {
     '(function(){if(_0xRF&&typeof Reflect!==typeof void 0&&Reflect!==_0xRF){' + hookHit(false) + '}})();',
     // --- 行为自洽（strong=true：语义等价的实现不可能命中，立即投毒）---
     // apply 行为：两种途径调用必须一致。预装 hook 也抓得到（不依赖快照）
-    '(function(){try{var _0af=function(_0x){return _0x+1;};if(_0af[' + M('apply') + '](null,[1])!==2){' + hookHit(true) + '}}catch(_0w){' + hookHit(true) + '}})();',
+    '(function(){try{var _0af=function(_0x){return _0x+1;};if(_0af[' + M('apply') + '](null,[1])!==2){' + hookHit(true) + '}}catch(' + cw + '){' + hookHit(true) + '}})();',
     // Proxy 行为：trap 必须真的被调用，且透传取值正确
-    '(function(){if(!_0xPX){return;}try{var _0pa=0;var _0pt=new Proxy({v:0x1a7},{get:function(_0t,_0k){_0pa++;return _0t[_0k];}});if(_0pt.v!==0x1a7||_0pa<1){' + hookHit(true) + '}}catch(_0w){' + hookHit(true) + '}})();',
+    '(function(){if(!_0xPX){return;}try{var _0pa=0;var _0pt=new Proxy({v:0x1a7},{get:function(_0t,_0k){_0pa++;return _0t[_0k];}});if(_0pt.v!==0x1a7||_0pa<1){' + hookHit(true) + '}}catch(' + cw + '){' + hookHit(true) + '}})();',
     // Reflect.apply 行为：被替换，或与 Function.prototype.apply 结果不一致
-    '(function(){if(!_0xRG||typeof Reflect===typeof void 0||!Reflect||!Reflect[' + M('apply') + ']){return;}if(Reflect[' + M('apply') + ']!==_0xRG){' + hookHit(true) + ';return;}try{var _0af=function(_0x){return _0x+1;};if(Reflect[' + M('apply') + '](_0af,null,[1])!==2){' + hookHit(true) + '}}catch(_0w){' + hookHit(true) + '}})();',
+    '(function(){if(!_0xRG||typeof Reflect===typeof void 0||!Reflect||!Reflect[' + M('apply') + ']){return;}if(Reflect[' + M('apply') + ']!==_0xRG){' + hookHit(true) + ';return;}try{var _0af=function(_0x){return _0x+1;};if(Reflect[' + M('apply') + '](_0af,null,[1])!==2){' + hookHit(true) + '}}catch(' + cw + '){' + hookHit(true) + '}})();',
     // defineProperty 行为：数据属性必须真的写进去（转发但吞掉/改写的包装层会露）
-    '(function(){if(!_0xDP){return;}try{var _0o={};_0xDP(_0o,' + M('d') + ',{value:0x1a7,configurable:true});if(_0o[' + M('d') + ']!==0x1a7){' + hookHit(true) + '}}catch(_0w){' + hookHit(true) + '}})();',
+    '(function(){if(!_0xDP){return;}try{var _0o={};_0xDP(_0o,' + M('d') + ',{value:0x1a7,configurable:true});if(_0o[' + M('d') + ']!==0x1a7){' + hookHit(true) + '}}catch(' + cw + '){' + hookHit(true) + '}})();',
   ];
 
   const headChecks = [];
@@ -271,15 +278,15 @@ export default function debugProtection(ast, options, ctx) {
   // 建都先清后装，定时器数量恒定一份，不随重建次数叠加。
   parts.push('var _0xarm=function(_0xf,_0xm){if(!_0xSI){return null;}' +
     'var _0h=_0xSI(_0xf,_0xm);' +
-    'try{if(_0h&&typeof _0h.unref==="function"){_0h.unref();}}catch(_0w){}' +
+    'try{if(_0h&&typeof _0h.unref==="function"){_0h.unref();}}catch(' + cw + '){}' +
     'try{var _0ha=_0xG["' + KEYS.hd + '"];' +
     'if(!_0ha||typeof _0ha.push!=="function"){_0ha=[];_0xG["' + KEYS.hd + '"]=_0ha;}' +
-    '_0ha.push(_0h);}catch(_0w){}' +
+    '_0ha.push(_0h);}catch(' + cw + '){}' +
     'return _0h;};');
   parts.push('var _0xclr=function(){try{var _0ha=_0xG["' + KEYS.hd + '"];' +
     'if(_0ha&&_0xCI){for(var _0i=0;_0i<_0ha.length;_0i++){_0xCI(_0ha[_0i]);}}' +
-    '_0xG["' + KEYS.hd + '"]=[];}catch(_0w){}};');
-  parts.push('var _0xhb=function(){try{_0xG["' + KEYS.hb + '"]=' + NOW + ';}catch(_0w){}};');
+    '_0xG["' + KEYS.hd + '"]=[];}catch(' + cw + '){}};');
+  parts.push('var _0xhb=function(){try{_0xG["' + KEYS.hb + '"]=' + NOW + ';}catch(' + cw + '){}};');
   // 原生引用身份快照，用于发现检测启动后对关键内建函数的替换式 hook。
   // 除 Function.prototype.toString 外再抓五个：Function 构造器、
   // Object.defineProperty、Object.getOwnPropertyDescriptor、
@@ -314,7 +321,7 @@ export default function debugProtection(ast, options, ctx) {
     'if(!_0xPT()){return;}' +
     'var _0sv=undefined;' +
     'Object.defineProperty(Error,_0key,{configurable:true,' +
-    'get:function(){return _0sv;},set:function(_0f){_0sv=_0f;_0xdg();}});})();}catch(_0w){}');
+    'get:function(){return _0sv;},set:function(_0f){_0sv=_0f;_0xdg();}});})();}catch(' + cw + '){}');
   // 投毒键闩锁，defineProperty 访问器形态：falsy 写入被忽略，已置投毒无法
   // 清除，属性非 configurable，delete 也失效，检测命中后不可逆。
   // 复入路径在 arm 已置位时跳过装配：非 configurable 属性上重复 defineProperty
@@ -326,7 +333,7 @@ export default function debugProtection(ast, options, ctx) {
       parts.push('try{(function(_0k){if(_0xG["' + KEYS.arm + '"]===1){return;}' +
         'var _0v=_0xG[_0k]|0;' +
         'Object.defineProperty(_0xG,_0k,{configurable:false,' +
-        'get:function(){return _0v;},set:function(_0x){if(_0x){_0v=_0x===true?1:_0x;}}});})("' + k + '");}catch(_0w){}');
+        'get:function(){return _0v;},set:function(_0x){if(_0x){_0v=_0x===true?1:_0x;}}});})("' + k + '");}catch(' + cw + '){}');
     }
   }
   // 心跳停滞判定与修复额度消耗。额度记在 __r 全局键上，若用头部函数体内的局
@@ -342,7 +349,7 @@ export default function debugProtection(ast, options, ctx) {
     'var _0rc=+_0xG["' + KEYS.rc + '"]|0;' +
     'if(_0rc>=' + REARMS + '){return false;}' +
     '_0xG["' + KEYS.rc + '"]=_0rc+1;_0xhb();return true;' +
-    '}catch(_0w){return false;}};');
+    '}catch(' + cw + '){return false;}};');
   // 周期性复查里也带上 hook 探针：身份快照与身份比对在同一个同步块内，预装的
   // hook 拍到的就是它自己，只有"加载之后才被装"的才能靠身份比对抓到——而 DevTools /
   // 运行时插桩恰好就是加载后才装。不挂进周期复查，那三条身份检查等于白写。行为探针
@@ -353,17 +360,17 @@ export default function debugProtection(ast, options, ctx) {
     (poisonable ? confirmSrc('_0xG') : '_0xdg();') + '}' +
     'if(_0xPT&&!_0xPT()){_0xdg();}' +
     hookProbes +
-    '_0xdg();}catch(_0w){}};');
+    '_0xdg();}catch(' + cw + '){}};');
   parts.push('var _0xtd=function(){try{' +
     'var _0xs=new Date();_0xdg();var _0xe=new Date();var _0xdt=_0xe-_0xs;' +
     'if(_0xdt>' + TIME_CONFIRM + '){' + confirmSrc('_0xG') + '}' +
     'if(_0xdt>' + TIME_ALLOW + '){_0xdg();var _0xh=new Date();while(new Date()-_0xh<' + HANG_MS + '){}}' +
-    '}catch(_0w){}};');
+    '}catch(' + cw + '){}};');
   parts.push('var _0xwd=function(){try{' +
     'if(_0xSI&&typeof setInterval!==typeof void 0&&setInterval!==_0xSI){_0xdg();}' +
     'if(_0xstale()){_0xclr();_0xarm(_0xpd,' + perPd + ');_0xarm(_0xtd,' + perTd + ');' +
     (extraDebuggers ? '_0xarm(_0xpd,' + perPd2 + ');' : '') +
-    '}}catch(_0w){}};');
+    '}}catch(' + cw + '){}};');
   // 复入路径，由哨兵复活调用命中。已装配时只查心跳：定时器被 clearInterval
   // 全部清掉（包括看门狗自己）之后，下一次任意用户函数调用即重建。
   parts.push('if(_0xG["' + KEYS.arm + '"]===1||_0armed){_0xwd();return;}');
@@ -380,7 +387,7 @@ export default function debugProtection(ast, options, ctx) {
   parts.push('_0xarm(_0xwd,' + WD_MS + ');');
   if (options.consoleStub) {
     parts.push('if(typeof console!==typeof void 0){var _0cm=["log","info","warn","error","debug","table","trace"];' +
-      'for(var _0z=0;_0z<_0cm.length;_0z++){try{console[_0cm[_0z]]=function(){};}catch(_0w){}}}');
+      'for(var _0z=0;_0z<_0cm.length;_0z++){try{console[_0cm[_0z]]=function(){};}catch(' + cw + '){}}}');
   }
 
   const headFnName = uniqueName(ctx.usedNames, '_0x');
