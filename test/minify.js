@@ -733,20 +733,36 @@ const normalizeNameDict = (await import('../src/utils/naming.js')).normalizeName
   {
     // 未知档名（旧档名 random/short、大小写写错、拼错）一律回落到默认值，且不能因为
     // nameStyle 来自调用方就命中 Object.prototype 上的 'constructor'（命名池用 Map）
-    const mangled = obfuscate(namey, { preset: 'low', shell: false, nameStyle: 'Mangled', seed: 9 });
+    const shuffled = obfuscate(namey, { preset: 'low', shell: false, nameStyle: 'Mangled-shuffled', seed: 9 });
     const fallback = obfuscate(namey, { preset: 'low', shell: false, nameStyle: 'constructor', seed: 9 });
     const legacy = obfuscate(namey, { preset: 'low', shell: false, nameStyle: 'short', seed: 9 });
-    ok(fallback.code === mangled.code, '未知 nameStyle 回落到默认档而不是抛异常',
-      fallback.code.length + ' vs ' + mangled.code.length);
-    ok(legacy.code === mangled.code, '旧档名（short/random）也回落到默认档，不会静默出一份没约定的产物');
+    ok(fallback.code === shuffled.code, '未知 nameStyle 回落到默认档而不是抛异常',
+      fallback.code.length + ' vs ' + shuffled.code.length);
+    ok(legacy.code === shuffled.code, '旧档名（short/random）也回落到默认档，不会静默出一份没约定的产物');
   }
 
-  // 闸门与默认值
-  ok(obfuscateMod.DEFAULTS.nameStyle === 'Mangled', 'nameStyle 默认 Mangled');
+  // 闸门与默认值。2026-10-13 起默认档是 Mangled-shuffled：Mangled 档与 seed 无关
+  // 是十档里唯一的跨构建稳定指纹，而它同时是默认值和 free 档唯一可用档——同一份
+  // 源码在任意 seed 下"标识符→语义"映射逐字节相同。改默认后 free 白名单放行
+  // Mangled 与 Mangled-shuffled（都不带 -props，付费能力仍在墙内）。
+  ok(obfuscateMod.DEFAULTS.nameStyle === 'Mangled-shuffled', 'nameStyle 默认 Mangled-shuffled');
+  // 默认档跨 seed 必须相异：这就是本次改动要修的指纹。单绑定样本 + NAMEONLY，
+  // 排除 stringArray 等注入名的干扰。旧默认（Mangled）下三 seed 全同，本条必挂。
+  {
+    const one = 'var computeTotals = 1; console.log(computeTotals);';
+    const defName = (seed) => {
+      const code = obfuscate(one, { preset: 'low', shell: false, seed }).code;
+      const m = /var\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*1/.exec(code);
+      return m ? m[1] : '';
+    };
+    const d9 = defName(9), d10 = defName(10), d11 = defName(11);
+    ok(d9 !== '' && (d9 !== d10 || d9 !== d11),
+      '默认档发名随 seed 变（旧默认 Mangled 下三 seed 全同）', 'seed9=' + d9 + ' seed10=' + d10 + ' seed11=' + d11);
+  }
   for (const style of optionsMeta.VALUE_OPTIONS.nameStyle.values) {
     const v = plan.violations({ nameStyle: style }, 'free').length;
     const p = plan.violations({ nameStyle: style }, 'plus').length;
-    const wantFree = style === 'Mangled' ? 0 : 1;
+    const wantFree = (style === 'Mangled' || style === 'Mangled-shuffled') ? 0 : 1;
     ok(v === wantFree && p === 0,
       '闸门 ' + style + '：free ' + (v === 0 ? '放行' : '锁死') + ' / plus 放行', 'free=' + v + ' plus=' + p);
   }
@@ -770,7 +786,7 @@ const normalizeNameDict = (await import('../src/utils/naming.js')).normalizeName
   ok(naming.parseNameStyle('Dictionary').props === false, '不带后缀即不改属性名');
   ok(naming.parseNameStyle('dictionary-props').base === 'Dictionary',
     '档位匹配大小写不敏感（API 传小写也能认）');
-  ok(naming.parseNameStyle('nope').base === 'Mangled' && naming.parseNameStyle('nope').known === false,
+  ok(naming.parseNameStyle('nope').base === 'Mangled-shuffled' && naming.parseNameStyle('nope').known === false,
     '不认识的档位回落到默认档且 known=false');
   // 属性名重命名已并入档位（2026-10-09）：旧开关不再是已知选项
   ok(!optionsMeta.KNOWN_OPTION_KEYS.has('renameProperties'),
@@ -900,7 +916,7 @@ process.stdout.write(a + '|' + b + '\\n');`;
   for (const style of naming.NAME_STYLES) {
     const v = plan.violations({ nameStyle: style }, 'free').length;
     const p = plan.violations({ nameStyle: style }, 'plus').length;
-    const wantFree = style === 'Mangled' ? 0 : 1;
+    const wantFree = (style === 'Mangled' || style === 'Mangled-shuffled') ? 0 : 1;
     ok(v === wantFree && p === 0,
       '闸门 ' + style + '：free ' + (v === 0 ? '放行' : '锁死') + ' / plus 放行', 'free=' + v + ' plus=' + p);
   }

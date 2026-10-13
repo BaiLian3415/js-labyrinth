@@ -27,19 +27,22 @@ export default {
       "antiCDP": false,
       "domainLock": [""],
       "simplify": false,
-      // 命名风格。free 档锁死在 Mangled，其余九档（Mangled-props / Mangled-shuffled /
-      // Mangled-shuffled-props / Hexadecimal / Hexadecimal-props / Dictionary /
-      // Dictionary-props / Chinese / Chinese-props）都是 plus+ 才放行。
+      // 命名风格。free 档只放行不带 -props 的两档（Mangled / Mangled-shuffled），
+      // 其余八档（Mangled-props / Mangled-shuffled-props / Hexadecimal /
+      // Hexadecimal-props / Dictionary / Dictionary-props / Chinese /
+      // Chinese-props）都是 plus+ 才放行。2026-10-13 起默认档是 Mangled-shuffled，
+      // 它与 Mangled 同形状、字母表逐构建打乱——free 档产物不再跨构建可 diff，
+      // 这是有意为之（默认档是十档里唯一与 seed 无关的跨构建指纹）。
       //
       // 属性名重命名原本是独立布尔项 renameProperties、单独挂了一条
       // "renameProperties": false 闸门；2026-10-09 并入 nameStyle 枚举后那条闸门是
       // 多余的——上面这个白名单已经把全部 *-props 档挡在 free 之外，同一件事不必写
       // 两遍（两处规则漂移过一次就会让 free 意外拿到某一档）。
-      // 关键是这个白名单必须只列**不带 -props 的**那一档：档位一旦自带属性名重命名，
+      // 关键是这个白名单必须只列**不带 -props 的**档位：档位一旦自带属性名重命名，
       // 白名单就是唯一拦住 free 的地方，误列一个 *-props 就等于把付费能力白送。
       // 放开与否是套餐策略决定，这里按现状对齐，不擅自给 free 扩能力。
       "nameStyle": [
-        "Mangled"
+        "Mangled", "Mangled-shuffled"
       ],
       "debugPoison": false,
       "selfDefending": false,

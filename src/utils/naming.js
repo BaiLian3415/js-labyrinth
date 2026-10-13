@@ -38,8 +38,10 @@ export const CHINESE_NAME_STYLE = 'Chinese';
 // 「CLI 自动转驼峰」这回事）。所以匹配一律大小写不敏感。
 const BASE_BY_LOWER = new Map(BASE_NAME_STYLES.map((s) => [s.toLowerCase(), s]));
 
-/** 规范默认值：未给、给了空串、给了不认识的值时都用它。与 options.js 同源。 */
-export const DEFAULT_NAME_STYLE = 'Mangled';
+/** 规范默认值：未给、给了空串、给了不认识的值时都用它。与 options.js 同源
+ * （两处必须同改，2026-10-13 起都是 Mangled-shuffled：未知档回落到 Mangled 而
+ * 默认档是 Mangled-shuffled 的话，"回落到默认"这个承诺就是假的，产物差十几个字节）。 */
+export const DEFAULT_NAME_STYLE = 'Mangled-shuffled';
 
 /** 全部合法档位 = 基础档 × {不带属性名, 带属性名}，界面与 CLI 都以这份为准。 */
 export const NAME_STYLES = BASE_NAME_STYLES.flatMap(

@@ -17,12 +17,13 @@ export default {
   "simplify": false,
   "identifierPrefix": "_0x",
   "mangle": true,
-  // 命名策略（Paid 档，plus+；free 档闸门锁死 Mangled）。五个基础档 + 每个基础档的
+  // 命名策略（Paid 档，plus+；free 档闸门只放行不带 -props 的两档）。五个基础档 + 每个基础档的
   // 一个带属性名变体，共十档（合法值以 utils/naming.js 的 NAME_STYLES 为准）：
   //   Mangled           规范短名（a、b、c…），决定性、与 seed 无关、可逐字节 diff，
-  //                     体积最小，但产物里必然出现发名顺序，指纹最强
+  //                     体积最小，但产物里必然出现发名顺序，指纹最强——只做调试档，
+  //                     不做默认（2026-10-13 起默认换成 Mangled-shuffled）
   //   Mangled-shuffled  同样形状，字母表逐构建打乱——体积相当且不留字母表指纹，
-  //                     混淆发布用这档
+  //                     默认档，混淆发布用这档
   //   Hexadecimal       字母 + 十六进制位（a7 / f30），一样短但完全无规律
   //   Dictionary        固定 64 词表的可读名，调试友好；产物更大、词表可枚举
   //                     故抗指纹弱，定位是调试档不是发布档
@@ -43,7 +44,7 @@ export default {
   // 2026-10-01：Chinese 原本也是独立布尔开关 chineseNames，同样并入本枚举。
   // 这两次都属破坏性变更：旧存档与 CLI 的 --chinese-names / --rename-properties
   // 不再识别（选项系统保留未知键但没人读，所以是静默失效而非报错）。
-  "nameStyle": "Mangled",
+  "nameStyle": "Mangled-shuffled",
   // Dictionary 档的自定义词表。留空用内置的 64 词表（见 utils/naming.js 的
   // DICTIONARY_WORDS）。逗号/空白/换行分隔，逐词校验后去重：非法标识符、关键字、
   // 重复词会被丢掉，全部非法时回落到内置词表。词越长产物越大，且这一档词表本来

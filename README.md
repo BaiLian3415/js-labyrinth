@@ -455,14 +455,14 @@ pass 无冲突。Paid 档（plus+）可显式开启，free 档闸门锁死 `fals
 
 ### 压缩能力：真的能当 minifier 用（`simplify` + `nameStyle`）
 
-`mangle` 默认走 `Mangled`（`nameStyle` 的默认档）：`a`…`Z$_` → `aa`… 的规范短名，长度
-递增、**按引用次数从多到少发放**（最常出现的绑定拿最短的名字），已占用的名字与关键字
-一律跳过。叠加 `compact`（去空白）就是"当 minifier 用"的完整配置。
+`mangle` 默认走 `Mangled-shuffled`（`nameStyle` 的默认档）：与 `Mangled` 同样形状
+（`a`…`Z$_` → `aa`… 的规范短名，长度递增、**按引用次数从多到少发放**），只是字母表
+逐构建打乱。已占用的名字与关键字一律跳过。叠加 `compact`（去空白）就是"当 minifier 用"的完整配置。
 
 同输入实测（相对 terser `compress+mangle` 的倍数，越小越好；`npm run bench:minify`
 可复现，两个参考实现都是 `npm install --no-save terser javascript-obfuscator` 临时装的）：
 
-| 输入 | 原始 | terser | 我们（默认 Mangled） | 我们（Mangled-shuffled+DCE） | obfuscator.io（compact+simplify） |
+| 输入 | 原始 | terser | 我们（默认 Mangled-shuffled） | 我们（Mangled-shuffled+DCE） | obfuscator.io（compact+simplify） |
 | --- | --- | --- | --- | --- | --- |
 | `src/obfuscate.js` | 15.5 KB | 7.6 KB | 12.1 KB（1.59×） | **12.1 KB（1.59×）** | 12.5 KB（1.63×） |
 | `src/passes/vm.js` | 145.2 KB | 64.1 KB | 75.3 KB（1.18×） | **75.1 KB（1.17×）** | 123.2 KB（1.92×） |
@@ -477,7 +477,7 @@ pass 无冲突。Paid 档（plus+）可显式开启，free 档闸门锁死 `fals
 的代码会比 terser 略胖；terser 的表达式级优化（内联、序列化、丢空 `if`）本工具不做，这是
 "1.2~1.6× 而不是 1.0×"的主因。
 
-排序与开关：`nameStyle` 默认 `Mangled`，free 档闸门只放行它，Plus 及以上可切其余三档；
+排序与开关：`nameStyle` 默认 `Mangled-shuffled`，free 档闸门只放行不带 `-props` 的两档（`Mangled` 与 `Mangled-shuffled`），Plus 及以上可切其余八档；
 `simplify` 同样 plus+ 可开。各档的取舍见下节。
 
 ### 命名策略（`--name-style`）：5 个基础档 × 带/不带属性名 = 10 档
@@ -489,8 +489,8 @@ pass 无冲突。Paid 档（plus+）可显式开启，free 档闸门锁死 `fals
 
 | 档位 | 样子 | 发名顺序 | 定位 |
 | --- | --- | --- | --- |
-| `Mangled`（默认） | `a`…`Z$_` → `aa`… | 固定 | 体积最小；**与 seed 无关**，两次构建可逐字节 diff、跨机器结果一致。代价是产物里必然出现 a、b、c… 的发名顺序，指纹最强 |
-| `Mangled-shuffled` | 同上，字母表换一套 | 随 seed | 体积与 `Mangled` 完全相同（名字长度一样），但产物里没有一套可辨识的字母表。**混淆发布用这档** |
+| `Mangled` | `a`…`Z$_` → `aa`… | 固定 | 体积最小；**与 seed 无关**，两次构建可逐字节 diff、跨机器结果一致。代价是产物里必然出现 a、b、c… 的发名顺序，指纹最强。**只做调试档，不做默认** |
+| `Mangled-shuffled`（默认） | 同上，字母表换一套 | 随 seed | 体积与 `Mangled` 完全相同（名字长度一样），但产物里没有一套可辨识的字母表。**混淆发布用这档** |
 | `Hexadecimal` | `a7`、`f30`、`0e91` | 随 seed | 一个字母 + 十六进制位，从 **2 字符**起步。一样短但完全无规律。`if`（`i`+`f`）这类正好落在该形状里的关键字由关键字表跳过 |
 | `Dictionary` | `value`、`index`、`result1` | 随 seed | 固定 64 词表。栈和断点里还认得出变量，调试成本最低；产物最大，且**词表可枚举**，认的人拿同一份词表就能把改名批量还原。发布产物别用 |
 | `Chinese` | `甲`、`乙`、`丙` | 随 seed | 见下节 |
@@ -548,7 +548,7 @@ parser 与 generator 也不拦。
 | 发名顺序 | **逐构建打乱**，同 seed 可复现、换 seed 换一套（不打乱的话字典原序就是强指纹） |
 | 产物体积 | 一个汉字 UTF-8 占 3 字节、标识符只算 1 个字符，比 `Mangled` 明显大 |
 | `escapeNonAscii` | 对本档**无效**：汉字在产物里原样写出、不转成 `\uXXXX`。因此产物需按 UTF-8 提供（页面要有 charset 声明）。字符串字面量里的中文仍按原口径转义 |
-| 套餐 | 与 `nameStyle` 同一口径——free 档锁死在 `Mangled`，因此 `Chinese` 与 `Chinese-props` free 都不可用 |
+| 套餐 | 与 `nameStyle` 同一口径——free 档只放行不带 `-props` 的 `Mangled` 与 `Mangled-shuffled`，因此 `Chinese` 与 `Chinese-props` free 都不可用 |
 
 两个容易踩的坑，实现里都处理了：
 
@@ -586,7 +586,7 @@ parser 与 generator 也不拦。
 对外发布用 `Mangled-shuffled`；要产物里完全找不到规律用 `Hexadecimal`；调试与代码
 审计用 `Dictionary`。
 
-档名**大小写敏感**。旧档名（`random` / `short`）或拼错的档名会回落到默认档 `Mangled`，
+档名**大小写敏感**。旧档名（`random` / `short`）或拼错的档名会回落到默认档 `Mangled-shuffled`，
 既不抛异常，也不会静默出一份没约定的产物。
 
 ## 增强保护系统（引导层 / 碎片化 / Anti-LLM）
@@ -758,7 +758,7 @@ echo 'export default { async fetch(r,e,c){ return new Response("x"); } };' \
 额度包的能力跟随 Business（`max` 预设、无闸门），买的是次数而不是能力：适合不想
 续费、只需要跑一批的场景。用尽后不会恢复，需要再买一张。
 
-另有参与闸门的新选项：Free 的外壳形态锁在 `classic`、命名策略锁在 `Mangled`、关掉碎片化与
+另有参与闸门的新选项：Free 的外壳形态锁在 `classic`、命名策略只放行不带 `-props` 的 `Mangled` 与 `Mangled-shuffled`、关掉碎片化与
 Anti-LLM；Plus 可以把外壳形态切成 `jsfuck`，命名策略十档全开（例如 `Hexadecimal-props`），
 并开碎片化与 Anti-LLM；碎片化与 Anti-LLM 之外的更高强度组合留给 Team/Business。
 **HTML Encrypt**（`htmle`）同样受闸门约束：**Free 不可用，Plus 及以上可用**。它会把产物内容换成密文
