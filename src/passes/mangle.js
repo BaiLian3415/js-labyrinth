@@ -208,7 +208,7 @@ export default function mangle(ast, options, ctx) {
       // 访问器名，同样保持注入名。它们每构建随机且已进 used 防撞，改名只会让
       // 每个引用处膨胀成 7 到 24 字节的随机名
       if (ctx.keepNames && ctx.keepNames.has(name)) continue;
-      targets.push({ name, binding });
+      targets.push({ name, binding, scope });
     }
   };
 
@@ -241,6 +241,37 @@ export default function mangle(ast, options, ctx) {
 
   // 块级作用域的访问器直接由 BLOCK_SCOPE_TYPES 生成：两处各写一份清单的话，
   // 新增节点类型时很容易只改一边，漏掉的作用域里的绑定就不会被改名。
+  // eval / with 污染域：直接 eval 能读到整条作用域链（含求值字符串里的名字），
+  // with 让所在函数内的一切名字解析先过 with 对象。两者都让"按绑定改名"不再安全，
+  // 而 mangle 是全仓库唯一没有这两道判定的 pass（vm/simplify/controlFlow/
+  // opaquePredicates 都有）。2026-10-13 实测两类静默破坏：
+  //   直接 eval：`function f(){var localv=10;eval('localv=...');}` —— 声明改名了，
+  //     eval 串里的名字没改，运行期 ReferenceError（5/5 seed）；
+  //   with：`with(o){hidden=hidden+1}` 的写点被跟着改名，写进了局部变量而不是
+  //     with 对象的属性，原码 10|101 → 产物 11|100（静默算错，5/5 seed）。
+  //
+  // 实现：同一遍历内收集 with 节点与直接 eval 调用所在的作用域，污染其整条祖先链
+  // （影响沿作用域链向上：外层名字在 with 内也可能先命中 with 对象，sloppy 直接
+  // eval 能看到全局）。快照时照常收，改名前按 binding 所在 scope 的祖先链过滤——
+  // 过滤在改名循环里做，不在 addScope 里做，因为 with/eval 节点可能出现在快照之后
+  // 才被访问到（遍历自顶向下，函数体快照早于其内部的 with 节点）。
+  // Scope 对象在单次构建内按节点缓存（__dshScope），同一遍历内身份一致；
+  // Program 入口的 crawl() 发生在一切收集之前，不影响后续身份。
+  // 间接 eval（(0,eval)()、obj.eval()）看不到调用方作用域，只认裸 eval(...)。
+  // 名字叫 eval 的局部绑定（sloppy 下合法）会被误伤——fail-closed，多留几个原名。
+  const tainted = new Set();
+  const taintChain = (scope) => {
+    let s = scope;
+    while (s) { tainted.add(s); s = s.parent; }
+  };
+  const isTainted = (scope) => {
+    let s = scope;
+    while (s) {
+      if (tainted.has(s)) return true;
+      s = s.parent;
+    }
+    return false;
+  };
   const visitors = {};
   for (const type of BLOCK_SCOPE_TYPES) {
     visitors[type] = (path) => addScope(path.scope);
@@ -254,6 +285,11 @@ export default function mangle(ast, options, ctx) {
   };
   visitors.ExportNamedDeclaration = (path) => collectExportedFromProgram(path, exported);
   visitors.Function = (path) => addScope(path.scope);
+  visitors.WithStatement = (path) => taintChain(path.scope);
+  visitors.CallExpression = (path) => {
+    const c = path.node.callee;
+    if (c && c.type === 'Identifier' && c.name === 'eval') taintChain(path.scope);
+  };
   visitors.noScope = true;
 
   traverse(ast, visitors);
@@ -279,7 +315,11 @@ export default function mangle(ast, options, ctx) {
   targets.sort((a, b) => weight(b.binding) - weight(a.binding));
 
   let renamed = 0;
-  for (const { name, binding } of targets) {
+  let skippedTainted = 0;
+  for (const { name, binding, scope } of targets) {
+    // eval/with 污染域内的绑定不改名（判据见上面的 taintRoots）。跳过的名字仍要
+    // 进 used（下面的写回循环按 targets 全量登记），否则后置 pass 可能抽中同名。
+    if (scope && isTainted(scope)) { skippedTainted++; continue; }
     if (reservedRe.length && reservedRe.some((re) => re.test(name))) continue;
     // 命名池用尽（词典档约四千个名字，>15 万个绑定才可能触发）时退回随机名，
     // 不静默复用名字——复用会撞名并改变语义。中文档的兜底仍是中文名，见
@@ -316,5 +356,5 @@ export default function mangle(ast, options, ctx) {
   // 改名失败的绑定仍以旧名存在于产物，同样不能让后置 pass 撞上。
   for (const { name } of targets) ctx.usedNames.add(name);
   for (const n of used) ctx.usedNames.add(n);
-  return { renamed };
+  return { renamed, skippedTainted };
 };

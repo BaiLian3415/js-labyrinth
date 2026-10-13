@@ -250,30 +250,38 @@ function mergeVarScopes(scopes, stat) {
  * 类表达式也判否（computed key 与 static 块会求值、extends 可能抛）。判否的声明
  * 一律留着：宁可少删一个变量，也不能把源码里的一次求值悄悄吃掉。
  */
-function pureInit(node) {
+function pureInit(node, canRead) {
   if (!node) return true;                        // var a; 没有初始化器
   switch (node.type) {
     case 'NumericLiteral': case 'StringLiteral': case 'BooleanLiteral':
     case 'NullLiteral': case 'BigIntLiteral': case 'RegExpLiteral':
-    case 'FunctionExpression': case 'ArrowFunctionExpression': case 'Identifier':
+    case 'FunctionExpression': case 'ArrowFunctionExpression':
       return true;
+    // 标识符读取不是天生无副作用：名字未声明时求值抛 ReferenceError。
+    // 2026-10-13 实测：`function f(){ var a = nope; return 1; }` 原码抛错，
+    // simplify（removed:1）删掉声明后产物打印 1 —— 一次本该发生的异常消失了。
+    // 所以 Identifier 必须经调用方给的 canRead(name) 判定：有绑定且读取不抛才算纯。
+    // 代价是 `var M = Math` 这种读全局的声明不再被删（全局名没有绑定，fail-closed），
+    // 覆盖率换正确性。
+    case 'Identifier':
+      return typeof canRead === 'function' ? canRead(node.name) : false;
     case 'ParenthesizedExpression':
-      return pureInit(node.expression);
+      return pureInit(node.expression, canRead);
     case 'TemplateLiteral':
-      return node.expressions.every(pureInit);
+      return node.expressions.every((e) => pureInit(e, canRead));
     case 'UnaryExpression':
       return (node.operator === '-' || node.operator === '+' || node.operator === '!' ||
         node.operator === '~' || node.operator === 'void' || node.operator === 'typeof') &&
-        pureInit(node.argument);
+        pureInit(node.argument, canRead);
     case 'BinaryExpression': case 'LogicalExpression':
-      return pureInit(node.left) && pureInit(node.right);
+      return pureInit(node.left, canRead) && pureInit(node.right, canRead);
     case 'ConditionalExpression':
-      return pureInit(node.test) && pureInit(node.consequent) && pureInit(node.alternate);
+      return pureInit(node.test, canRead) && pureInit(node.consequent, canRead) && pureInit(node.alternate, canRead);
     case 'ArrayExpression':
-      return node.elements.every((e) => !!e && e.type !== 'SpreadElement' && pureInit(e));
+      return node.elements.every((e) => !!e && e.type !== 'SpreadElement' && pureInit(e, canRead));
     case 'ObjectExpression':
       return node.properties.every((p) => !!p && (p.type === 'ObjectProperty' || p.type === 'ObjectMethod') &&
-        (!p.computed) && pureInit(p.type === 'ObjectMethod' ? null : p.value));
+        (!p.computed) && pureInit(p.type === 'ObjectMethod' ? null : p.value, canRead));
     default:
       return false;
   }
@@ -351,7 +359,8 @@ function dropUnreachable(ast, traverse, stat) {
  *   3) 初始化器无副作用（见 pureInit）；
  *   4) 作用域私有：函数/块内的都算私有；脚本顶层不算——那是全局对象的属性，
  *      删掉可能被页面别处引用（模块顶层则是私有的，可以删）。
- * 出现 with 语句时整体跳过：它会改变名字解析，绑定分析不再可靠。
+ * 出现 with 语句或直接 eval 调用时整体跳过：前者改变名字解析，后者能读到整条
+ * 作用域链（含求值字符串里的名字），两种情况下绑定分析都不可靠。
  * 解构声明不处理（`var {a} = o` 的删除要判别 pattern 里每个名字，收益低风险高）。
  *
  * 本 pass 要求作用域树是最新的，所以这里带 scope 遍历并在 Program 上 crawl 一次；
@@ -359,8 +368,24 @@ function dropUnreachable(ast, traverse, stat) {
  */
 function eliminateUnused(ast, traverse, stat) {
   let hasWith = false;
-  traverse(ast, { WithStatement() { hasWith = true; }, noScope: true });
-  if (hasWith) return;
+  let hasEval = false;
+  // 纯 AST 预扫描，不走 traverse、不消耗随机数（随机流位置即产物字节，动了它全部
+  // 产物逐字节漂移）。with 改变名字解析、直接 eval 能读到整条作用域链（含字符串里
+  // 的名字），两种情况下绑定分析都不可靠，整体跳过本函数。
+  (function scan(node) {
+    if (hasWith && hasEval) return;
+    if (!node || typeof node !== 'object') return;
+    if (Array.isArray(node)) { for (const c of node) scan(c); return; }
+    if (typeof node.type !== 'string') return;
+    if (node.type === 'WithStatement') { hasWith = true; return; }
+    if (node.type === 'CallExpression' && node.callee &&
+      node.callee.type === 'Identifier' && node.callee.name === 'eval') { hasEval = true; return; }
+    for (const k of Object.keys(node)) {
+      if (k === 'loc' || k === 'start' || k === 'end') continue;
+      scan(node[k]);
+    }
+  })(ast.type === 'File' ? ast.program : ast);
+  if (hasWith || hasEval) return;
 
   // 有 import/export 就是模块：顶层作用域私有，可以删顶层未用声明
   let isModule = false;
@@ -410,7 +435,17 @@ function eliminateUnused(ast, traverse, stat) {
       for (const spec of path.node.specifiers || []) exported.add(spec.local.name);
     },
     VariableDeclarator(path) {
-      if (path.node.init && !pureInit(path.node.init)) return;
+      // 标识符读取的安全条件：名字在作用域链上有绑定，且读取本身不抛。
+      // var/hoisted（函数声明）/param/module（import）读取恒不抛；let/const/class
+      // 有 TDZ（`var a = b; let b = 1` 在求值时抛），未知 kind 一律 fail-closed。
+      // 未声明的名字（`var a = nope`）直接判不纯：原码抛 ReferenceError，删掉声明
+      // 会让异常消失，这是改动铁律 #1 禁止的静默语义改变。
+      const canRead = (name) => {
+        const b = path.scope.getBinding(name);
+        if (!b) return false;
+        return b.kind === 'var' || b.kind === 'hoisted' || b.kind === 'param' || b.kind === 'module';
+      };
+      if (path.node.init && !pureInit(path.node.init, canRead)) return;
       consider(path, path.node.id);
     },
     FunctionDeclaration(path) {

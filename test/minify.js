@@ -271,6 +271,45 @@ section('AST 简化：无用声明消除（DCE）');
     try { got = runNode(code, 'dce-obf.js').trim(); } catch (e) { got = 'THREW'; }
     ok(got === want && want === 'dce=451', 'DCE 端到端语义不变（副作用不多不少）', got + ' ≠ ' + want);
   }
+
+  // 直接 eval 守卫（2026-10-13）：eliminateUnused 原先只查 with 不查 eval，
+  // 把 eval 字符串要用的声明删掉，原码 1|7 → 产物 ReferenceError（removed:1）。
+  // eval 串是黑盒，绑定分析不可靠，只能整体跳过本函数。
+  {
+    const src = 'function f(){var hidden=7;eval("globalThis.__s=hidden");return 1;}\n'
+      + 'process.stdout.write(String(f())+"|"+String(globalThis.__s));';
+    const want = runNode(src, 'dce-evraw.js').trim();
+    const r = obfuscate(src, { preset: 'low', shell: false, simplify: true, seed: 1,
+      mangle: false, selfCheck: false, stringArray: false });
+    const st = r.stats.find((s) => s.pass === 'simplify');
+    ok(st && st.result && st.result.removed === 0, '含直接 eval 时 eliminateUnused 整体跳过（旧码 removed=1）',
+      JSON.stringify(st && st.result));
+    let got = 'THREW';
+    try { got = runNode(r.code, 'dce-evobf.js').trim(); } catch (e) { got = 'THREW'; }
+    ok(got === want && want === '1|7', '含直接 eval 时语义不变', got + ' ≠ ' + want);
+  }
+
+  // 未声明名的初始化器不判纯（2026-10-13）：pureInit(Identifier) 原先恒 true，
+  // `var a = nope` 被删掉，原码抛 ReferenceError，产物打印 1 —— 一次本该发生的
+  // 异常消失了。修完后声明保留：selfCheck 关掉时产物与原码抛同一个错；
+  // 默认自检开启时构建被响亮拒绝（自检白名单只放真全局，未声明名不在内，
+  // extraGlobals 是留给宿主全局的逃生口）。
+  {
+    const src = 'function f(){ var a = nopeNotDeclared; return 1; }\nprocess.stdout.write(String(f()));';
+    const runThrow = (code, tag) => {
+      try { runNode(code, tag); return 'NO-THROW'; }
+      catch (e) { return /ReferenceError/.test(String((e && e.stderr) || e)) ? 'ReferenceError' : 'OTHER-THROW'; }
+    };
+    ok(runThrow(src, 'dce-undecl-raw.js') === 'ReferenceError', '未声明名样本原码抛 ReferenceError（基准）', '');
+    const r = obfuscate(src, { preset: 'low', shell: false, simplify: true, seed: 1,
+      mangle: false, selfCheck: false, stringArray: false });
+    ok(runThrow(r.code, 'dce-undecl-obf.js') === 'ReferenceError',
+      'selfCheck 关闭时产物抛同一个错（旧码打印 1）', '');
+    let refused = '';
+    try { obfuscate(src, { preset: 'low', shell: false, simplify: true, seed: 1 }); }
+    catch (e) { refused = String(e.message).split('\n')[0]; }
+    ok(/自检失败|self-check failed/i.test(refused), '默认自检响亮拒绝未声明名（不产出静默错的产物）', refused.slice(0, 60));
+  }
 }
 
 section('命名策略（nameStyle）与动态 import');
@@ -327,6 +366,52 @@ section('命名策略（nameStyle）与动态 import');
     let got = 'THREW';
     try { got = runNode(code, 'namestyle-globals.js').trim(); } catch (e) { got = 'THREW'; }
     ok(got === want && want === 'globals=18', '短名不遮蔽未声明的全局引用', got + ' ≠ ' + want);
+  }
+
+  // mangle 遇直接 eval / with 时污染域跳过（2026-10-13）。mangle 原先是全仓库
+  // 唯一没有这两道判定的 pass，两类静默破坏实测 5/5 seed：
+  //   eval：声明改名了、eval 串里的名字没改 → ReferenceError；
+  //   with：with 体内的写点被跟着改名，写进局部变量 → 10|101 变成 11|100。
+  // 修法：污染 with 节点与直接 eval 调用所在作用域的整条祖先链（影响沿链向上），
+  // 域内绑定不改名。stats 用 skippedTainted 报告跳过数（旧码无此键，双向判别）。
+  {
+    const evalSrc = 'globalThis.seedv=5;function f(){var localv=10;eval(\'localv = localv + globalThis.seedv\');return localv;}\n'
+      + 'process.stdout.write(String(f())+"|"+String(globalThis.localv));';
+    const withSrc = 'var store={tally:1,hidden:100};function f(o){var hidden=10;with(o){hidden=hidden+1;}'
+      + 'return String(hidden)+"|"+String(o.hidden);}\nprocess.stdout.write(f(store));';
+    for (const [label, src, want] of [['直接eval', evalSrc, '15|undefined'], ['with', withSrc, '10|101']]) {
+      ok(runNode(src, 'mangle-taint-raw-' + label + '.js').trim() === want, label + '样本原码基准', '');
+      let bad = '';
+      for (const preset of ['low', 'high']) {
+        for (const seed of [1, 2]) {
+          const r = obfuscate(src, { preset, seed, shell: false });
+          const st = r.stats.find((s) => s.pass === 'mangle');
+          if (!(st && st.result && st.result.skippedTainted > 0)) {
+            bad = preset + '/' + seed + ' skippedTainted 未报（旧码无此键）：' + JSON.stringify(st && st.result);
+            break;
+          }
+          let got = 'THREW';
+          try { got = runNode(r.code, 'mangle-taint-' + label + '-' + preset + '-' + seed + '.js').trim(); }
+          catch (e) { got = 'THREW'; }
+          if (got !== want) { bad = preset + '/' + seed + ' → ' + got.slice(0, 50); break; }
+        }
+        if (bad) break;
+      }
+      ok(!bad, label + '污染域跳过且语义不变（low/high × 2 seed，旧码 5/5 全错）', bad);
+    }
+    // 间接 eval 不污染（(0,eval) 跑在全局作用域，看不到调用方局部量）：
+    // 同样本 skippedTainted 必须为 0，防止守卫写宽把正常代码的改名全关掉。
+    // 注意样本只能碰全局量——间接 eval 本来就看不到局部变量，不是守卫问题。
+    {
+      const src = 'globalThis.__base=10;function f(){var localv=3;(0,eval)(\'globalThis.__v=globalThis.__base+1\');return localv;}\n'
+        + 'process.stdout.write(String(f())+"|"+String(globalThis.__v));';
+      const r = obfuscate(src, { preset: 'low', seed: 1, shell: false });
+      const st = r.stats.find((s) => s.pass === 'mangle');
+      ok(st && st.result && st.result.skippedTainted === 0, '间接 eval 不触发污染跳过', JSON.stringify(st && st.result));
+      let got = 'THREW';
+      try { got = runNode(r.code, 'mangle-indirect.js').trim(); } catch (e) { got = 'THREW'; }
+      ok(got === '3|11', '间接 eval 样本语义不变', got);
+    }
   }
 
   // 四档的发名形状。为了能逐个检查发出来的名字长什么样，这里把除 mangle 之外的 pass
