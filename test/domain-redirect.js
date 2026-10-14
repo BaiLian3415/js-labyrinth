@@ -24,11 +24,21 @@ section('域名锁定：重定向地址');
   ok(!!st1 && st1.result && st1.result.redirect === true,
     'stats.domainLock.redirect=true（如实报告跳转真的生效）',
     JSON.stringify(st1 && st1.result));
+  // 跳转排在抛错之前（非授权域看到空白页而不是英文报错）。
+  // 锚点不能是报错文案本身：2026-10-13 起那句文案走掩码串（obfStrExpr），产物里
+  // 不再有明文——它原先原样写着工具名，一条 grep 就能 100% 认出产物出自本工具。
+  // 改用结构锚点 `throw new Error(`，它由模板固定拼出，与文案编码方式无关。
   const iRe = withRedirect.code.indexOf('location.replace');
-  const iThrow = withRedirect.code.indexOf('this build is locked to another domain');
+  const iThrow = withRedirect.code.indexOf('throw new Error(');
   ok(iRe >= 0 && iThrow >= 0 && iRe < iThrow,
     '跳转排在抛错之前（非授权域看到空白页而不是英文报错）',
     'replace@' + iRe + ' throw@' + iThrow);
+
+  // ①b throw 模式（stringArray 关 → 无池 → throw 降级）产物里不留工具名明文。
+  // 老码恒命中 1 处，本条在其上必挂。
+  ok(!/JsLabyrinth|locked to another domain/.test(withRedirect.code),
+    'throw 模式产物无工具名/报错文案明文（老码有 "JsLabyrinth: this build is locked to another domain"）',
+    '命中 ' + (withRedirect.code.match(/JsLabyrinth|locked to another domain/g) || []).join(' '));
 
   // ② 未配 → 没有跳转
   const noRedirect = obfuscate(SRC, { ...throwMode, ...dl, seed: 5 });

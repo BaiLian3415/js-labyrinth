@@ -43,6 +43,8 @@ const { randInt, uniqueName } = rand;
 import i18n from '../i18n.js';
 const { t: msg } = i18n;
 import rtlib from './rtlib.js';
+import hide from '../utils/hide.js';
+const { obfStrExpr } = hide;
 
 /** globalThis 兜底表达式，与 integrityCheck/banner 同构。 */
 const GREF = '(typeof globalThis!==typeof void 0?globalThis:typeof self!==typeof void 0?self:' +
@@ -96,6 +98,13 @@ export default function domainLock(ast, options, ctx) {
   const parsed = entries.map(parseEntry);
   const program = ast.type === 'File' ? ast.program : ast;
   const couple = ctx.couple || null;
+  const rt = ctx.rt || {};
+  // 报错文案走掩码串，不留明文。throw 是唯一一种"产物里出现英文报错"的形态，
+  // 那句文案原样写着工具名——一条 grep 就能 100% 认出产物出自本工具
+  // （2026-10-13 实测：stringArray:false + domainLock 走 throw 模式，产物里
+  // 命中 "JsLabyrinth: this build is locked to another domain" 1 处）。
+  // 授权域的用户手里就有这份产物，指纹与域名锁不匹配无关，一直挂着。
+  const M = (s) => obfStrExpr(s, rt.tblCall, rt.fcc);
   // coupled 需要「有人写（横幅+本 pass）也有人读（字符串池）」：池关着时
   // 往载体写贡献毫无效果，必须走降级
   const poisonKeys = Array.isArray(program.__poisonKeys) && program.__poisonKeys.length
@@ -204,7 +213,7 @@ export default function domainLock(ast, options, ctx) {
     // 最弱兜底：装载期显式失败。配了重定向地址就先跳走——跳转在 throw 之前，
     // 两者都执行得到：非授权域看到的是空白页而不是一句英文报错。
     if (redirect) P('if(!m){' + redirect + '}');
-    P('if(!m){throw new Error("JsLabyrinth: this build is locked to another domain");}');
+    P('if(!m){throw new Error(' + M('JsLabyrinth: this build is locked to another domain') + ');}');
   }
   P('}');
   // throw 模式的失配抛错不能被自己的 try/catch 吞掉——那种形态下没有第二个

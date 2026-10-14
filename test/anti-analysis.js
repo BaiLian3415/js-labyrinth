@@ -348,6 +348,14 @@ process.stdout.write(a + '|' + b + '\\n');
   ok(dlRun(rDlThrow.code, 'evil.com', 'throw-deny').includes('|THREW:'),
     'throw 模式失配装载期抛错（引导调用裸奔不被吞）');
   ok(dlRun(rDlThrow.code, 'example.com', 'throw-auth') === dlWant, 'throw 模式授权主机正常');
+  // throw 模式的那句报错文案原样写着工具名，是一条 grep 就能 100% 认出产物的
+  // 指纹（授权域的用户手里就有这份产物，与域名锁不匹配无关）。现走掩码串，
+  // 但运行期抛出的内容必须一字不变——掩码不能顺手把用户看到的文案改掉。
+  ok(!/JsLabyrinth|locked to another domain/.test(rDlThrow.code),
+    'throw 模式产物无工具名明文（旧码恒有 "JsLabyrinth: this build is locked to another domain"）',
+    '命中 ' + (rDlThrow.code.match(/JsLabyrinth|locked to another domain/g) || []).join(' '));
+  ok(dlRun(rDlThrow.code, 'evil.com', 'throw-deny-msg').includes('locked to another domain'),
+    'throw 模式运行期报错文案仍逐字不变（掩码不改变用户可见内容）');
 
   // 篡改面一：改校验函数体内的探针属性名（location.hostname 是模板在产物里
   // 的唯一明文）。文本一变即进完整性哈希面失配，同时运行期取不到 hostname
