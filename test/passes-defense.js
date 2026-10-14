@@ -66,6 +66,54 @@ section('自防御：篡改检出');
         '篡改后仍然输出 ' + got.slice(0, 40));
     }
 
+    // 用户自己写的 var 绑定函数表达式与箭头函数也必须在校验面内（2026-10-13）。
+    //
+    // 原先哈希面只收根级 FunctionDeclaration，于是 `var f = function(){...}` /
+    // `const g = x => ...` 完全在面外：改它们的函数体，整池字符串照常解码、产物
+    // 照常输出，没有任何响应。实测老码 medium 档篡改后输出照样是篡改后的值
+    // （V=113，MISSED），修后整池腐蚀（BLOCKED）。
+    //
+    // 配置两处讲究：① 关掉会改写函数体的 pass（数字混淆 / 扁平化 / 包装 / 改名），
+    //   让用户函数文本在产物里逐字可定位，篡改锚点才稳定；② stringArrayThreshold
+    //   给 1——它是**收集概率**，给 0 等于把池整个关掉，那时投毒没有任何可观测
+    //   出口，断言会恒"通过"而什么也没测到（第一版就这么踩过：48 组全 MISSED）。
+    {
+      const MIN = {
+        shell: false, mangle: false, stringSplit: false, controlFlowFlattening: false,
+        controlFlowLoopFlattening: false, numberObfuscation: false, deadCodeInjection: false,
+        opaquePredicates: false, functionWrapper: false, callProxy: false, selfDefending: false,
+        debugProtection: false, antiCDP: false, envFingerprint: false, simplify: false,
+        objectKeyEncoding: false, stringArrayThreshold: 1,
+      };
+      const uSrc = 'var seedv = 7;\n'
+        + 'var eps = function (x) { return x + seedv; };\n'
+        + 'var zeta = (x) => eps(x) + 1;\n'
+        + 'function alpha(x) { return zeta(x); }\n'
+        // 输出必须带一条池化字符串：投毒的表现是整池乱码，纯数字输出看不出变化
+        + "process.stdout.write('V=' + alpha(5));";
+      const uWant = runNode(uSrc, 'sd-user-raw.js').trim();
+      const rU = obfuscate(uSrc, { preset: 'medium', seed: 1, ...MIN });
+      const icU = rU.stats.find((s) => s.pass === 'integrityCheck');
+      ok(!!(icU && icU.result && icU.result.userFns === 2),
+        '根层 var 函数表达式与箭头函数进入完整性校验面（老码无 userFns 键）',
+        JSON.stringify(icU && icU.result));
+      const tryRunU = (c, name) => { try { return runNode(c, name).trim(); } catch (e) { return 'ERR'; } };
+      ok(tryRunU(rU.code, 'sd-user-ok.js') === uWant,
+        '纳入校验面后未篡改产物输出正确（不误伤）', 'got ' + tryRunU(rU.code, 'sd-user-ok2.js').slice(0, 30));
+      for (const [label, from, to] of [
+        ['var 函数表达式', 'function(x){return x+seedv;}', 'function(x){return x+seedv+100;}'],
+        ['箭头函数', 'x=>{return eps(x)+1;}', 'x=>{return eps(x)+1+100;}'],
+      ]) {
+        const at = rU.code.indexOf(from);
+        ok(at >= 0, '能在产物里定位到' + label + '的原文', from);
+        if (at < 0) continue;
+        const patchedU = rU.code.slice(0, at) + to + rU.code.slice(at + from.length);
+        const gotU = tryRunU(patchedU, 'sd-user-tampered.js');
+        ok(gotU !== 'V=113', '篡改' + label + '的函数体即被检出（老码输出 V=113）',
+          '篡改后输出 ' + gotU.slice(0, 40));
+      }
+    }
+
     // 运行时保护：把 Function.prototype.toString 换成非原生实现（解壳的第一步
     // 就是这么干），产物必须检出。注意这条验证的是"整体会响应"，命中既可能来
     // 自原生性探针，也可能来自哈希面本身——两者都依赖 toString 取函数源码

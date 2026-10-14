@@ -170,6 +170,45 @@ const targets = rootBody.filter((s) => s.type === 'FunctionDeclaration' && s.id 
   for (const t of (program.__saAccessors || [])) {
     if (rootBody.indexOf(t.stmt) >= 0) deferred.push({ ref: t.name, node: t.node, stmt: t.stmt });
   }
+  const machineryCount = deferred.length;
+
+  // 根层 var/let/const 绑定的函数表达式与箭头函数同样进校验面（2026-10-13）。
+  //
+  // 原先哈希面只收根级 FunctionDeclaration，于是用户写的
+  // `var f = function(){...}` / `const g = x => ...` 完全在面外：还原者改这两个
+  // 函数的函数体，整池字符串照常解码、产物照常输出，没有任何响应。实测
+  // （callProxy 转储，即本 pass 看到的同一棵树）high 档根层 47 条语句里，
+  // 27 个函数声明在面内，面外挂着用户自己写的 2 个函数表达式；max 档 4 个。
+  //
+  // 走 deferred 那条路而不是头部循环：早带跑的时候这些 var 还是 undefined，
+  // 直接校验就是整片假失配投毒——这正是 deferred 存在的理由。插入点取全部
+  // deferred 项里最靠后的一条声明之后（`at` 的算法对两者一致）。
+  //
+  // 三类必须排除，否则干净产物会被自己的校验投毒：
+  //   · 已在 deferred 里的（字符串池访问器），重复登记只是白跑一遍；
+  //   · vm / wasm 搬走过的——桩的运行期文本与构建期文本不是同一形态，
+  //     判据复用 vmStubbed（同一份口径，历史上两处各写一份正是投毒事故成因）；
+  //   · 同名多次声明只留**最后**一处：延迟块按名字取引用，var 被覆盖后早期那个
+  //     函数对象在运行期取不到，按它算的哈希必然失配。被根级 FunctionDeclaration
+  //     占用的名字也跳过——那一份已在 targets 里按引用校验。
+  {
+    const takenRef = new Set(deferred.map((d) => d.ref));
+    for (const f of targets) if (f.id) takenRef.add(f.id.name);
+    const picked = new Map();   // 名字 -> 声明（后写覆盖先写，取最后一个）
+    for (const s of rootBody) {
+      if (s.type !== 'VariableDeclaration' || vmStubbed(s)) continue;
+      for (const d of s.declarations) {
+        const init = d.init;
+        if (!init || !d.id || d.id.type !== 'Identifier') continue;
+        if (init.type !== 'FunctionExpression' && init.type !== 'ArrowFunctionExpression') continue;
+        if (vmStubbed(init) || vmStubbed(d)) continue;
+        if (takenRef.has(d.id.name)) continue;
+        picked.set(d.id.name, { ref: d.id.name, node: init, stmt: s });
+      }
+    }
+    for (const e of picked.values()) deferred.push(e);
+  }
+  const userFnCount = deferred.length - machineryCount;
 
   // 每个校验目标一个随机键。键取代 fn.name 做表下标：函数表达式的 name 要么
   // 为空要么可被推断，靠它查表会把机制层排除在校验面之外。
@@ -486,6 +525,11 @@ const targets = rootBody.filter((s) => s.type === 'FunctionDeclaration' && s.id 
   // 闩锁表上，即便落在热函数里也只跑一次）。落在 VM 已编译函数体内的跳过：
   // 那里的代码是按字节码步执行的，插进去既不会被正常执行也破坏匹配。
   let deferredInjected = 0;
+  // userFnInjected 只统计用户函数表达式那一批：machinery 报的是机制层（字符串池
+  // 访问器）覆盖数，混进用户函数会让这个数字失真——它是被 radar 与 README 当
+  // "机制层进校验面了没有"的判据在用。必须在注入块之后算：deferredInjected 在
+  // 块内才被赋值，提前算会恒为 0（第一版就这样把 userFns 报成 0，差点以为没生效）。
+  let userFnInjected = 0;
   if (deferred.length) {
     let at = -1;
     for (const d of deferred) {
@@ -506,12 +550,14 @@ const targets = rootBody.filter((s) => s.type === 'FunctionDeclaration' && s.id 
         { sourceType: 'script' }).program.body;
       rootBody.splice(at + 1, 0, ...block);
       deferredInjected = deferred.length;
+      userFnInjected = Math.min(userFnCount, deferredInjected);
     }
   }
 
   return {
     checked: targets.length,
-    machinery: deferredInjected,
+    machinery: deferredInjected - userFnInjected,
+    userFns: userFnInjected,
     sentinels: sentinels.length,
     entryPoints: entryInjected,
   };
