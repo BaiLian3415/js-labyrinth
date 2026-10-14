@@ -930,6 +930,38 @@ process.stdout.write(a + '|' + b + '\\n');`;
   ok(obfuscate(rpSrc, { preset: 'high', shell: false, nameStyle: 'Hexadecimal-props', seed: 97 }).code ===
     obfuscate(rpSrc, { preset: 'high', shell: false, nameStyle: 'Hexadecimal-props', seed: 97 }).code,
     '属性名改名固定 seed 可复现');
+
+  // 名池不得与「只以字符串形态出现」的属性名撞名（2026-10-13）。
+  //
+  // ctx.usedNames 的种子来自 Identifier 节点，而 `o['x']` / `{'x': 1}` 里的键是
+  // StringLiteral——它们进不了防撞集，名池就可能把 'x' 发给另一个属性，两个属性被
+  // 合并成一个：静默算错、产物照跑不报错。实测老码在 40 个 seed 上的命中率：
+  // Mangled-props 40/40（确定性）、Mangled-shuffled-props 12/40、Dictionary-props
+  // 6/40；Hexadecimal/Chinese 恰好不撞（形状里带十六进制位/汉字，与纯字母属性名
+  // 不相交）。样本刻意让候选属性都"定义 + 访问"（只定义不访问不进候选），并放一批
+  // 只以字符串形态出现的短名与词表名去撞名池。
+  {
+    const clashSrc = [
+      'var o = { alpha: 1, base: 2, gamma: 3 };',
+      "o['a'] = 10; o['b'] = 11; o['c'] = 12; o['d'] = 13; o['e'] = 14; o['f'] = 15;",
+      "o['value'] = 20; o['index'] = 21; o['count'] = 22; o['total'] = 23;",
+      'o.alpha = 4; o.base = 5; o.gamma = 6;',
+      'process.stdout.write([o.alpha, o.base, o.gamma, o["a"], o["b"], o["c"], o["d"], o["e"], o["f"],',
+      '  o["value"], o["index"], o["count"], o["total"]].join("|"));',
+    ].join('\n');
+    const clashWant = runNode(clashSrc, 'rp-clash-raw.js').trim();
+    let clashBad = '';
+    for (const style of ['Mangled-props', 'Mangled-shuffled-props', 'Hexadecimal-props', 'Dictionary-props']) {
+      for (const seed of [1, 2, 3, 4]) {
+        const code = obfuscate(clashSrc, { preset: 'low', shell: false, nameStyle: style, mangle: false, seed }).code;
+        let got = 'THREW';
+        try { got = runNode(code, 'rp-clash-' + style + '-' + seed + '.js').trim(); } catch (e) { got = 'THREW'; }
+        if (got !== clashWant) { clashBad = style + '/' + seed + ' → ' + got.slice(0, 60); break; }
+      }
+      if (clashBad) break;
+    }
+    ok(clashBad === '', '名池不与字符串形态属性名撞名（旧码 Mangled-props 40/40 全错）', clashBad);
+  }
 }
 
 section('其他');

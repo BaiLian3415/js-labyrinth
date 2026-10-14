@@ -166,6 +166,19 @@ export default function renameProperties(ast, options, ctx) {
   const uses = new Set();
   collect(program, null, defs, uses);
 
+  // 只以**字符串形态**出现的属性名（`o['x']`、`{'x': 1}`）不在 ctx.usedNames 里：
+  // 那个集合的种子来自 Identifier 节点（obfuscate.js 的收集），而字符串形态的属性名
+  // 是 StringLiteral。它们没进防撞集，名池就可能把 'x' 发给**另一个**属性，两个属性
+  // 被合并成一个——静默算错、产物照跑不报错。2026-10-13 实测：Mangled-shuffled-props
+  // 在 30 个 seed 里错 3 个（`var o={alpha:1}; o.alpha=6; o['b']=2;` 里 alpha 改名
+  // 后拿到 'b'，与字符串形态的 'b' 撞成同一个属性，读回 6 而不是 2）。
+  // 修法：把定义面与访问面全部并进防撞集。写回 ctx.usedNames 时要把这批**排除**——
+  // 它们只用于本地防撞，混进去会缩小 mangle 等后置 pass 的取名空间、让产物字节漂移，
+  // 那是超出本修复范围的改动。
+  const reservedOnly = new Set();
+  for (const s of defs) if (!used.has(s)) { used.add(s); reservedOnly.add(s); }
+  for (const s of uses) if (!used.has(s)) { used.add(s); reservedOnly.add(s); }
+
   // 候选 = 定义 ∩ 访问，再排除白名单
   const map = new Map();
   for (const name of defs) {
@@ -177,7 +190,8 @@ export default function renameProperties(ast, options, ctx) {
 
   rewrite(program, null, map);
 
-  // 新名写回 ctx.usedNames：后续 mangle 等 pass 靠它避撞
-  for (const n of used) ctx.usedNames.add(n);
+  // 新名写回 ctx.usedNames：后续 mangle 等 pass 靠它避撞。reservedOnly 只用于本地
+  // 防撞，不写回（见上面那段说明）。
+  for (const n of used) { if (!reservedOnly.has(n)) ctx.usedNames.add(n); }
   return { renamed: map.size };
 }
