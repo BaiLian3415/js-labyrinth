@@ -25,26 +25,23 @@ export const VALUE_OPTIONS = {
     hintZh: '产物最终跑在哪里。auto 按源码结构判断 Cloudflare Workers，认不出（有自定义写法）时手动选；判成受限宿主会强制关掉跑不了的形态并告警。',
     hintEn: 'Where the artifact finally runs. auto guesses Cloudflare Workers from the structure of the source; set it explicitly when the guess cannot work. A restricted target force-disables the shapes that cannot run there, with a warning.' },
   identifierPrefix: { kind: 'string', group: 'basic', zh: '标识符前缀', en: 'Identifier prefix', hintZh: '生成名的前缀，默认 _0x；须以字母或 _/$ 开头。', hintEn: 'Prefix for generated names, default _0x. Must start with a letter, _ or $.' },
-  nameStyle: { kind: 'enum', values: ['Mangled', 'Mangled-props', 'Mangled-shuffled', 'Mangled-shuffled-props', 'Hexadecimal', 'Hexadecimal-props', 'Dictionary', 'Dictionary-props', 'Chinese', 'Chinese-props'], group: 'structure', zh: '命名策略', en: 'Naming style', hintZh: '变量与函数名策略。5 个基础档 × 带不带 `-props`（连属性名/对象键一起改，形状与标识符一致）：Mangled-shuffled（默认，字母表每次构建打乱，发布用）、Mangled（a/b/c 固定顺序，只做可 diff 的调试档）、Hexadecimal、Dictionary、Chinese（汉字，需按 UTF-8 提供）。`-props` 只改程序内定义且被访问的属性，与外部共享的属性会破。', hintEn: 'Naming strategy for variables and functions. Five base styles, each with or without `-props` (which also renames properties to match the identifier shape): Mangled-shuffled (default, letter order reshuffled per build, use for releases), Mangled (fixed a/b/c order, only for diffable debugging), Hexadecimal, Dictionary, Chinese (requires UTF-8). `-props` only touches properties defined and accessed inside the program; properties shared with the outside world will break.' },
+  nameStyle: { kind: 'enum', values: ['Mangled', 'Mangled-shuffled', 'Hexadecimal', 'Dictionary', 'Chinese'], group: 'structure', zh: '命名策略', en: 'Naming style', hintZh: '变量与函数名的形状。Mangled-shuffled（默认，字母表每次构建打乱，发布用）、Mangled（a/b/c 固定顺序，可跨构建 diff，只做调试档）、Hexadecimal、Dictionary、Chinese（汉字，需按 UTF-8 提供）。只管标识符；要不要连属性名/对象键一起改，看下面的「属性名重命名」开关。', hintEn: 'The shape of variable and function names. Mangled-shuffled (default, letter order reshuffled per build, use for releases), Mangled (fixed a/b/c order, diffable across builds, debugging only), Hexadecimal, Dictionary, Chinese (requires UTF-8). Identifiers only; whether properties and object keys are renamed too is the separate toggle below.' },
   chineseDictionary: { kind: 'string', group: 'structure', zh: '汉字字典', en: 'Chinese dictionary',
     // 显隐规则：只在命名策略选中 Chinese 档时这一项才被读（mangle 与
     // renameProperties 都改走汉字池），摆出来只会让人以为填了有用。规则写在
     // 元数据里而非散在界面代码中，这样 CLI 帮助、Worker API 与网页三端看到的
     // 是同一份判断。
-    // 显隐规则：只在命名策略选中 Chinese 档时这一项才被读（mangle 与
-    // renameProperties 都改走汉字池），摆出来只会让人以为填了有用。规则写在
-    // 元数据里而非散在界面代码中，这样 CLI 帮助、Worker API 与网页三端看到的
-    // 是同一份判断。
     //
-    // 用 oneOf 而不是 equals：档位扩到十档后，汉字档有两个（Chinese 与
-    // Chinese-props），equals 只能写一个，写死另一个就把该显示的输入框藏了。
+    // 仍用 oneOf 而不是 equals：`-props` 档 2026-10-13 拆成独立开关后只剩一个
+    // Chinese 档，但 CLI / API 的调用方可能传旧写法（解析层兼容），这里跟着
+    // 一起列出来比哪天改了档名再被藏起来强。写成单元素数组的代价只是一次显式声明。
     showWhen: { key: 'nameStyle', oneOf: ['Chinese', 'Chinese-props'] },
     // 1024 个字塞进单行输入框没法看也没法逐个校对，渲染成多行文本框。
     multiline: true,
     hintZh: 'Chinese 档的汉字表，逗号分隔；留空用内置 1024 字。发名前打乱，所以顺序只影响用到哪些字，不影响可复现性。',
     hintEn: 'Character table for the Chinese style, comma-separated. Empty uses the built-in 1024 characters. Shuffled before use, so the order only affects which characters appear, not reproducibility.' },
   nameDictionary: { kind: 'string', group: 'structure', zh: '词典词表', en: 'Dictionary words',
-    // 同上：只有命名策略选中 Dictionary 档时词表才被读（含带属性名的那一档）。
+    // 同上：只有命名策略选中 Dictionary 档时词表才被读（含兼容的旧 -props 写法）。
     showWhen: { key: 'nameStyle', oneOf: ['Dictionary', 'Dictionary-props'] },
     // 词表常有几十个词，单行只能看到头几个。
     multiline: true,
@@ -168,6 +165,7 @@ export const FLAG_CANDIDATES = [
 
 const BOOL_LABELS = {
   mangle: ['标识符重命名', 'Identifier renaming'],
+  renameProperties: ['属性名重命名', 'Property renaming'],
   esmFold: ['ESM 模块折叠', 'ESM module folding'],
   functionWrapper: ['函数包装（IIFE）', 'Function wrapper (IIFE)'],
   callProxy: ['动态调用层', 'Call proxy dispatch'],
@@ -224,7 +222,8 @@ const BOOL_LABELS = {
 };
 
 const BOOL_GROUPS = {
-  mangle: 'structure', esmFold: 'structure', functionWrapper: 'structure', callProxy: 'structure',
+  mangle: 'structure', renameProperties: 'structure',
+  esmFold: 'structure', functionWrapper: 'structure', callProxy: 'structure',
   templateToConcat: 'structure', objectKeyEncoding: 'structure',
   stringArray: 'strings', stringArrayRotate: 'strings', stringArrayCache: 'strings',
   stringArrayMixedEncoding: 'strings', stringIndexMask: 'strings', honeyStrings: 'strings',
@@ -261,6 +260,7 @@ export const CARD_ICONS = {
 /** 布尔项的说明文案。CLI 旗标名由 flagLabel() 补进提示，不必在这里重复。 */
 const BOOL_HINTS = {
   mangle: ['把局部/全局标识符改名为随机名，压缩体积并抹掉语义。', 'Renames identifiers to random names, shrinking output and erasing meaning.'],
+  renameProperties: ['把属性名/对象键/方法名一起改成与标识符同形状的名字。只改程序内定义且被访问的属性，与外部共享的会破。', 'Renames properties, object keys and method names to the same shape as identifiers. Only properties defined and accessed inside the program; ones shared with the outside world will break.'],
   esmFold: ['折叠 ESM 模块结构：静态 import/export 改成动态 import 加单一出口，模块体搬进 IIFE，顶层只留 await 赋值与出口名。仅对 ESM 载荷生效。', 'Folds ESM module structure: static import/export become a dynamic import with a single exit, the module body moves into an IIFE, and only await assignments and export names stay at the top level. ESM payloads only.'],
   functionWrapper: ['把顶层语句包进 IIFE，隐藏全局变量与初始化顺序。', 'Wraps top-level statements in an IIFE, hiding globals and init order.'],
   callProxy: ['顶层函数之间的调用改经运行期重排的派发表转发，静态调用图消失。', 'Routes top-level calls through a runtime-shuffled dispatch table, erasing the static call graph.'],

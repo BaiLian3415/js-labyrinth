@@ -717,10 +717,12 @@ function refreshOptionVisibility() {
     // 非空时）。这里原来只读 rule.equals，notEquals 规则里的 equals 是 undefined，
     // 于是 currentValue(...) !== undefined 恒真 → 那一行**永远**被收起。
     //
-    // oneOf 同样必须显式支持：命名策略扩到十档后，「选中中文档才显示汉字字典」
-    // 这类规则要同时认 Chinese 与 Chinese-props，equals 只能写一个，写死另一个
-    // 就把该显示的输入框藏了——与上面 notEquals 那条是同一类"漏一个分支就永远
-    // 收起"的坑，只是方向相反。
+    // oneOf 同样必须显式支持：显隐规则要一次认多个取值时只能用它，例如
+    // 「选中中文档才显示汉字字典」要同时认 Chinese 与兼容的旧写法 Chinese-props，
+    // equals 只能写一个，写死另一个就把该显示的输入框藏了——与上面 notEquals
+    // 那条是同一类"漏一个分支就永远收起"的坑，只是方向相反。
+    // （2026-10-13 起 nameStyle 只剩 5 档、属性名开关拆成独立布尔项，那两个输入框
+    //  其实各自只剩一个档位；但规则仍写成 oneOf，因为元数据要覆盖旧写法。）
     const cur = currentValue(rule.key);
     const visible = rule.notEquals !== undefined
       ? cur !== rule.notEquals

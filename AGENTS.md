@@ -329,13 +329,24 @@ npm run build:web:cloud  # 云端执行形态（核心不进产物，Vercel 部�
   **434 KB 且部署即抛**；关掉壳后 42 KB 且能正常跑。"保护层看着有、产物不可用"比没有
   保护更糟。
 
-## 命名策略（2026-10-09 重构后）
+## 命名策略（2026-10-13 拆分后）
 
-- **一个选项管全部重命名**：`nameStyle` 是唯一入口，10 档 = 5 个基础档（Mangled /
-  Mangled-shuffled / Hexadecimal / Dictionary / Chinese）× 带/不带 `-props` 后缀。
+- **两个正交的东西分两个选项**：`nameStyle` 只管**标识符的名字形状**，5 档（Mangled /
+  Mangled-shuffled / Hexadecimal / Dictionary / Chinese）；「连属性名/对象键一起改」是
+  独立布尔项 `renameProperties`（界面上是单独一个开关）。2026-09 曾把后者编码进档位串的
+  `-props` 后缀（10 档变体），2026-10-13 拆开：想改属性名就得先把标识符形状也一起换掉，
+  而界面显隐还得为每个基础档写两条 `oneOf`——两个都不值当。
   合法值以 `src/utils/naming.js` 的 `NAME_STYLES` 为**唯一真源**，`options-meta.js`
   的枚举与它对拍（`test/minify.js` 有断言）——写死字符串的话下次加档必然漏改一处，
   而那种漂移表征是"选项能选但没效果"，从产物里看不出来。
+- **旧 `-props` 写法必须继续可用**：`parseNameStyle` 仍认后缀，`resolveOptions` 把它
+  归一化成 `nameStyle: 基础档` + `renameProperties: true`。删键而不留兼容路径就是
+  `resolveOptions` 的静默保留（本仓库明令禁止的失败形态）。
+  **归一化必须在 `resolveOptions` 里做，不能放到后面的归一化块**：那里已经看不到
+  `src`（用户原始输入），而四个预设都显式带了 `renameProperties: false`（套餐闸门要求
+  被约束的键在预设里有取值，`plan.js` 的 `assertConsistent` 会报缺项），于是分不清
+  "这个 false 来自预设还是来自用户"。优先级固定为
+  **用户显式的 `renameProperties` > 档位串旧后缀 > 预设/默认值**。
 - **档位解析只认一处**：`naming.js` 的 `parseNameStyle` / `baseNameStyle` /
   `wantsPropertyRename` / `isChineseNaming`。消费方五处（`mangle`、`renameProperties`、
   `obfuscate` 调度、`integrityCheck` 重算哈希、`options-meta` 枚举与文案），
@@ -346,10 +357,12 @@ npm run build:web:cloud  # 云端执行形态（核心不进产物，Vercel 部�
   `_0x` 随机名，**选了 Hexadecimal 对属性名毫无影响，那一档对属性是假的**。名池是有状态
   的迭代器，两个 pass 各 `createNamePool()` 拿独立的一条流；防撞靠两边都把新名写回
   `ctx.usedNames`。
-- **`renameProperties` 布尔项已删除**（并入 `-props` 档）。套餐闸门随之从
-  `plans.js` 的一条独立规则改成 `nameStyle` 白名单：free 档白名单**只能列不带
-  `-props` 的那一档**，误列一个就把付费能力白送，且 `violations()` 不报错。档位匹配大小写不敏感（`options-meta` 导出了 `toCamel`，但
-  **仓库内没有消费方**，不存在「CLI 自动转驼峰」这回事，别照着假设）。
+- **套餐闸门两条并存**：`plans.js` 的 `nameStyle` 白名单（free 只放行 Mangled 与
+  Mangled-shuffled）+ `renameProperties: false`。拆开之后第二条从"多余"变回必需——
+  属性名改名是付费能力而它不再由档位串承载，唯一拦住 free 的就是这条规则。
+  好处是白名单不必再守"只能列不带 `-props` 的档位"这条隐约束（违反它会把付费能力白送，
+  且 `violations()` 不报错，只会说"free 也能用这档"）。档位匹配大小写不敏感（`options-meta`
+  导出了 `toCamel`，但**仓库内没有消费方**，不存在「CLI 自动转驼峰」这回事，别照着假设）。
 - `identifierPrefix`（默认 `_0x`）**不是**风格选项：它是 8 个文件里机器代码名
   （rtlib/rtgen/shell/banner/esmFold/antiLLM/…）的前缀，以及 `mangle` 名池耗尽时的
   兜底生成器。别把它和 `Hexadecimal` 当成同一件事的两条路。

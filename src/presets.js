@@ -5,6 +5,11 @@ export default {
     "identifierPrefix": "_0x",
     "mangle": true,
     "nameStyle": "Mangled-shuffled",
+    // 属性名改名是独立布尔项（2026-10-13 从 nameStyle 的 `-props` 后缀拆出），
+    // 四个预设一律不开：它会改成员访问与对象键，与外部共享的属性会破，是用户自己
+    // 按代码形态决定的事。显式写 false 而不是省着不写——plans.js 的闸门对每个被
+    // 约束的键都要求预设里有取值（plan.js 的 assertConsistent 会报缺项）。
+    "renameProperties": false,
     "selfCheck": true,
     "stringArray": true,
     "stringArrayEncoding": "base64",
@@ -78,6 +83,11 @@ export default {
     "identifierPrefix": "_0x",
     "mangle": true,
     "nameStyle": "Mangled-shuffled",
+    // 属性名改名是独立布尔项（2026-10-13 从 nameStyle 的 `-props` 后缀拆出），
+    // 四个预设一律不开：它会改成员访问与对象键，与外部共享的属性会破，是用户自己
+    // 按代码形态决定的事。显式写 false 而不是省着不写——plans.js 的闸门对每个被
+    // 约束的键都要求预设里有取值（plan.js 的 assertConsistent 会报缺项）。
+    "renameProperties": false,
     "selfCheck": true,
     "stringArray": true,
     "stringArrayEncoding": "xor",
@@ -168,6 +178,11 @@ export default {
     "identifierPrefix": "_0x",
     "mangle": true,
     "nameStyle": "Mangled-shuffled",
+    // 属性名改名是独立布尔项（2026-10-13 从 nameStyle 的 `-props` 后缀拆出），
+    // 四个预设一律不开：它会改成员访问与对象键，与外部共享的属性会破，是用户自己
+    // 按代码形态决定的事。显式写 false 而不是省着不写——plans.js 的闸门对每个被
+    // 约束的键都要求预设里有取值（plan.js 的 assertConsistent 会报缺项）。
+    "renameProperties": false,
     "selfCheck": true,
     "stringArray": true,
     "stringArrayEncoding": "rc4",
@@ -256,6 +271,11 @@ export default {
     "identifierPrefix": "_0x",
     "mangle": true,
     "nameStyle": "Mangled-shuffled",
+    // 属性名改名是独立布尔项（2026-10-13 从 nameStyle 的 `-props` 后缀拆出），
+    // 四个预设一律不开：它会改成员访问与对象键，与外部共享的属性会破，是用户自己
+    // 按代码形态决定的事。显式写 false 而不是省着不写——plans.js 的闸门对每个被
+    // 约束的键都要求预设里有取值（plan.js 的 assertConsistent 会报缺项）。
+    "renameProperties": false,
     "selfCheck": true,
     "stringArray": true,
     "stringArrayEncoding": "rc4",

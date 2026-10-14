@@ -17,8 +17,8 @@ export default {
   "simplify": false,
   "identifierPrefix": "_0x",
   "mangle": true,
-  // 命名策略（Paid 档，plus+；free 档闸门只放行不带 -props 的两档）。五个基础档 + 每个基础档的
-  // 一个带属性名变体，共十档（合法值以 utils/naming.js 的 NAME_STYLES 为准）：
+  // 命名策略（Paid 档，plus+；free 档闸门只放行 Mangled 与 Mangled-shuffled）。
+  // 五个基础档，只管**标识符的名字形状**（合法值以 utils/naming.js 的 NAME_STYLES 为准）：
   //   Mangled           规范短名（a、b、c…），决定性、与 seed 无关、可逐字节 diff，
   //                     体积最小，但产物里必然出现发名顺序，指纹最强——只做调试档，
   //                     不做默认（2026-10-13 起默认换成 Mangled-shuffled）
@@ -31,25 +31,33 @@ export default {
   //                     \uXXXX 转义（见 generator 的 _escapeIdent），因此要求
   //                     产物按 UTF-8 提供
   //
-  // 后缀 `-props`（如 `Hexadecimal-props`）= 连属性名/对象键一起改，改的是成员访问
-  // obj.foo、对象键 {foo:1}、方法名、类方法与类属性名。只改「程序内定义 ∩ 访问」的
-  // 属性，叠加高风险名白名单；与外部代码共享的属性可能被破坏（safe 模式固有局限）。
-  // 属性名走与标识符同一个名池，所以选哪档属性名就是哪档形状。
+  // 2026-10-13：`-props` 后缀从本枚举里移出，属性名改名回到独立布尔项
+  // renameProperties（见下）。拆开的理由是两个正交的东西混在一个枚举里：用户为了
+  // 改属性名得先把标识符形状也一起换掉，而 showWhen 还得为每个基础档写两条 oneOf。
+  // 旧档位串 `X-props` 仍被解析层识别（归一化成 renameProperties:true），所以旧
+  // 存档与 CLI 不失效——删键而不留兼容路径就是"静默失效"，本仓库明令禁止。
   //
-  // 为什么写进档位而不留一个独立布尔项（2026-10-09）：属性名重命名原本是独立的
-  // renameProperties 开关，而它的实现只对 Chinese 档认 nameStyle、其余一律发
-  // `_0x` 随机名——也就是说选了 Hexadecimal 之后属性名完全不受影响，那一档对属性
-  // 而言是假的。写进档位后属性名真正跟随档位，选一次就够，不必再勾第二个开关。
-  //
-  // 2026-10-01：Chinese 原本也是独立布尔开关 chineseNames，同样并入本枚举。
-  // 这两次都属破坏性变更：旧存档与 CLI 的 --chinese-names / --rename-properties
-  // 不再识别（选项系统保留未知键但没人读，所以是静默失效而非报错）。
+  // 2026-10-01：Chinese 原本也是独立布尔开关 chineseNames，同样并入本枚举；那次
+  // 没有留兼容路径，`--chinese-names` 从此静默失效。要给键改名或删除，先读上面
+  // 那条铁律。
   "nameStyle": "Mangled-shuffled",
+  // 连属性名/对象键一起改（Paid 档，plus+；free 档闸门锁死 false）。改的是成员访问
+  // obj.foo、对象键 {foo:1}、方法名、类方法与类属性名；只改「程序内定义 ∩ 访问」的
+  // 属性，叠加高风险名白名单，与外部代码共享的属性可能被破坏（safe 模式固有局限）。
+  //
+  // 属性名走与标识符**同一个名池**，所以形状跟随 nameStyle：选 Hexadecimal 就得到
+  // 十六进制形状的属性名。这条在 2026-10-09 之前是假的——那时它只对 Chinese 档认
+  // nameStyle、其余一律发 `_0x` 随机名，选了 Hexadecimal 之后属性名完全不受影响。
+  //
+  // 2026-10-13 之前它被编码进 nameStyle 的 `-props` 后缀（2026-09 的十档变体），
+  // 现在拆回独立开关。旧写法继续有效：resolveOptions 见 nameStyle 带该后缀会把它
+  // 归一化成这里的 true。
+  "renameProperties": false,
   // Dictionary 档的自定义词表。留空用内置的 64 词表（见 utils/naming.js 的
   // DICTIONARY_WORDS）。逗号/空白/换行分隔，逐词校验后去重：非法标识符、关键字、
   // 重复词会被丢掉，全部非法时回落到内置词表。词越长产物越大，且这一档词表本来
   // 就可枚举（认的人拿同一份词表就能把改名批量还原），所以定位是调试/审计而非发布。
-  // 只在 nameStyle 是 Dictionary / Dictionary-props 时被读。
+  // 只在 nameStyle = Dictionary 时被读。
   "nameDictionary": "",
   // 汉字字典。留空用内置默认字典（1024 字，起手甲乙丙丁戊己庚辛壬癸）。
   // 自定义时逐构建打乱后发名，所以顺序只影响"哪些字会被用到"，不影响可复现性。

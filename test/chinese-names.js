@@ -84,10 +84,9 @@ section('中文命名：四档预设');
     let built = true;
     try {
       r = obfuscate(SAMPLE, {
-        // Chinese-props：属性名重命名已并入 nameStyle 档位（2026-10-09），旧的
-      // renameProperties 布尔项是未知键、会被静默忽略——写在这里看着像在测属性名，
-      // 实际只测了标识符。
-      preset, seed: 11, nameStyle: 'Chinese-props', shell: false, ...NO_STUB,
+        // 属性名重命名 2026-10-13 拆回独立布尔项（此前编码在 nameStyle 的 -props
+        // 后缀里）。这里用新写法 + 顺带验旧写法仍然有效，两者都该改到属性名。
+        preset, seed: 11, nameStyle: 'Chinese', renameProperties: true, shell: false, ...NO_STUB,
       });
     } catch (e) {
       built = false;
@@ -195,9 +194,17 @@ section('中文命名：完整预设矩阵（回归防线）');
 
 section('中文命名：属性名与套餐闸门');
 {
-  const r = obfuscate(SAMPLE, { preset: 'low', seed: 11, nameStyle: 'Chinese-props', ...NO_STUB });
+  const r = obfuscate(SAMPLE, {
+    preset: 'low', seed: 11, nameStyle: 'Chinese', renameProperties: true, ...NO_STUB,
+  });
   ok(!/result/.test(r.code), '属性名也被换成中文（原名不残留）');
   ok(String(runNode(r.code, 'cjk-prop.js')).trim() === SAMPLE_WANT, '属性改名后语义不变');
+  // 旧写法兼容：Chinese-props 仍应打开属性名改名（解析层收进布尔项），
+  // 且产物与新写法逐字节相同——两条路表达的是同一件事。
+  const legacy = obfuscate(SAMPLE, {
+    preset: 'low', seed: 11, nameStyle: 'Chinese-props', ...NO_STUB,
+  });
+  ok(legacy.code === r.code, '旧写法 Chinese-props 与新写法产物逐字节相同');
 
   // free 档的命名风格锁死在 Mangled，中文命名属于"非 Mangled"，同样锁死
   ok(gate.violationsOf({ nameStyle: 'Chinese' }, plan.describe('free')).length === 1,

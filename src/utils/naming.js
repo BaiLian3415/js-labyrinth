@@ -8,20 +8,25 @@
  * 枚举与文案。它们一旦各写一遍，早晚会漂移出「标识符是词表名、属性名却是 _0x 随机」
  * 这类自相矛盾，且产物仍能跑、只是不好看——静默失败最难查。
  *
- * 档位命名：基础档 + 可选的 `-props` 后缀。`Hexadecimal-props` = 用十六进制形状改
- * 标识符**并且**连属性名/对象键一起改。原来属性名重命名是个独立布尔项 `renameProperties`，
- * 而它的实现只对 Chinese 档认 nameStyle、其余一律发 `_0x` 随机名——也就是说选了
- * Hexadecimal 之后属性名完全不受影响，那一档对属性而言是假的。写进档位后属性名走
- * 与标识符同一个名池，选什么就是什么。
+ * 档位与属性名开关的关系（2026-10-13 改）：`nameStyle` 只管标识符的**名字形状**，
+ * 五个基础档；「连属性名/对象键一起改」是独立布尔项 `renameProperties`（界面上是
+ * 单独一个开关）。此前它编码在档位串里——`Hexadecimal-props` 这类后缀，十档变体。
+ * 拆开的理由：两个正交的东西混在一个枚举里，用户为了改属性名得先把标识符形状也
+ * 一起换掉；而 `options-meta` 的 showWhen 又得为每个基础档写两条 oneOf，档位一多
+ * 就是纯维护债。
+ *
+ * **兼容输入**：旧档位串 `X-props` 仍然被识别——解析出基础档 X 并让
+ * wantsPropertyRename 为真。未知键/旧键被静默吞掉（resolveOptions 不报错也不警告）
+ * 是本仓库明令禁止的失败形态，删后缀而不留兼容路径就是那种形态。
  */
 import rand from './rand.js';
 import { cjkNames } from './cjk.js';
 const { shuffle, RESERVED, HEXD } = rand;
 
-/** 连属性名/对象键一起改的后缀。 */
+/** 连属性名/对象键一起改的后缀。2026-10-13 起只作**兼容输入**识别，界面与文档不再产出。 */
 export const PROPS_SUFFIX = '-props';
 
-/** 基础档（不带 `-props` 的那些）。顺序即界面展示顺序。 */
+/** 五个基础档，顺序即界面展示顺序。 */
 export const BASE_NAME_STYLES = [
   'Mangled',
   'Mangled-shuffled',
@@ -43,18 +48,19 @@ const BASE_BY_LOWER = new Map(BASE_NAME_STYLES.map((s) => [s.toLowerCase(), s]))
  * 默认档是 Mangled-shuffled 的话，"回落到默认"这个承诺就是假的，产物差十几个字节）。 */
 export const DEFAULT_NAME_STYLE = 'Mangled-shuffled';
 
-/** 全部合法档位 = 基础档 × {不带属性名, 带属性名}，界面与 CLI 都以这份为准。 */
-export const NAME_STYLES = BASE_NAME_STYLES.flatMap(
-  (base) => [base, base + PROPS_SUFFIX],
-);
+/** 合法档位 = 五个基础档。界面枚举、闸门白名单、测试都以这份为准。 */
+export const NAME_STYLES = [...BASE_NAME_STYLES];
 
 /**
  * 拆一个 nameStyle 字符串。
  *
- * @param {string} style 档位串，如 'Dictionary-props'
+ * `props` 是**兼容字段**：只有旧写法 `X-props` 才为真，新代码请读
+ * wantsPropertyRename（它同时看 `options.renameProperties`）。
+ *
+ * @param {string} style 档位串，如 'Dictionary' 或旧写法 'Dictionary-props'
  * @returns {{base:string, props:boolean, known:boolean}}
  *   base   —— 规范大小写的基础档名（不认识时回落到 DEFAULT_NAME_STYLE）
- *   props  —— 是否连属性名一起改
+ *   props  —— 输入是否带了旧 `-props` 后缀
  *   known  —— 输入是否是一个认识的档位（false 表示已按默认值兜底）
  */
 export function parseNameStyle(style) {
@@ -233,12 +239,17 @@ export function createNamePool(options) {
 }
 
 /**
- * 本档是否要连属性名/对象键一起改名。renameProperties pass 与 obfuscate 的调度
- * 都读这里，所以「勾了档位就跑」与「没勾就一个属性都不动」只有一个判定来源。
+ * 是否连属性名/对象键一起改。
+ *
+ * 两个来源取或：独立布尔项 `renameProperties`（界面上的那个开关）与旧档位串
+ * `X-props`（兼容路径）。resolveOptions 会把旧写法归一化成布尔项，所以正常情况下
+ * 两边等价；这里仍取或，是为了不依赖「归一化一定跑过」——这个判定被 renameProperties
+ * pass 与 obfuscate 的调度两处读，漏一处就是产物与预期不一致。
  *
  * @param {object} options 已归一化的选项
  * @returns {boolean}
  */
 export function wantsPropertyRename(options) {
+  if (options && options.renameProperties === true) return true;
   return parseNameStyle(options && options.nameStyle).props;
 }

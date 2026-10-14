@@ -8,9 +8,10 @@ const { uniqueName } = rand;
 /**
  * 属性名重命名（对标 obfuscator.io 的 safe 模式）。
  *
- * 开不开由 `nameStyle` 的档位决定：带 `-props` 后缀的那几档才跑本 pass（判定见
- * utils/naming.js 的 wantsPropertyRename）。原先它是个独立的 `renameProperties`
- * 布尔项，2026-10-09 并入档位。
+ * 开不开由独立布尔项 `renameProperties` 决定（判定见 utils/naming.js 的
+ * wantsPropertyRename，它同时认旧档位串的 `-props` 后缀）。这一项 2026-10-09 曾被
+ * 并进 nameStyle 枚举（十档变体），2026-10-13 又拆回独立开关：两个正交的东西混在
+ * 一个枚举里，用户为了改属性名得先把标识符形状也一起换掉。
  *
  * 与 mangle 的区别：mangle 改的是「绑定名」（变量/函数），本 pass 改的是「属性名」
  * ——成员访问 `obj.foo`、对象键 `{foo: 1}`、方法名 `{foo(){}}`、类方法/属性名。

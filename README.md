@@ -477,10 +477,10 @@ pass 无冲突。Paid 档（plus+）可显式开启，free 档闸门锁死 `fals
 的代码会比 terser 略胖；terser 的表达式级优化（内联、序列化、丢空 `if`）本工具不做，这是
 "1.2~1.6× 而不是 1.0×"的主因。
 
-排序与开关：`nameStyle` 默认 `Mangled-shuffled`，free 档闸门只放行不带 `-props` 的两档（`Mangled` 与 `Mangled-shuffled`），Plus 及以上可切其余八档；
-`simplify` 同样 plus+ 可开。各档的取舍见下节。
+排序与开关：`nameStyle` 默认 `Mangled-shuffled`，free 档闸门只放行 `Mangled` 与 `Mangled-shuffled` 两档，Plus 及以上可切其余三档；
+`renameProperties`（连属性名一起改）同样是 Plus 及以上可开；`simplify` 同样 plus+ 可开。各档的取舍见下节。
 
-### 命名策略（`--name-style`）：5 个基础档 × 带/不带属性名 = 10 档
+### 命名策略（`--name-style`）：5 档；属性名改名是独立开关
 
 五个基础档与 obfuscator.io 的 `identifierNamesGenerator` 同一套命名，便于横向对比产物
 （`Chinese` 是本项目扩展）。共用同一套发放机制——长度递增、**按引用次数从多到少发放**、
@@ -495,31 +495,38 @@ pass 无冲突。Paid 档（plus+）可显式开启，free 档闸门锁死 `fals
 | `Dictionary` | `value`、`index`、`result1` | 随 seed | 固定 64 词表。栈和断点里还认得出变量，调试成本最低；产物最大，且**词表可枚举**，认的人拿同一份词表就能把改名批量还原。发布产物别用 |
 | `Chinese` | `甲`、`乙`、`丙` | 随 seed | 见下节 |
 
-#### `-props` 后缀：连属性名/对象键一起改
+#### `renameProperties`：连属性名/对象键一起改（独立开关）
 
-每个基础档都有一个带 `-props` 后缀的变体（`Hexadecimal-props` 等），共 10 档：
+界面上是「属性名重命名」这个单独的开关（CLI `--rename-properties`），默认关：
 
-- **不带后缀**：只改标识符（变量名、函数名、类名），属性名原样保留。
-- **带后缀**：**属性名也改**，改的是成员访问 `obj.foo`、对象键 `{foo: 1}`、方法名、
-  类方法与类属性名；属性名与标识符走**同一个名池**，所以选哪档属性名就是哪档形状。
+- **关**：只改标识符（变量名、函数名、类名），属性名原样保留。
+- **开**：**属性名也改**，改的是成员访问 `obj.foo`、对象键 `{foo: 1}`、方法名、
+  类方法与类属性名；属性名与标识符走**同一个名池**，所以属性名的形状跟随上面选的那档。
 
 只改「程序内定义 ∩ 被访问」的属性，叠加高风险名白名单（`body`、`length`、`constructor`
 这类）。与外部代码共享的属性可能被破坏——这是 safe 模式的固有局限，不是 bug。
 
-> **2026-10-09 变更（破坏性）**：属性名重命名原本是独立的布尔项 `renameProperties`，
-> 现已并入 `nameStyle`。旧键**不再被识别**，且选项系统会静默保留未知键、不报错——
-> 老代码传 `renameProperties: true` 会**悄无声息地不再改属性名**，页面照常工作、
-> 产物照常能跑，只是属性名留在明文里。改用对应的 `-props` 档位即可。
+> **2026-10-13 变更**：`-props` 后缀从 `nameStyle` 枚举里移出（`Hexadecimal-props` 这类
+> 档位不再存在），属性名改名回到独立开关 `renameProperties`——也就是 2026-10-09 之前
+> 的形态。拆开的理由是两个正交的东西混在一个枚举里：想改属性名就得先把标识符形状也一起
+> 换掉，而界面显隐还得为每个基础档写两条 `oneOf`。
 >
-> 顺带修掉一个更隐蔽的问题：此前 `renameProperties` 的实现**只对 `Chinese` 档认
-> `nameStyle`**，其余档位一律发 `_0x` 随机名——也就是说选了 `Hexadecimal` 之后属性名
-> 完全不受影响，那一档对属性而言是假的（实测属性名是 `_0x9742d5` 这类形状）。
-> 现在属性名真正跟随档位。
+> **旧写法仍可用**：档位串带 `-props`（`nameStyle: "Hexadecimal-props"`）依然被识别，
+> 解析层把它归一化成 `nameStyle: "Hexadecimal"` + `renameProperties: true`，产物与新写法
+> 逐字节相同。优先级是「显式的 `renameProperties` > 档位串上的旧后缀 > 预设默认值」。
+> 注意这一层的优先级不是可有可无的：四个预设都显式带了 `renameProperties: false`（套餐
+> 闸门要求被约束的键在预设里有取值），若按"预设的 false 压过旧后缀"来判，老配置就会
+> 静默失效——正是本仓库明令禁止的失败形态。
+>
+> 反过来说，2026-10-09 到 2026-10-13 之间那些传了 `renameProperties: true` 却**没生效**
+> 的调用（当时它是未知键、被静默忽略），现在会真的开始改属性名——这是修好，不是回归。
+>
+> 顺带说明：属性名跟随档位这件事在 2026-10-09 就修好了（此前它只对 `Chinese` 档认
+> `nameStyle`，其余一律发 `_0x` 随机名——选了 `Hexadecimal` 之后属性名完全不受影响）。
 
 #### 自定义词表（`--name-dictionary`）
 
-只在 `--name-style Dictionary` / `Dictionary-props` 时生效，界面里也只有选中这两档才
-出现词表输入框
+只在 `--name-style Dictionary` 时生效，界面里也只有选中该档才出现词表输入框
 （`--chinese-names` 同理：中文命名关着时汉字字典那一项是收起的）。
 
 留空用内置 64 词表。填了就用你这份：逗号、空白或换行分隔，逐词校验后去重——不是合法
@@ -532,8 +539,8 @@ JS 标识符（`1abc`）、是关键字或保留字（`if`、`while`）、或重
 ### 中文命名（`--name-style Chinese`）
 
 把变量名、函数名改成汉字（`甲`、`乙`、`丙`、`丁`…）。选中这一档**取代上面四个拉丁
-基础档**——要的就是"名字是中文"，再从 `a`/`b`/`c` 里挑没有意义。属性名要一起改就用
-`Chinese-props`（两者共用同一个汉字池与字典，同一构建里变量名与属性名不会撞）。
+基础档**——要的就是"名字是中文"，再从 `a`/`b`/`c` 里挑没有意义。属性名要一起改就打开
+`renameProperties`（两者共用同一个汉字池与字典，同一构建里变量名与属性名不会撞）。
 
 > **2026-10-01 变更（破坏性）**：`Chinese` 原先是独立的布尔开关 `--chinese-names`，
 > 现已并入 `nameStyle` 枚举，旧键不再被识别（同样是静默失效）。
@@ -548,7 +555,7 @@ parser 与 generator 也不拦。
 | 发名顺序 | **逐构建打乱**，同 seed 可复现、换 seed 换一套（不打乱的话字典原序就是强指纹） |
 | 产物体积 | 一个汉字 UTF-8 占 3 字节、标识符只算 1 个字符，比 `Mangled` 明显大 |
 | `escapeNonAscii` | 对本档**无效**：汉字在产物里原样写出、不转成 `\uXXXX`。因此产物需按 UTF-8 提供（页面要有 charset 声明）。字符串字面量里的中文仍按原口径转义 |
-| 套餐 | 与 `nameStyle` 同一口径——free 档只放行不带 `-props` 的 `Mangled` 与 `Mangled-shuffled`，因此 `Chinese` 与 `Chinese-props` free 都不可用 |
+| 套餐 | 与 `nameStyle` 同一口径——free 档只放行 `Mangled` 与 `Mangled-shuffled`，因此 `Chinese` free 不可用（属性名开关 `renameProperties` 同样锁死在 false） |
 
 两个容易踩的坑，实现里都处理了：
 
@@ -758,8 +765,8 @@ echo 'export default { async fetch(r,e,c){ return new Response("x"); } };' \
 额度包的能力跟随 Business（`max` 预设、无闸门），买的是次数而不是能力：适合不想
 续费、只需要跑一批的场景。用尽后不会恢复，需要再买一张。
 
-另有参与闸门的新选项：Free 的外壳形态锁在 `classic`、命名策略只放行不带 `-props` 的 `Mangled` 与 `Mangled-shuffled`、关掉碎片化与
-Anti-LLM；Plus 可以把外壳形态切成 `jsfuck`，命名策略十档全开（例如 `Hexadecimal-props`），
+另有参与闸门的新选项：Free 的外壳形态锁在 `classic`、命名策略只放行 `Mangled` 与 `Mangled-shuffled`、属性名改名（`renameProperties`）锁死在关、关掉碎片化与
+Anti-LLM；Plus 可以把外壳形态切成 `jsfuck`、命名策略五档全开（例如 `Hexadecimal`）、打开属性名改名，
 并开碎片化与 Anti-LLM；碎片化与 Anti-LLM 之外的更高强度组合留给 Team/Business。
 **HTML Encrypt**（`htmle`）同样受闸门约束：**Free 不可用，Plus 及以上可用**。它会把产物内容换成密文
 并注入运行期解码器，明显改变产物形态，与 `antiLLM`、`debugProtection` 同级。配套的

@@ -13,7 +13,7 @@ const { KNOWN_OPTION_KEYS } = optionsMeta;
 const INTERNAL_OPTION_KEYS = new Set(['config']);
 import PRESETS from './presets.js';
 import randUtil from './utils/rand.js';
-import { isChineseNaming, wantsPropertyRename } from './utils/naming.js';
+import { isChineseNaming, wantsPropertyRename, parseNameStyle } from './utils/naming.js';
 const { setSeed, rand, randInt, randHex } = randUtil;
 import rtlib from './passes/rtlib.js';
 import simplify from './passes/simplify.js';
@@ -75,6 +75,29 @@ function resolveOptions(userOptions) {
   }
   const options = { ...DEFAULTS, ...(preset || {}), ...src };
   delete options.preset;
+
+  // nameStyle 归一化（2026-10-13）：旧写法 `X-props` 收进独立布尔项 renameProperties，
+  // 并把 nameStyle 收敛成规范的基础档名。下游（mangle 挑名池、options-meta 枚举、
+  // 闸门白名单）从此只面对五个基础档，不必各自再处理后缀。
+  //
+  // 必须放在这里而不是后面的归一化块：那里已经看不到 src，四个预设又都显式带了
+  // renameProperties:false（plans.js 的闸门要求被约束的键在预设里有取值），
+  // 于是"谁覆盖谁"就分不清了——旧写法会被预设的 false 静默否决，用户以为自己开
+  // 了属性名改名，实际没开。
+  //
+  // 优先级：用户显式给的 renameProperties > nameStyle 上的旧后缀 > 预设/默认。
+  // 后缀是 nameStyle 值的一部分，nameStyle 来自 src 时它就是用户的明确意图，
+  // 该赢过预设给的默认值；但用户同时显式写了 renameProperties 时，以那次更具体的
+  // 声明为准。
+  {
+    const parsed = parseNameStyle(options.nameStyle);
+    if (parsed.props) {
+      options.renameProperties = src.renameProperties === undefined ? true : !!src.renameProperties;
+      options.nameStyle = parsed.base;
+    } else if (parsed.known) {
+      options.nameStyle = parsed.base;   // 大小写不敏感归一（'hexadecimal' → 'Hexadecimal'）
+    }
+  }
   return options;
 }
 
@@ -617,11 +640,10 @@ function obfuscate(code, userOptions) {
   // 必须在 rtlib 之前、任何注入发生之前跑，此时 AST 只有用户代码。
   if (options.simplify) timePass('simplify', () => simplify(ast, options, ctx));
 
-  // 属性名重命名（safe 模式）：同样在最前，只作用于用户代码。
+  // 属性名重命名：开不开由独立布尔项 renameProperties 决定（2026-10-13 从 nameStyle
+  // 的 `-props` 后缀拆出；旧写法在 resolveOptions 里已归一化到这个布尔项）。
   // 必须在 objectKeys / stringArray 之前：那时属性名还是干净的 Identifier /
   // StringLiteral，还没被改写成计算键 + 字符串池形态。
-  // 开不开由 nameStyle 的档位决定（带 `-props` 后缀那几档），不再是独立开关——
-  // 判定在 utils/naming.js，与 renameProperties pass 内那处同源。
   if (wantsPropertyRename(options)) timePass('renameProperties', () => renameProperties(ast, options, ctx));
 
   if (options.rtlib !== false) timePass('rtlib', () => rtlib(ast, options, ctx));

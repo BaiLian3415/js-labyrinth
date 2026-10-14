@@ -684,8 +684,8 @@ section('方法名/类字段名入池（objectKeys 的定义点）');
     let bad = '';
     const cases = [
       ['low', {}, {}], ['medium', {}, {}], ['high', {}, {}], ['max', {}, {}],
-      ['high', { nameStyle: 'Mangled-props' }, {}],
-      ['max', { nameStyle: 'Mangled-shuffled-props' }, {}],
+      ['high', { nameStyle: 'Mangled', renameProperties: true }, {}],
+      ['max', { nameStyle: 'Mangled-shuffled', renameProperties: true }, {}],
       ['low', { vmProtection: false }, {}],
       ['high', { stringArray: false }, {}],
       ['high', { objectKeyEncoding: true, reservedStrings: ['^zzRender$'] }, { expectPlain: ['zzRender'] }],
