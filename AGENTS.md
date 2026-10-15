@@ -369,7 +369,15 @@ npm run build:web:cloud  # 云端执行形态（核心不进产物，Vercel 部�
     Identifier、计算形态取 StringLiteral）。定义面认得而访问面认不得 → 赋值点改名而读取点
     不改 → 直接跑炸。
   - **改这块前先问一句"这个语法在这个语言里还有别的定义形式吗"**：解构模式里的
-    ObjectProperty 是绑定名不是属性名（已排除），类静态块、`#private` 字段是另外的形态。
+    ObjectProperty 是绑定名不是属性名（已排除）；静态块 `static { this.x = 1 }` **已经
+    覆盖**（判据 `object.type === 'ThisExpression'` 在静态块里同样成立，而属性改名是
+    纯名称替换，静态/实例落在不同存储上与改名无关）；`#private` 是 PrivateName 不改；
+    **`对象名.属性 = v` 明确不覆盖**——`obj` 可能是函数形参（外部传入），也可能有别名
+    （`var B = A; B.x = 1`），不做出处分析就改名会改坏调用方。要覆盖它得先做别名分析。
+  - **探针的名字不能取自 `RESERVED_PROPS`**（value/state/type/data/size/length…）。
+    那些名字本来就该原样保留，拿它们当探针会把"刻意的白名单"误读成"漏改了"——
+    2026-10-15 写静态块断言时用 `value` 当探针，断言挂掉后一度以为静态块是坏的，
+    白排查一轮。
 - **套餐闸门两条并存**：`plans.js` 的 `nameStyle` 白名单（free 只放行 Mangled 与
   Mangled-shuffled）+ `renameProperties: false`。拆开之后第二条从"多余"变回必需——
   属性名改名是付费能力而它不再由档位串承载，唯一拦住 free 的就是这条规则。

@@ -1069,6 +1069,102 @@ process.stdout.write(a + '|' + b + '\\n');`;
       if (got !== supWant) supBad.push('seed ' + seed + ' → ' + got.slice(0, 40));
     }
     ok(!supBad.length, 'super.x= 不算本类定义（父子类属性不被拆成两个）', supBad.join(' '));
+
+    // 静态初始化块（ES2022 `static { … }`）——2026-10-15 实测**它本来就是好的**，
+    // 这里只做回归锁定，不是修复。上一轮把它列成"缺口"是我判断错了：`this.x=` 的
+    // 判据是 `object.type === 'ThisExpression'`，静态块里 `this` 同样成立；而属性
+    // 改名是**纯名称替换**，静态属性与实例属性落在不同存储上这件事与改名无关
+    //（同一名字串在所有出现处一致替换 ⇒ 行为不变）。
+    // 没有断言的时刻度最危险：下一次改 collect 的判据就会静默削掉这一类。
+    //
+    // 样本里的属性名**特意避开高风险白名单**（RESERVED_PROPS 收着 value / state /
+    // type / data / size / length 这些）：白名单内的名字本来就该原样保留，拿它们当
+    // 探针会把"刻意的白名单"误读成"漏改了"。第一版就栽在这上面（用 value 当探针，
+    // 断言挂掉后一度以为静态块是坏的）。
+    const sbSrc = [
+      'class Registry {',
+      '  static { this.counter = 0; }',
+      '  static bump() { this.counter = this.counter + 1; return this.counter; }',
+      '  constructor(amount) { this.amount = amount; }',
+      '  static read() { return this.counter; }',
+      '  get both() { return this.amount + Registry.read(); }',
+      '}',
+      'Registry.bump();',
+      'var r = new Registry(10);',
+      'process.stdout.write(String(r.both));',
+    ].join('\n');
+    const sbWant = runNode(sbSrc, 'rp-sb-raw.js').trim();
+    let sbBad = '';
+    let sbLeft = '';
+    let sbSawStatic = false;
+    for (const style of ['Hexadecimal', 'Dictionary']) {
+      const r = obfuscate(sbSrc, {
+        preset: 'low', shell: false, mangle: false, nameStyle: style, renameProperties: true,
+        objectKeyEncoding: false, stringArray: false, seed: 7,
+      });
+      const st = r.stats.find((s) => s.pass === 'renameProperties');
+      // counter（静态）+ amount（实例）两个都要改到；少一个就是被削了
+      if (!(st && st.result.renamed >= 2)) {
+        sbBad = style + ' 只改 ' + (st ? st.result.renamed : 0) + ' 个（应 ≥2）';
+        break;
+      }
+      const left = ['counter', 'amount'].filter((n) => new RegExp('\\.' + n + '\\b').test(r.code));
+      if (left.length) { sbLeft = style + ' → ' + left.join(','); break; }
+      // 静态块必须真的进了产物（形态锚点）
+      if (/static\s*\{/.test(r.code)) sbSawStatic = true;
+      let got = 'THREW';
+      try { got = runNode(r.code, 'rp-sb-' + style + '.js').trim(); } catch (e) { got = 'THREW'; }
+      if (got !== sbWant) { sbBad = style + ' 语义 → ' + got.slice(0, 40); break; }
+    }
+    ok(!sbBad, '静态块的 this.x= 计入定义面（静态属性与实例属性都改到）', sbBad);
+    ok(sbSawStatic, '静态块形态在产物里保留（生成器没把它丢掉）', '');
+    ok(!sbLeft, '静态属性名在属性位零残留', sbLeft);
+
+    // 顺带钉住两条**已知不覆盖**的边界，防止将来有人以为它们是 bug 去"修"，
+    // 或者反过来以为它们已经覆盖了：
+    //  ① 高风险白名单内的属性名原样保留（value/state/type…）——刻意行为。
+    //  ② `类名.属性 = v` / `对象名.属性 = v` **不算定义**：`obj` 可能是函数形参
+    //     （外部传入的对象），也可能有别名（var B = A; B.x = 1），不做出处分析就改名
+    //     会改坏调用方。要覆盖它得先做别名分析，那是另一件事。
+    {
+      const wl = 'var o = { value: 3 };\nprocess.stdout.write(String(o.value));';
+      const rWl = obfuscate(wl, { preset: 'low', shell: false, mangle: false, renameProperties: true,
+        objectKeyEncoding: false, stringArray: false, seed: 7 });
+      ok(/\.value\b/.test(rWl.code) && runNode(rWl.code, 'rp-wl.js').trim() === '3',
+        '高风险白名单内的属性名原样保留（value 不改名，刻意行为）');
+      const ns = 'var NS = {};\nNS.tag = "t";\nfunction read(){ return NS.tag; }\nprocess.stdout.write(read());';
+      const rNs = obfuscate(ns, { preset: 'low', shell: false, mangle: false, renameProperties: true,
+        objectKeyEncoding: false, stringArray: false, seed: 7 });
+      const stNs = rNs.stats.find((s) => s.pass === 'renameProperties');
+      ok(!!stNs && stNs.result.renamed === 0 && /\.tag\b/.test(rNs.code)
+        && runNode(rNs.code, 'rp-ns.js').trim() === 't',
+        '对象名.属性 = v 不算定义（改动需要别名分析，当前明确不覆盖）',
+        JSON.stringify(stNs && stNs.result));
+    }
+
+    // 解析/生成往返：自混淆要解析自己的产物，吐不回去就是整条链断掉。
+    // 只比"能再解析"（compact 去空白后不可能逐字相同）。
+    {
+      const parserMod = await import('../src/ast/parser.js');
+      const genMod = await import('../src/ast/generator.js');
+      const pr = parserMod.parse || parserMod.default.parse;
+      const gen = genMod.default;
+      const cases = [
+        'class A { static { this.x = 1; } }',
+        'class A { static { let t = 0; for (var i = 0; i < 3; i++) { t += i; } this.sum = t; } }',
+        'class A { static { this.a = 1; } static { this.b = 2; } static { this.c = this.a + this.b; } }',
+        'class A { static { this.B = class { m() { return 1; } }; } }',
+      ];
+      const rtBad = [];
+      for (const c of cases) {
+        try {
+          const out = gen(pr(c, { sourceType: 'script' }), { compact: true }).code;
+          if (!/static\s*\{/.test(out)) { rtBad.push('静态块丢失: ' + c.slice(0, 30)); continue; }
+          pr(out, { sourceType: 'script' });
+        } catch (e) { rtBad.push(c.slice(0, 30) + ' → ' + e.message.slice(0, 40)); }
+      }
+      ok(!rtBad.length, '静态块解析→生成→再解析全部往返成功', rtBad.join(' | '));
+    }
   }
 }
 
