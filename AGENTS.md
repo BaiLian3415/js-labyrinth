@@ -357,6 +357,19 @@ npm run build:web:cloud  # 云端执行形态（核心不进产物，Vercel 部�
   `_0x` 随机名，**选了 Hexadecimal 对属性名毫无影响，那一档对属性是假的**。名池是有状态
   的迭代器，两个 pass 各 `createNamePool()` 拿独立的一条流；防撞靠两边都把新名写回
   `ctx.usedNames`。
+- **属性名的「定义面」要覆盖全部定义语法**（2026-10-15 修过一个洞）：`renameProperties`
+  只改「程序内定义 ∩ 被访问」，而定义面原先只收**字面量**类节点（ObjectProperty /
+  ObjectMethod / ClassMethod / ClassProperty）。`this.foo = v` 是实例字段唯一的定义形式，
+  落在访问面而非定义面 → 候选为空 → **整个类的实例属性一个都改不了**，原名原样留在产物里
+  （实测 Account 类 8 个成员只改掉 4 个）。现在 AssignmentExpression / UpdateExpression 的
+  `this.<prop>` 也计入定义面。
+  - **`super.foo = v` 不算定义**：它走原型链上的 setter，不在本类上建属性。误收进定义面
+    的话子类赋值被改名而父类读取没改 → 属性分裂、语义静默走错。
+  - 新增定义形态时，**判定必须与访问面那套 MemberExpression 逻辑同构**（点形态取
+    Identifier、计算形态取 StringLiteral）。定义面认得而访问面认不得 → 赋值点改名而读取点
+    不改 → 直接跑炸。
+  - **改这块前先问一句"这个语法在这个语言里还有别的定义形式吗"**：解构模式里的
+    ObjectProperty 是绑定名不是属性名（已排除），类静态块、`#private` 字段是另外的形态。
 - **套餐闸门两条并存**：`plans.js` 的 `nameStyle` 白名单（free 只放行 Mangled 与
   Mangled-shuffled）+ `renameProperties: false`。拆开之后第二条从"多余"变回必需——
   属性名改名是付费能力而它不再由档位串承载，唯一拦住 free 的就是这条规则。
