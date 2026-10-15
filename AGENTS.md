@@ -590,8 +590,8 @@ npm run build:web:cloud  # 云端执行形态（核心不进产物，Vercel 部�
 
 - **先量 pass 级体积贡献再动手**：`DSH_DUMP_PASSES=1` 的转储按 pass 排序后取长度差，
   就能得到"谁吃了多少字节"。实测 max 档 34 KB 文件：`debugProtection` +187 KB、
-  `vm` +289 KB、`antiCDP` +27 KB，其余全在个位数百分比；**壳层本身**才是最大的一块
-  （每层净增约载荷的 0.65 倍，壳层自身固定开销在 max 档约 139 KB）。
+  `vm` +289 KB、`antiCDP` +27 KB，其余全在个位数百分比。**壳层的算法本身不是大头**
+  （见下一节，那两个数曾长期写错）。
 - **不是每个旋钮都是杠杆，必须逐个量**。`vmThreshold` 一度被列进 `compact` 档，实测
   后发现**它是噪声**：同一文件上 1→12 省 8.6×，1→4~1→8 一点没省，20 反而更大——换阈值
   改变被编译的函数集合 → AST 尺寸变 → 后面每个 pass 的注入数跟着变。**包一个效果取决于
@@ -608,6 +608,65 @@ npm run build:web:cloud  # 云端执行形态（核心不进产物，Vercel 部�
 - **新选项的回归测试要在老码上干净失败**：整节先判 `VALUE_OPTIONS.sizeProfile` 存在，
   否则老码会在第一条断言前**崩掉整份测试文件**——崩掉会掩盖后面所有断言，双向判别
   也就无从谈起。
+
+## 壳层体积实测（2026-10-15；先前文档里的 0.65 倍 / 139 KB 两个数都是错的）
+
+拆开量的口径：把 `shellWrap` 的 `bootObfuscate` 换成直通函数，就能分别量到「壳的编码链」
+与「loader 自混淆」两块。结论按这个口径重写：
+
+- **壳的编码链没有膨胀**：直通 loader ÷ 理论 base64 = **1.005~1.010**（不补 padding 的
+  base64 本身略低于 4/3）。先前"壳自身固定开销 139 KB"是把**载荷侧的注入运行时**
+  （debugProtection/字符串池/探针）算到壳头上了——12 字节源码的裸产物就有 261 KB。
+  壳自身固定开销实测约 **20 KB/层**。
+- **每加一层 = 整体 ×1.34**（一次 base64）。`shellDepth:1/2/3` 实测 588/800/1081 KB。
+- **小文件的固定开销大头是 `debugProtection`，且它是常量**：源码 0.2 KB 涨到 105 KB，
+  注入量恒为 **164.1 KB**（另一份样本 188 KB，含 vm 那遍）。不是按函数复制，所以没有
+  "共用一份"的可优化空间；它是真防护，`compact` 档排除它是对的。其余：antiCDP 27 KB、
+  stringArray 16.5 KB、opaquePredicates 15 KB、envFingerprint 12.6 KB。
+- **`debugProtection` 那 164 KB 里没有可 dedup 的大常量表**：数字占 27%、标识符 47%，
+  最长数字 10 位、1239 个 8~10 位 hex。是代码不是数据。
+
+### 两个潜在缺陷（量出来了但没动，改前先读这段）
+
+1. **产物实际加密层数 = `shellDepth` + 1**，而 `stats.shell.layers` 只报 `shellDepth`。
+   `obfuscate.js` 先 `shellWrap` 造壳，`guardLayer` 之后**又调一次
+   `shell.makeShellLayer`**（`banner.js`）把壳的产物整体再 base64 一遍——因为引导层排在
+   套壳之后，那时才知道盐。实测去掉那层：`shellDepth:1` 从 651 KB → 478 KB（**−25%**），
+   `shellDepth:2` 从 1105 → 826 KB。
+2. **`bootOpts` 漏了 `wasmInterpreter: false`**（只关了 `wasm`）。今天**休眠**：实测开关它
+   对 loader 体积无差别（487.7 KB 两边相同）。但若哪天引导层够得上 wasmInterpreter 的门槛，
+   引导器会被编译成 WebAssembly 模块——既是启动期的大开销（与「轻装档」的初衷相反），
+   又撞 workerd 禁 `WebAssembly.compile` 这条硬限制（见「目标宿主约束」一节）。
+
+### 为什么那层冗余但不能删（2026-10-15 实测，已回滚）
+
+算法上它确实冗余：同一段 `makeShellLayer`、同一套算法，只是换一个随机密钥再跑一遍。
+删掉它的实测代价有三条，**前两条是防护回退**：
+
+- **跨构建指纹压制下降**：`test/passes-basic.js` 的 6 对 bigram 相似度 max 从 **0.356
+  升到 0.399~0.405**，越过该测试 0.40 的线。根因不是"少了一层随机性"这么含糊：
+  `rawToks` 把整段 base64 当**单个 token**，密文对相似度几乎零贡献，**loader 的明文骨架
+  就是全部信号**——实测 loader 明文自身跨 seed 相似度就有 **0.41~0.42**、277 个 3-gram
+  逐构建相同。那多出来的一层起的是**稀释**作用。
+- **bytecode 形态的解释器落到明文**：`bytecodePrelude` 拼在壳层之外，原先被外层加密着，
+  删层后明文出现 `new Uint8Array(`，`shell-bytecode.js` 的「不新增明文缓冲区构造」断言
+  由 0 → 1 挂掉。
+- `charCodeAt` 可见次数 2 → 3：loader 的 S-box/字符表访问器原先在加密的里层。它顺带暴露
+  一处**早已存在的漏网**——loader 明文区 `prototype` 出现 0 次，即 loader 根本没做
+  AGENTS「原生函数单点收敛」那套别名（`_0fc`/`_0cc`/`_0U8`/`_0Ar`），全是直接方法调用。
+
+**结论：loader 多态性才是真杠杆**，不是层数。要删那层，先把 loader 的明文骨架做出跨构建
+差异（现在它自身的相似度 0.41 就压在 0.40 那条线上）。按本仓库规矩（`compact` 档只收
+"砍掉不损失防护能力"的旋钮），这属于拿防护换体积，不默认开。
+
+### 量这块时的两个探针陷阱
+
+- **`DSH_DUMP_PASSES` 会被壳的递归调用污染**：壳构建会递归调 `obfuscate(loaderSrc,
+  bootOpts)`，那次调用走同一个 dumper，把外层同名转储**覆盖成 loader 的**（loader 源码
+  里含几百 KB 载荷，看着像"壳给载荷塞了 648 KB"）。要分离就用**数组**收转储、按 pass 名字
+  第一次重复处切开；或者用 `stats` 里的 `·generate.bytes`（免疫递归污染）。
+- **别拿 `shellDepth:1` 的基线去比 max 预设**：max 是 `shellDepth:2`，早期几版量"膨胀
+  1.78×"就是这么错的——那其实是 3 层（2 + guardLayer 补的那层）。
 
 ## 提交前自检
 
