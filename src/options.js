@@ -1,6 +1,38 @@
+// 体积分档的旋钮表（2026-10-15 新增）。sizeProfile 只是**给几个旋钮起个名字**，
+// 真正的取值全在这里，消费方只有 resolveOptions 一处（测试也引这份，改档只改一处）。
+//
+// 只收「砍掉不损失防护能力」的旋钮，实测（34 KB 真实文件，max 档，seed 11）：
+//   shellDepth      2 → 1   −26%   少一层包裹，唯一的大杠杆
+//   decoyFunctions  true→false −3%  诱饵函数，扰的是静态阅读，不是反调试/防篡改
+//   stringScatter   true→false −1%  字符串碎片化，拆散整池的边际收益已经很低
+// 合计 −27%（41.8× → 30.6×）。**不收**的三项各有理由：
+//   debugProtection / antiCDP  各 −26~29%，但那是真防护层，卖保护换体积是亏的
+//   opaquePredicates          −2%，而它是雷达 9.5 的那一项，砍它性价比极差
+//   vmThreshold               实测是**噪声不是杠杆**：1→12 省 8.6×，1→4~1→8 一点没省，
+//                             20 反而更大——换阈值改变编译函数集合 → AST 尺寸变 → 后面
+//                             每个 pass 的注入数跟着变。包装这种旋钮等于骗用户
+//
+// 已知的天花板：小文件省不动多少（9.5 KB 的 renameProperties.js 只从 86× 到 53×），
+// 因为固定开销（壳层自身约 139 KB + 两个防护层）压不下去。要真到 30× 以内，只能关
+// debugProtection / antiCDP——那不是体积分档该替用户做的决定。
+const SIZE_PROFILES = {
+  // 不动任何旋钮。产物字节与本选项出现之前逐字节相同（默认档必须零变化）。
+  default: {},
+  compact: { shellDepth: 1, decoyFunctions: false, stringScatter: false },
+};
+
 export default {
   "compact": true,
   "escapeNonAscii": true,
+  // 体积分档：只调「砍掉不损失防护能力」那几个旋钮，让 max/high 这类重档在体积敏感
+  // 的场景下有个一档可退。默认 'default' = 什么都不动。
+  //
+  // 优先级：**用户显式设置的同名项 > 本档**。所以它是"预设值"而不是"强制值"——
+  // 想在 compact 档里保留碎片化，显式写 stringScatter: true 即可。
+  //
+  // 不加套餐闸门：它减的是体积不是能力，free 档用户（low 预设，shellDepth 本来就是 1）
+  // 选它几乎无效果，为一个"省不了多少"的开关收费没有道理。
+  "sizeProfile": "default",
   // 产物最终跑在什么宿主里。'auto'（默认）按源码结构特征判断；判不准时用显式值。
   //
   // 为什么要显式存在：`auto` 认 Cloudflare Worker 靠的是 `export default {fetch}`
@@ -334,3 +366,7 @@ export default {
   "stringScatter": false,
   "antiLLM": false
 };
+
+// 具名导出，供 resolveOptions 与测试引同一份表（避免"文档写一套、代码写一套"）。
+export { SIZE_PROFILES };
+export const SIZE_PROFILE_NAMES = Object.keys(SIZE_PROFILES);

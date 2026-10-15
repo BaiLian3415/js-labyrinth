@@ -5,7 +5,7 @@ import traverse from './ast/traverse.js';
 import t from './ast/types.js';
 import i18n from './i18n.js';
 const { t: msg } = i18n;
-import DEFAULTS from './options.js';
+import DEFAULTS, { SIZE_PROFILES } from './options.js';
 import optionsMeta from './options-meta.js';
 const { KNOWN_OPTION_KEYS } = optionsMeta;
 // 不进 KNOWN_OPTION_KEYS、但也不是"拼错"的内部键。目前只有 config：它是调用方
@@ -96,6 +96,41 @@ function resolveOptions(userOptions) {
       options.nameStyle = parsed.base;
     } else if (parsed.known) {
       options.nameStyle = parsed.base;   // 大小写不敏感归一（'hexadecimal' → 'Hexadecimal'）
+    }
+  }
+
+  // sizeProfile（2026-10-15 新增）：体积分档，只在用户**没有**显式设置对应项时
+  // 覆盖它。要点两个：
+  //
+  // 1. **显式设置优先**。分档是"预设值"而不是"强制值"——用户想在 compact 档里
+  //    保留碎片化，显式写 stringScatter: true 即可。判据用 src 而不是 options：
+  //    options 里这三个键全都带着预设的取值（max 的 shellDepth 就是 2），
+  //    用 options 判等于"分档永远不生效"。
+  // 2. **只覆盖自己那几个键**。它不碰预设、不碰其他选项，也不改门控——body 里
+  //    逐项赋值，不用 Object.assign，免得某天往表里加一个不该被覆盖的键。
+  //
+  // 落地后记进 options.__sizeProfileApplied，供 stats 如实报告"这个分档动了哪几项"
+  // （静默生效的选项最难排查）。
+  {
+    const name = typeof src.sizeProfile === 'string' && src.sizeProfile
+      ? String(src.sizeProfile) : (preset && preset.sizeProfile) || DEFAULTS.sizeProfile;
+    const table = SIZE_PROFILES[name];
+    if (!table) {
+      // 未知档名回落到默认（不设限），与 nameStyle 同一口径：抛错会让一个拼错的
+      // 选项把整次构建搞挂，而"回落到最宽松"正好是这里安全的默认方向。
+      options.sizeProfile = DEFAULTS.sizeProfile;
+    } else {
+      options.sizeProfile = name;
+      const applied = [];
+      for (const k of Object.keys(table)) {
+        if (Object.prototype.hasOwnProperty.call(src, k)) continue;   // 用户显式给了，不动
+        options[k] = table[k];
+        applied.push(k);
+      }
+      // 即便为空也赋值：空数组是**有效状态**（用户把三项都显式设过了，分档无事可做），
+      // 与"压根没选分档"必须能区分开。留 undefined 会让 stats 少一条记录，而用户
+      // 看到"体积没变"时第一个怀疑的就是"这功能没生效"。
+      options.__sizeProfileApplied = applied;
     }
   }
   return options;
@@ -586,6 +621,24 @@ function obfuscate(code, userOptions) {
   }
 
   const stats = [];
+
+  // 体积分档落地情况。**要报出来**，理由和下面 warnings 那段一样：静默生效的选项
+  // 最难排查——用户切了 compact 却发现体积没变，第一反应会是"这功能是假的"。
+  // 这里如实报出动了哪几项、以及哪些因为用户显式设过而没被动。
+  if (options.sizeProfile && options.sizeProfile !== 'default') {
+    stats.push({
+      pass: 'sizeProfile',
+      result: {
+        profile: options.sizeProfile,
+        applied: options.__sizeProfileApplied || [],
+        // 用户显式设过、因而没被分档覆盖的键。报出来是为了让"我明明写了
+        // stringScatter:true，怎么没开"有答案可查。
+        kept: Object.keys(SIZE_PROFILES[options.sizeProfile] || {})
+          .filter((k) => options.__sizeProfileApplied
+            && !options.__sizeProfileApplied.includes(k)),
+      },
+    });
+  }
   // 构建期警示（不阻断流程，但要传到界面/API）。目前有：未知选项、外壳与不混淆名单
   // 互锁、目标降级、vmLayers 钳位。共同点都是"用户以为开了、其实没开"这类静默失效，
   // 必须点名说清，否则用户只会看到保护莫名消失。

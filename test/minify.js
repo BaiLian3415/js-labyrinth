@@ -13,6 +13,7 @@ import { ROOT, cleanTmp, counters, ok, report, runNode, section, stripComments, 
 import obfuscateMod from '../src/obfuscate.js';
 import plan from '../src/plan.js';
 import optionsMeta from '../src/options-meta.js';
+import * as optionsSrc from '../src/options.js';
 import platform from '../src/platform.js';
 import * as naming from '../src/utils/naming.js';
 import hostLimits from '../src/host-limits.js';
@@ -1068,6 +1069,103 @@ process.stdout.write(a + '|' + b + '\\n');`;
       if (got !== supWant) supBad.push('seed ' + seed + ' → ' + got.slice(0, 40));
     }
     ok(!supBad.length, 'super.x= 不算本类定义（父子类属性不被拆成两个）', supBad.join(' '));
+  }
+}
+
+section('体积分档（sizeProfile）');
+{
+  const { SIZE_PROFILES, SIZE_PROFILE_NAMES } = optionsSrc;
+  const src = 'function f(n){var s=0;for(var i=0;i<n;i++){s+=i;}return s;}\n'
+    + 'process.stdout.write(String(f(9)));';
+  const want = runNode(src, 'sp-raw.js').trim();
+
+  // 老码守卫：整个本节依赖 sizeProfile 存在与 SIZE_PROFILES 有具名导出。不先判就直接
+  // 取属性，老码上会在第一条断言前**崩掉整份测试文件**——那会掩盖后面所有断言的结果，
+  // 双向判别也就无从谈起。崩掉不是判别，是把整台仪器砸了。
+  if (!optionsMeta.VALUE_OPTIONS.sizeProfile || !SIZE_PROFILES) {
+    ok(false, 'sizeProfile 选项与 SIZE_PROFILES 表存在（本节其余用例已跳过）',
+      'options-meta: ' + !!optionsMeta.VALUE_OPTIONS.sizeProfile + ' / options.js: ' + !!SIZE_PROFILES);
+  } else {
+
+  // 枚举与旋钮表同源，且表本身只收"砍掉不损失防护能力"的旋钮。
+  // 后者是这一档存在的前提：把 debugProtection / antiCDP 收进来就是拿防护换体积，
+  // 而选项表没有任何机制能让用户看出这一笔换得值不值。
+  ok(optionsMeta.VALUE_OPTIONS.sizeProfile.values.join(',') === SIZE_PROFILE_NAMES.join(','),
+    'sizeProfile 枚举与实现（options.js 的 SIZE_PROFILE_NAMES）同步',
+    optionsMeta.VALUE_OPTIONS.sizeProfile.values.join(','));
+  const FORBIDDEN = ['debugProtection', 'antiCDP', 'envFingerprint', 'integrityCheck',
+    'selfDefending', 'vmProtection', 'wasm', 'wasmInterpreter', 'opaquePredicates'];
+  const banned = [];
+  for (const tbl of Object.values(SIZE_PROFILES)) {
+    for (const k of FORBIDDEN) if (Object.prototype.hasOwnProperty.call(tbl, k)) banned.push(k);
+  }
+  ok(!banned.length, '体积分档不含任何防护层旋钮（防止"卖保护换体积"）', banned.join(','));
+
+  // 默认档必须零变化：产物与本选项出现之前逐字节相同。
+  const baseOpt = { preset: 'max', seed: 11, shell: true };
+  const plain = obfuscate(src, baseOpt);
+  const dflt = obfuscate(src, { ...baseOpt, sizeProfile: 'default' });
+  ok(dflt.code === plain.code, 'sizeProfile=default 与不传该选项逐字节相同（默认不改既有产物）',
+    dflt.code.length + ' vs ' + plain.code.length);
+  const ro = obfuscateMod.resolveOptions({ preset: 'max' });
+  ok(ro.shellDepth === obfuscateMod.PRESETS.max.shellDepth
+    && ro.decoyFunctions === obfuscateMod.PRESETS.max.decoyFunctions,
+    '不传时预设值原样保留（分档没有反过来改预设）',
+    'shellDepth=' + ro.shellDepth + ' decoy=' + ro.decoyFunctions);
+
+  // 生效：三个旋钮都按表落地。
+  const rc = obfuscateMod.resolveOptions({ preset: 'max', sizeProfile: 'compact' });
+  const wantKeys = Object.keys(SIZE_PROFILES.compact).sort();
+  ok(rc.shellDepth === SIZE_PROFILES.compact.shellDepth
+    && rc.decoyFunctions === SIZE_PROFILES.compact.decoyFunctions
+    && rc.stringScatter === SIZE_PROFILES.compact.stringScatter
+    && rc.__sizeProfileApplied.slice().sort().join(',') === wantKeys.join(','),
+  'compact 按表落地三个旋钮并记下 applied', JSON.stringify(rc.__sizeProfileApplied));
+
+  // **显式设置优先**：这是"预设值"不是"强制值"。判据看 src 而不是解析后的 options——
+  // options 里这三个键都带着预设取值（max 的 shellDepth 就是 2），用 options 判
+  // 等于分档永远不生效。
+  for (const [key, val] of [['shellDepth', 2], ['decoyFunctions', true], ['stringScatter', true]]) {
+    const o = obfuscateMod.resolveOptions({ preset: 'max', sizeProfile: 'compact', [key]: val });
+    ok(o[key] === val && !o.__sizeProfileApplied.includes(key),
+      'compact 不覆盖用户显式设的 ' + key + '（显式设置优先）', 'got ' + o[key]);
+  }
+  const oAll = obfuscateMod.resolveOptions({
+    preset: 'max', sizeProfile: 'compact', shellDepth: 2, decoyFunctions: true, stringScatter: true,
+  });
+  ok(oAll.__sizeProfileApplied.length === 0 && oAll.shellDepth === 2,
+    '三个键全显式时 compact 无事可做（applied 为空）', JSON.stringify(oAll.__sizeProfileApplied));
+
+  // 未知档名回落到 default（不设限），与 nameStyle 同一口径，且**不抛错**：
+  // 抛错会让一个拼错的选项把整次构建搞挂。
+  let threw = false;
+  let roBad = null;
+  try { roBad = obfuscateMod.resolveOptions({ preset: 'max', sizeProfile: 'nope' }); }
+  catch (e) { threw = true; }
+  ok(!threw && roBad && roBad.sizeProfile === 'default' && roBad.shellDepth === 2,
+    '未知档名回落到 default 且不抛错', threw ? '抛了' : JSON.stringify(roBad && roBad.sizeProfile));
+
+  // 如实报告：静默生效的选项最难排查——用户切了 compact 发现体积没变，第一反应
+  // 会是"这功能是假的"。stats 里要能看到动了哪几项、哪些因为用户设过而没动。
+  const stC = obfuscate(src, { ...baseOpt, sizeProfile: 'compact' }).stats
+    .find((s) => s.pass === 'sizeProfile');
+  ok(stC && stC.result.profile === 'compact' && stC.result.applied.length === 3 && !stC.result.kept.length,
+    'stats 如实报告 compact 动了三项', JSON.stringify(stC && stC.result));
+  const stK = obfuscate(src, { ...baseOpt, sizeProfile: 'compact', stringScatter: true }).stats
+    .find((s) => s.pass === 'sizeProfile');
+  ok(stK && stK.result.applied.length === 2 && stK.result.kept.join(',') === 'stringScatter',
+    'stats 区分 applied 与 kept（用户设过的那项报在 kept）', JSON.stringify(stK && stK.result));
+  ok(!obfuscate(src, baseOpt).stats.some((s) => s.pass === 'sizeProfile'),
+    '默认档不报 sizeProfile 条目（不制造噪音）');
+
+  // 体积确实降了，语义不变。注意**不能用体积单调性**去断言"显式覆盖"那条：
+  // 换任何一项都会挪动随机流、连带改变后面各 pass 的注入数（实测 compact +
+  // 显式 stringScatter:true 反而比纯 compact 小 9 KB）。显式优先只认解析结果。
+  const cCode = obfuscate(src, { ...baseOpt, sizeProfile: 'compact' }).code;
+  ok(cCode.length < plain.code.length * 0.75,
+    'compact 至少省下 25% 体积（实测 31%）',
+    plain.code.length + ' → ' + cCode.length);
+  ok(runNode(cCode, 'sp-compact.js').trim() === want, 'compact 产物语义不变', want);
   }
 }
 

@@ -3,7 +3,7 @@
  * CLI 与网页界面共用此表，新增选项只改这里即可。
  * kind 语义：percent(0~1)、count(≥0)、int(min/max)、enum(values/intRange)、string。
  */
-import DEFAULTS from './options.js';
+import DEFAULTS, { SIZE_PROFILE_NAMES } from './options.js';
 import PRESETS from './presets.js';
 import i18n from './i18n.js';
 
@@ -25,6 +25,14 @@ export const VALUE_OPTIONS = {
     hintZh: '产物最终跑在哪里。auto 按源码结构判断 Cloudflare Workers，认不出（有自定义写法）时手动选；判成受限宿主会强制关掉跑不了的形态并告警。',
     hintEn: 'Where the artifact finally runs. auto guesses Cloudflare Workers from the structure of the source; set it explicitly when the guess cannot work. A restricted target force-disables the shapes that cannot run there, with a warning.' },
   identifierPrefix: { kind: 'string', group: 'basic', zh: '标识符前缀', en: 'Identifier prefix', hintZh: '生成名的前缀，默认 _0x；须以字母或 _/$ 开头。', hintEn: 'Prefix for generated names, default _0x. Must start with a letter, _ or $.' },
+  sizeProfile: { kind: 'enum', values: SIZE_PROFILE_NAMES, caseInsensitive: true, group: 'output', zh: '体积分档', en: 'Size profile',
+    // 只调"砍掉不损失防护能力"的旋钮（见表 src/options.js 的 SIZE_PROFILES）：
+    // 壳层数 2→1、关诱饵函数、关字符串碎片化。实测大文件省 27%、小文件省得少
+    // （固定开销压不下去：壳层自身约 139 KB + 两个防护层）。
+    // 刻意**不**收 debugProtection / antiCDP（各再省 26~29%，但那是卖保护换体积）。
+    // 显式设过的同名项以用户为准，所以它是预设值不是强制值。
+    hintZh: '给高强度档减体积用，只调「砍掉不损失防护能力」的三项（壳层数 2→1、诱饵函数、字符串碎片化）：实测 34 KB 的文件省 27%，小文件省得少。你显式设过的同名项以你为准。反调试与反自动化不在此列——它们各能再省 26~29%，但那是拿防护换体积。',
+    hintEn: 'Cuts size by touching only three knobs that cost no protection (shell layers 2→1, decoy functions, string fragmentation): measured 27% smaller on a 34 KB input, less on small files. Explicitly set options still win. Debug protection and anti-automation are not included — they would save another 26–29% by trading protection for bytes.' },
   nameStyle: { kind: 'enum', values: ['Mangled', 'Mangled-shuffled', 'Hexadecimal', 'Dictionary', 'Chinese'], group: 'structure', zh: '命名策略', en: 'Naming style', hintZh: '变量与函数名的形状。Mangled-shuffled（默认，字母表每次构建打乱，发布用）、Mangled（a/b/c 固定顺序，可跨构建 diff，只做调试档）、Hexadecimal、Dictionary、Chinese（汉字，需按 UTF-8 提供）。只管标识符；要不要连属性名/对象键一起改，看下面的「属性名重命名」开关。', hintEn: 'The shape of variable and function names. Mangled-shuffled (default, letter order reshuffled per build, use for releases), Mangled (fixed a/b/c order, diffable across builds, debugging only), Hexadecimal, Dictionary, Chinese (requires UTF-8). Identifiers only; whether properties and object keys are renamed too is the separate toggle below.' },
   chineseDictionary: { kind: 'string', group: 'structure', zh: '汉字字典', en: 'Chinese dictionary',
     // 显隐规则：只在命名策略选中 Chinese 档时这一项才被读（mangle 与
