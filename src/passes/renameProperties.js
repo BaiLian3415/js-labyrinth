@@ -50,6 +50,26 @@ const RESERVED_PROPS = new Set((
   'nodeType nodeName textContent innerHTML className id classList style attributes'
 ).trim().split(/\s+/));
 
+/**
+ * 取 `this.<prop>` 的属性名收进给定集合。对象不是 `this`（含 `super`）就什么都不做。
+ *
+ * 与访问面那套 MemberExpression 判定同构（点形态取 Identifier、计算形态取
+ * StringLiteral），否则会出现"定义面认得、访问面认不得"的错配——那会让赋值点被改名
+ * 而读取点没改，直接跑炸。
+ * @param {object} member MemberExpression / OptionalMemberExpression
+ * @param {Set<string>} out 收集目标
+ */
+function thisSideName(member, out) {
+  const obj = member.object;
+  if (!obj || obj.type !== 'ThisExpression') return;
+  const prop = member.property;
+  if (member.computed) {
+    if (prop && prop.type === 'StringLiteral') out.add(prop.value);
+  } else if (prop && prop.type === 'Identifier') {
+    out.add(prop.name);
+  }
+}
+
 function collect(node, parent, defs, uses) {
   if (!node || typeof node !== 'object') return;
   if (Array.isArray(node)) { for (const c of node) collect(c, node, defs, uses); return; }
@@ -78,6 +98,22 @@ function collect(node, parent, defs, uses) {
     } else if (node.key && node.key.type === 'Identifier') {
       defs.add(node.key.name);
     }
+  } else if (ty === 'AssignmentExpression' && node.left
+    && (node.left.type === 'MemberExpression' || node.left.type === 'OptionalMemberExpression')) {
+    // `this.foo = v` 是实例字段**唯一的定义形式**（类字段语法之外的写法）。
+    // 不认它就等于类实例属性一个都改不了：定义面只收对象/类字面量节点，
+    // 而构造函数里那句成员赋值既不是 ObjectProperty 也不是 ClassProperty，
+    // 只落在 uses 里 → 候选集为空 → 原名原样留在产物里
+    // （2026-10-13 实测：Account 类的 this.balance / this.owner 原名残留，
+    // 6 个成员只改掉 3 个）。
+    //
+    // `super.foo = v` **不算定义**：它走原型链上的 setter，不在本类上建属性。
+    thisSideName(node.left, defs);
+  } else if (ty === 'UpdateExpression' && node.argument
+    && (node.argument.type === 'MemberExpression' || node.argument.type === 'OptionalMemberExpression')) {
+    // `this.n++` 读改写，既是访问也是定义，两边都收。
+    thisSideName(node.argument, defs);
+    thisSideName(node.argument, uses);
   }
 
   for (const k of Object.keys(node)) {

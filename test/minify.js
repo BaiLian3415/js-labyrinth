@@ -992,6 +992,83 @@ process.stdout.write(a + '|' + b + '\\n');`;
     }
     ok(clashBad === '', '名池不与字符串形态属性名撞名（旧码 Mangled 档 40/40 全错）', clashBad);
   }
+
+  // 类实例字段（2026-10-13）。`this.foo = v` 是实例字段唯一的定义形式——定义面原先
+  // 只收对象/类字面量节点，构造函数里那句成员赋值只落在访问面，于是**整个类一个实例
+  // 属性都改不了**，原名原样留在产物里（实测 Account 类 6 个成员只改掉 3 个，
+  // this.balance / this.owner 原样残留）。类写法是现代代码的主流形态，这个洞对
+  // 「开了属性名改名却看不到变化」的用户是决定性的。
+  {
+    const clsSrc = [
+      'class Account {',
+      '  constructor(balance) { this.balance = balance; this.owner = "anon"; this["tier"] = 1; }',
+      '  deposit(amount) { this.balance = this.balance + amount; return this.balance; }',
+      '  bump() { this.count++; }',
+      '  get summary() { return this.owner + ":" + this.balance + ":" + this["tier"]; }',
+      '  static make() { return new Account(100); }',
+      '}',
+      'var a = Account.make();',
+      'a.deposit(5);',
+      'a.bump();',
+      'process.stdout.write(a.summary + "|" + a["tier"] + "|" + a.count);',
+    ].join('\n');
+    const clsWant = runNode(clsSrc, 'rp-cls-raw.js').trim();
+    const MEMBERS = ['balance', 'owner', 'tier', 'count', 'deposit', 'bump', 'summary', 'make'];
+    // 三条断言互不依赖：不能用 break 提前退出——第一条挂掉后面两条就没跑，
+    // 而空字符串在 ok() 里算通过，于是老码上只有第一条真的挂（单向判别）。
+    const clsBad = [];
+    const clsSem = [];
+    for (const preset of ['low', 'medium', 'high', 'max']) {
+      for (const style of ['Hexadecimal', 'Dictionary', 'Mangled']) {
+        const r = obfuscate(clsSrc, { preset, nameStyle: style, renameProperties: true, seed: 7 });
+        const st = r.stats.find((s) => s.pass === 'renameProperties');
+        const n = st ? st.result.renamed : 0;
+        if (n < 8) clsBad.push(preset + '/' + style + ' 只改 ' + n + ' 个');
+        let got = 'THREW';
+        try { got = runNode(r.code, 'rp-cls-' + preset + '-' + style + '.js').trim(); } catch (e) { got = 'THREW'; }
+        if (got !== clsWant) clsSem.push(preset + '/' + style + '→' + got.slice(0, 30));
+      }
+    }
+    ok(!clsBad.length, '类实例字段 this.x= / this["x"]= 计入定义面（4 预设 × 3 档，8 个成员全改）',
+      clsBad.slice(0, 3).join(' '));
+    ok(!clsSem.length, '类改名后语义不变（4 预设 × 3 档）', clsSem.slice(0, 3).join(' '));
+
+    // 形状/残留探针必须关掉 objectKeyEncoding 与 stringArray：默认管线把属性名拆成
+    // 计算键再收进池，产物里根本看不到 `.balance` 这种形态，文本探针恒"通过"而
+    // 什么也没测到（AGENTS 命名策略一节记着这条）。残留只查属性位（.name /
+    // this["name"]），不把同名局部量算进来——构造函数的形参 balance 就与实例字段同名。
+    let clsLeft = '';
+    for (const style of ['Hexadecimal', 'Dictionary']) {
+      const r = obfuscate(clsSrc, {
+        preset: 'low', shell: false, mangle: false, nameStyle: style,
+        renameProperties: true, objectKeyEncoding: false, stringArray: false, seed: 7,
+      });
+      const left = MEMBERS.filter((m) => new RegExp('\\.' + m + '\\b|\\["' + m + '"\\]').test(r.code));
+      if (left.length) { clsLeft = style + ' → ' + left.join(','); break; }
+    }
+    ok(!clsLeft, '类的成员名在属性位零残留（旧码 this.balance / this.owner 原样可见）', clsLeft);
+
+    // super.x = v **不是**本类的定义（它走原型链上的 setter）。误收进 defs 的话，
+    // 子类那句赋值被改名而父类的 this.x 没改 → 属性分裂、语义静默走错。
+    const supSrc = [
+      'class A { constructor(){ this.base = 1; } set() { this.base = 2; } read() { return this.base; } }',
+      'class B extends A { constructor(){ super(); super.base = 9; this.own = 3; } }',
+      'var b = new B();',
+      'b.set();',
+      'process.stdout.write(b.read() + "|" + b.own);',
+    ].join('\n');
+    const supWant = runNode(supSrc, 'rp-sup-raw.js').trim();
+    const supBad = [];
+    for (const seed of [1, 2, 3]) {
+      const r = obfuscate(supSrc, {
+        preset: 'low', shell: false, nameStyle: 'Dictionary', renameProperties: true, seed,
+      });
+      let got = 'THREW';
+      try { got = runNode(r.code, 'rp-sup-' + seed + '.js').trim(); } catch (e) { got = 'THREW'; }
+      if (got !== supWant) supBad.push('seed ' + seed + ' → ' + got.slice(0, 40));
+    }
+    ok(!supBad.length, 'super.x= 不算本类定义（父子类属性不被拆成两个）', supBad.join(' '));
+  }
 }
 
 section('其他');
