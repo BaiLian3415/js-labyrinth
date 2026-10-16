@@ -15,6 +15,7 @@ import { cleanTmp, ok, report, section } from './_harness.js';
 import obfuscateMod from '../src/obfuscate.js';
 import optionsMeta from '../src/options-meta.js';
 import i18n from '../src/i18n.js';
+import hideMod from '../src/utils/hide.js';
 
 const { obfuscate } = obfuscateMod;
 const DEFAULTS = obfuscateMod.DEFAULTS;
@@ -86,6 +87,75 @@ section('指纹：固定形状不得跨构建复现');
       if (leaked.length) { bad = 'shell:' + (form || 'classic') + ' 仍固定 ' + leaked.join(' '); break; }
     }
     ok(!bad, '外壳层短名无跨构建固定项（旧码交集 {_0b,_0f,_0ts,_0x}）', bad);
+  }
+
+  // globalThis 引用链：原先在 5 个模块里各写一份、**逐字节相同**（hide / domainLock /
+  // integrityCheck / stringArray / banner）。它出现在每一份产物里，攻击者 grep 一次
+  // 就能认出工具——比 bigram 相似度更直接可用的指纹。2026-10-15 实测改造前 8/8 个
+  // seed 的产物都逐字节命中。现在逐构建随机形态（utils/hide.js 是唯一真源）。
+  //
+  // 判据用**逐字节常量**而不是"链的某个片段"：后者会被 conditionObfuscation 的括号
+  // 改写（typeof void 0 → typeof (void 0)）打散，grep 不到，等于断言恒真。
+  {
+    const OLD = 'typeof globalThis!==typeof void 0?globalThis:typeof self!==typeof void 0?self:'
+      + 'typeof window!==typeof void 0?window:typeof global!==typeof void 0?global:{}';
+    let hit = 0, seen = 0;
+    for (const preset of ['low', 'medium', 'high', 'max']) {
+      for (const seed of [1, 2, 3]) {
+        for (const shell of [true, false]) {
+          const c = obfuscate(SRC, { preset, seed, shell }).code;
+          seen++;
+          if (c.includes(OLD)) hit++;
+        }
+      }
+    }
+    ok(hit === 0, '产物里不再有逐字节相同的 globalThis 引用链（旧码 24/24 命中）',
+      hit + '/' + seen);
+  }
+
+  // 形态等价性：随机形态必须与原始形态**逐值等价**。
+  //
+  // 这条是给 `===` 那个坑设的：把条件取反写成「操作数交换」(`typeof void 0!==typeof G`)
+  // 看着像取反，实际 `a!==b` 与 `b!==a` 是同一条命题，于是 globalThis 已定义时仍然
+  // 走进兜底分支，Node 上返回未定义的 self/window 直接 ReferenceError。
+  // 症状极偏：只有开 antiCDP / debugProtection 的产物才炸（那两处是唯一把它注入到
+  // 多处的），与病因隔了两层——所以判据直接落在形态生成器上。
+  //
+  // 老码上 hide.js 没有 globalRef（只有常量 GLOBAL_EXPR），先判存在性再断言，
+  // 让它在老码上**干净失败**而不是崩掉整个文件。
+  if (typeof hideMod.globalRef !== 'function') {
+    ok(false, 'utils/hide.js 导出 globalRef()（老码只有常量 GLOBAL_EXPR）');
+  } else {
+    // 采样足够多的调用把形态收集齐（4 层独立取反共 16 种，历史那一份被剔掉 → 15 种）
+    const shapes = new Set();
+    for (let i = 0; i < 600; i++) shapes.add(hideMod.globalRef());
+    ok(shapes.size >= 8, 'globalRef 形态逐构建分散（4 层独立取反）',
+      '采样 600 次得到 ' + shapes.size + ' 种');
+    ok(shapes.size <= 15 && shapes.size >= 15, '形态总数 15 种（历史形态已从池里剔掉）',
+      '得到 ' + shapes.size + ' 种');
+
+    // 在三种真实宿主上逐一比对：node / browser / worker。判据是「与第 0 号形态同值」。
+    const HOSTS = [
+      ['node（global + globalThis）', { globalThis: 'GT', self: undefined, window: undefined, global: 'GL' }],
+      ['browser（globalThis + self + window）', { globalThis: 'GT', self: 'SE', window: 'WI', global: undefined }],
+      ['worker（globalThis + self）', { globalThis: 'GT', self: 'SE', window: undefined, global: undefined }],
+    ];
+    const NAMES = ['globalThis', 'self', 'window', 'global'];
+    const list = [...shapes];
+    const baseline = list[0];
+    let bad = '';
+    for (const [hname, env] of HOSTS) {
+      const want = NAMES.map((n) => env[n]).find((v) => v !== undefined);
+      for (const s of list) {
+        let got;
+        try {
+          got = new Function(NAMES.join(','), 'return (' + s + ');')(...NAMES.map((n) => env[n]));
+        } catch (e) { got = 'THROW:' + e.constructor.name; }
+        if (got !== want) { bad = hname + ' 下形态不等：' + s.slice(0, 90); break; }
+      }
+      if (bad) break;
+    }
+    ok(!bad, '全部形态在 node/browser/worker 上与基准形态同值（取反必须是 ===）', bad);
   }
 
   // 掩码串 IIFE 形人与 catch 形参：hide.js 的 `_0T` 与三处 header 模板的

@@ -3,7 +3,7 @@ const { parse } = parser;
 import rand from '../utils/rand.js';
 const { randInt, randHex, randAlpha, shuffle, uniqueName } = rand;
 import hide from '../utils/hide.js';
-const { makeDbgHelpers, obfStrExpr, GLOBAL_EXPR } = hide;
+const { makeDbgHelpers, obfStrExpr, globalRef } = hide;
 import vmBoundary from './vmBoundary.js';
 const { insideVmFunction } = vmBoundary;
 import rtlib from './rtlib.js';
@@ -270,7 +270,7 @@ export default function debugProtection(ast, options, ctx) {
   // 头部函数体，整体以源码构造，规避手工拼 AST 的引用与调用错位
   const parts = [];
   parts.push(dbgVarSource('_0xdg'));
-  parts.push('var _0xG=' + GLOBAL_EXPR + ';');
+  parts.push('var _0xG=' + globalRef() + ';');
   parts.push('var _0armed=false;');
   parts.push('var _0xSI=(typeof setInterval!==typeof void 0?setInterval:null);');
   parts.push('var _0xCI=(typeof clearInterval!==typeof void 0?clearInterval:null);');
@@ -466,7 +466,7 @@ export default function debugProtection(ast, options, ctx) {
       'var ' + name + '=(function(_0xw){',
       'try{',
       dbgVarSource('_0xdg'),
-      'var _0xg=' + GLOBAL_EXPR + ';',
+      'var _0xg=' + globalRef() + ';',
       '_0xdg();',
       sampleSrc,
       'return true;',

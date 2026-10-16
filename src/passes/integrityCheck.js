@@ -90,9 +90,9 @@ function makeHasher(loopVar, rt) {
   return { fn, verifierBody, mul, primeB, basisA, basisB };
 }
 
-/** 访问 globalThis 的表达式源码，无局部 var 绑定，mangle 不会波及。 */
+/** 访问 globalThis 的表达式源码，无局部 var 绑定，mangle 不会波及。形态见 utils/hide.js。 */
 function globalRef() {
-  return '(typeof globalThis!==typeof void 0?globalThis:typeof self!==typeof void 0?self:typeof window!==typeof void 0?window:typeof global!==typeof void 0?global:{})';
+  return hide.globalRef();
 }
 
 export default function integrityCheck(ast, options, ctx) {

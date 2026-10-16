@@ -7,6 +7,7 @@ import encode from '../utils/encode.js';
 const { xorEncode, b64Encode, rc4ToB64, utf8Encode, affineEncode, addEncode, xorRevEncode, decoderSource, buildKeyExpr } = encode;
 import rtlib from './rtlib.js';
 import i18n from '../i18n.js';
+import hide from '../utils/hide.js';
 const { t: msg } = i18n;
 /**
  * 字符串数组池：把可收集的字符串字面量集中进每组一个数组，调用点改为
@@ -110,7 +111,7 @@ function listLiteral(xs) {
 }
 
 function globalRef() {
-  return '(typeof globalThis!==typeof void 0?globalThis:typeof self!==typeof void 0?self:typeof window!==typeof void 0?window:typeof global!==typeof void 0?global:{})';
+  return hide.globalRef();
 }
 
 export default function stringArray(ast, options, ctx) {

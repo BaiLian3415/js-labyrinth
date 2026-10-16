@@ -44,11 +44,7 @@ import i18n from '../i18n.js';
 const { t: msg } = i18n;
 import rtlib from './rtlib.js';
 import hide from '../utils/hide.js';
-const { obfStrExpr } = hide;
-
-/** globalThis 兜底表达式，与 integrityCheck/banner 同构。 */
-const GREF = '(typeof globalThis!==typeof void 0?globalThis:typeof self!==typeof void 0?self:' +
-  'typeof window!==typeof void 0?window:typeof global!==typeof void 0?global:{})';
+const { obfStrExpr, globalRef } = hide;
 
 /** 运行期与构建期共用的加盐折叠散列：h = ((imul(h ^ cc, P)) >>> 0) ^ M。 */
 function rtHash(str, salt, prime, mix) {
@@ -194,7 +190,7 @@ export default function domainLock(ast, options, ctx) {
   P('}');
 
   // 载体引用只在 coupled 模式下需要（poison/throw 模式 couple 可能为空）
-  const cref = couple ? GREF + '["' + couple.name + '"]' : null;
+  const cref = couple ? globalRef() + '["' + couple.name + '"]' : null;
   if (mode === 'coupled') {
     // 授权：+Q（横幅已写 OK-Q，这里补齐后读取端偏移归零）
     P('if(m){' + cref + '=((' + cref + '|0)+(0x' + qa.toString(16) + '^0x' + qb.toString(16) + '))|0;}');
@@ -206,7 +202,7 @@ export default function domainLock(ast, options, ctx) {
   } else if (mode === 'poison') {
     // 降级：失配写毒药键，字符串池解码器损坏输出
     const writes = poisonKeys
-      .map((k) => GREF + '["' + k + '"]=0x' + (randInt(1, 0xffff) | 1).toString(16) + ';')
+      .map((k) => globalRef() + '["' + k + '"]=0x' + (randInt(1, 0xffff) | 1).toString(16) + ';')
       .join('');
     P('if(!m){' + writes + '}');
   } else {

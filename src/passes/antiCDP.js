@@ -32,7 +32,7 @@ const { parse } = parser;
 import rand from '../utils/rand.js';
 const { randInt, uniqueName, randHex } = rand;
 import hide from '../utils/hide.js';
-const { makeDbgHelpers, obfStrExpr, GLOBAL_EXPR } = hide;
+const { makeDbgHelpers, obfStrExpr, globalRef } = hide;
 import rtlib from './rtlib.js';
 
 const NOW = '(Date.now?Date.now():(new Date()).getTime())';
@@ -152,7 +152,7 @@ export default function antiCDP(ast, options, ctx) {
   // 头部函数体，整体以源码构造，规避手工拼 AST 的引用与调用错位
   const parts = [];
   parts.push(cdpVarSource('_0xdg'));
-  parts.push('var _0xG=' + GLOBAL_EXPR + ';');
+  parts.push('var _0xG=' + globalRef() + ';');
   // 原生 console 引用必须最先捕获：本头部在产物中先于 debugProtection 执行，
   // consoleStub 的失效化发生在后，捕获到的引用永远是原生方法
   parts.push('var _0cl=(typeof console!==typeof void 0&&console)?console:null;');

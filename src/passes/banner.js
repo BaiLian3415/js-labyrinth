@@ -23,6 +23,7 @@
  */
 import rand from '../utils/rand.js';
 const { randInt, randHex, randAlpha } = rand;
+import hide from '../utils/hide.js';
 import shell from './shell.js';
 
 /**
@@ -191,9 +192,9 @@ const FNV_FORMS = [
 // 抄的那份会与源码漂移，漂移了就等于没测。
 export { FNV_FORMS };
 
-/** 全局对象引用链，与 shell/stringArray 用的是同一套探测串。 */
+/** 全局对象引用链。唯一真源与形态随机化在 utils/hide.js，见那里的注释。 */
 function globalRef() {
-  return '(typeof globalThis!==typeof void 0?globalThis:typeof self!==typeof void 0?self:typeof window!==typeof void 0?window:typeof global!==typeof void 0?global:{})';
+  return hide.globalRef();
 }
 
 /**

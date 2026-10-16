@@ -30,10 +30,56 @@ function obfStrNode(s, tbl, fcc) {
 // "debugger" 的 charCode 序列。仅构建期使用，不进入产物明文。
 const DBG_CODES = [100, 101, 98, 117, 103, 103, 101, 114];
 
-// globalThis 安全引用，与毒药标志同一模式
-const GLOBAL_EXPR =
-  '(typeof globalThis!==typeof void 0?globalThis:typeof self!==typeof void 0?self:' +
-  'typeof window!==typeof void 0?window:typeof global!==typeof void 0?global:{})';
+/**
+ * globalThis 的安全引用表达式，**逐构建随机形态**。
+ *
+ * 为什么必须随机：这段链原先在 5 个模块里各写一份且**逐字节相同**（hide / domainLock /
+ * integrityCheck / stringArray / banner），任何一份产物里都能 grep 到它，等于一个跨构建
+ * 常量。2026-10-15 实测它是 loader 明文区里最大的一段固定骨架（单构建出现两次、
+ * 105 个 token 在 4 个 seed 下全同）。
+ *
+ * 形态怎么随机才不动语义：4 层候选（globalThis → self → window → global，末位兜底 `{}`）
+ * 各自独立决定"条件取反与否"。`C?A:R` 与 `¬C?R:A` 逐位等价，于是 4 层共 16 种形态
+ * 全部严格等价。
+ *
+ * **取反必须写成 `===`，不能靠交换操作数**：条件是 `typeof G!==typeof void 0`，
+ * 它的否定是 `typeof void 0===typeof G`。写成 `typeof void 0!==typeof G` 是**另一个
+ * 恒真的东西**——`a!==b` 与 `b!==a` 是同一条命题，不是取反。结果是 globalThis 已定义
+ * 时仍然走进兜底分支，在 Node 上返回 `self`/`window` 并直接 ReferenceError。
+ * 2026-10-15 实测：写错这一处的版本 5 种模拟宿主里错 54/80 种，antiCDP 与
+ * debugProtection 的产物全部抛错；而这两种 pass 恰好是唯一会把它注入到多处的地方，
+ * 所以症状是"只有开 antiCDP/debugProtection 才炸"，与病因隔了两层。
+ *
+ * **不要**改成 `||` 短路那种"看着更短"的写法：三元取的是第一个**已定义**的全局，
+ * `||` 取的是第一个**真值**的全局，对"已定义但为假值"的宿主有语义差。
+ *
+ * 为什么是函数而不是模块级常量：形态要走构建种子流，模块加载期还没播种，那时求值
+ * 就不具可复现性（AGENTS「逐字节可复现是特性」）。一律在 pass 运行期调用。
+ *
+ * **历史那一份形态（全不取反）本身要剔掉**：它就是被替换掉的那个跨构建常量，若仍以
+ * 1/16 的概率出现，实测仍有约三分之一的产物可被 grep 命中（每份产物 2~5 处注入，
+ * 命中概率 = 1-(15/16)^n）。所以 flip 取 0 时强制置 1，实际形态 15 种。
+ *
+ * bit 的含义是「该层是否取反」，所以"全不取反"= 0 —— 剔除条件必须对着这个含义写。
+ * 这里踩过一次：先前把 bit 的含义设成「是否保持原形态」，结果剔除条件写成
+ * `mask === 0`，实际放行的恰恰是**全取反**，而历史形态（全不取反）走的是 mask === 15，
+ * 于是它照旧以 1/16 出现，断言从 24/24 命中降到 8/24 就卡住了——看着像"修了大半"，
+ * 实际是剔错了方向。
+ */
+const GLOBAL_CANDS = ['globalThis', 'self', 'window', 'global'];
+function globalRef() {
+  let flip = 0;
+  for (let i = 0; i < GLOBAL_CANDS.length; i++) flip |= randInt(0, 1) << i;
+  if (flip === 0) flip = 1;
+  let out = '{}';
+  for (let i = GLOBAL_CANDS.length - 1; i >= 0; i--) {
+    const g = GLOBAL_CANDS[i];
+    out = (flip >> i) & 1
+      ? 'typeof void 0===typeof ' + g + '?' + out + ':' + g
+      : 'typeof ' + g + '!==typeof void 0?' + g + ':' + out;
+  }
+  return '(' + out + ')';
+}
 
 /**
  * 生成把字符串 s 拼出来的掩码恒等式表达式源码。
@@ -116,11 +162,14 @@ function dbgFnSource(tbl) {
  */
 function makeDbgHelpers(tbl) {
   const cacheKey = '__d' + randInt(0x100000, 0xffffff).toString(16);
+  // 一次只取一个形态：同一句 var 里的两处 G 必须是同一个写法（取值当然相同，
+  // 但同形态更短、也免得读者以为它们可能指向不同对象）
+  const G = globalRef();
   const varSource = (name) =>
-    'var ' + name + '=' + GLOBAL_EXPR + '["' + cacheKey + '"]||(' + GLOBAL_EXPR +
+    'var ' + name + '=' + G + '["' + cacheKey + '"]||(' + G +
     '["' + cacheKey + '"]=(function(){try{return ' + dbgFnSource(tbl) +
     ';}catch(_0xe){return function(){};}})());';
   return { varSource };
 }
 
-export default { makeDbgHelpers, obfStrExpr, obfStrNode, dbgFnSource, GLOBAL_EXPR };
+export default { makeDbgHelpers, obfStrExpr, obfStrNode, dbgFnSource, globalRef };
