@@ -464,6 +464,46 @@ section('健康载体：全局通道之外必须还有载荷本地通道');
   ok(!/\["__d[0-9a-f]{6,}"\]\|0\)/.test(off), 'bannerSkip（耦合链整体关闭）时读取端不读本地项');
 }
 
+section('块级作用域绑定不得在校验器里被提前引用（TDZ，2026-10-16）');
+{
+  // 回归一个 P0：校验器函数体里曾对**每个** deferred 绑定发一条
+  // `if(REF){REF[prop]+=delta}`，而校验器会被机层预注册循环在**任何用户代码之前**
+  // 调用 —— 程序里只要有 `const f = () => {}` 这类绑定，`if(f)` 就是 TDZ 访问。
+  // `typeof f` 同样抛（TDZ 上 typeof 也 ReferenceError），所以守卫救不了。
+  // 症状是产物加载即 ReferenceError: Cannot access 'X' before initialization，
+  // 而 `const f = () => {}` 是现代 JS 最常见的写法。
+  // 修法：校验器改为**返回**偏移量，写入搬进那个按构造插在声明之后的注入块。
+  const cases = [
+    ['const 箭头函数', 'const Wp=WM=>String(WM);process.stdout.write(Wp(7));', '7'],
+    ['let 箭头函数', 'let Wp=WM=>String(WM);const B=()=>Wp(7);process.stdout.write(B());', '7'],
+    ['const 函数表达式 + 后续声明', 'const Wp=WM=>String(WM);const Ba=()=>Wp(7);process.stdout.write(Ba());', '7'],
+    ['var 函数表达式（对照组，原本就正常）', 'var Wp=WM=>String(WM);process.stdout.write(Wp(7));', '7'],
+  ];
+  let bad = '';
+  for (const [label, src, want] of cases) {
+    const r = obfuscate(src, { preset: 'medium', seed: 5, shell: false, mangle: false });
+    // 产物抛错必须**接住**而不是让 runNode 的 execFileSync 冒出去：老码上这里正是
+    // TDZ ReferenceError，不接住的话整个测试文件会崩掉——崩掉会掩盖后面所有断言，
+    // 双向判别也就无从谈起（AGENTS「新选项的回归测试要在老码上干净失败」）。
+    let got = '';
+    try { got = runNode(r.code, 'ic-tdz-' + label.length + '.js'); }
+    catch (e) { got = 'THROWS ' + String((e && e.message) || e).slice(0, 60); }
+    if (String(got).trim() !== want) { bad = label + ' → ' + JSON.stringify(String(got).slice(0, 80)); break; }
+  }
+  ok(!bad, 'const/let 函数表达式的产物能正常执行（校验器不得提前引用它们）', bad);
+
+  // 写入确实搬到了注入块里：块在声明之后，绑定必然已初始化
+  const one = obfuscate('const Wp=WM=>String(WM);process.stdout.write(Wp(7));',
+    { preset: 'medium', seed: 5, shell: false, mangle: false }).code;
+  const declAt = one.search(/const\s+[A-Za-z_$][\w$]*\s*=\s*[A-Za-z_$][\w$]*\s*=>/);
+  const writeAt = one.search(/for\s*\([^)]*\)\s*\{[^}]*=/);
+  ok(declAt >= 0, '产物里能定位到 const 声明（判据不是空转）', String(declAt));
+  // 校验器函数体里不得再出现裸的用户绑定引用
+  const verifierBody = one.slice(0, one.lastIndexOf('const '));
+  ok(!/\(Wp\)\{|\(Wp\)\|\|0\)|if\(Wp\)/.test(verifierBody),
+    '校验器函数体里不再裸引用用户绑定（TDZ 源）');
+}
+
 if (process.argv[1] && process.argv[1].endsWith('passes-defense.js')) {
   const bad = report();
   cleanTmp();

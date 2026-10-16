@@ -96,6 +96,18 @@ const CASES = [
   // ---- 边界 ----
   ['空函数与 undefined', 'function f(){}console.log(f(),typeof undefined,typeof null);'],
   ['数组方法链', 'console.log([3,1,2].sort().map(function(x){return x*2;}).join("-"));'],
+  // 块级作用域的函数绑定（2026-10-16 补）。整份用例集原先几乎全是 `var` + 函数声明，
+  // 于是漏掉了一个 P0：integrityCheck 的校验器体里曾对每个绑定发
+  // `if(REF){REF[prop]+=delta}`，而校验器会被机层预注册循环在**任何用户代码之前**调用
+  // ——`const f = () => {}` 在那一刻是 TDZ，`typeof f` 同样抛（TDZ 上 typeof 也
+  // ReferenceError，守卫救不了），产物加载即挂。`const` + 箭头函数是现代 JS 最常见的
+  // 写法，用例集必须钉住它。
+  ['const 箭头函数', 'const f=(n)=>n*2;console.log(f(21));'],
+  ['let 箭头函数与后置引用', 'let f=(n)=>n+1;const g=()=>f(41);console.log(g());'],
+  ['const 函数表达式', 'const f=function(n){return n-1;};console.log(f(43));'],
+  ['const 类表达式', 'const C=class{constructor(v){this.v=v;}get x(){return this.v;}};console.log(new C(9).x);'],
+  ['const 箭头函数互相引用', 'const a=(n)=>n*3;const b=(n)=>a(n)+1;console.log(b(14));'],
+  ['const 箭头函数闭包与默认参数', 'const mk=(k)=>(v=2)=>v*k;console.log(mk(3)(),mk(3)(4));'],
   ['立即返回对象', 'function f(){return {a:1,b:function(){return 2;}};}console.log(f().a,f().b());'],
 ];
 
@@ -211,6 +223,67 @@ if (bad === 0) {
     console.log('      期望 ' + JSON.stringify(f.expected));
     console.log('      实得 ' + JSON.stringify(f.got));
   }
+}
+
+// ---- 属性名重命名档（renameProperties: true）----
+//
+// 上面那轮走预设默认选项，而默认**不含** renameProperties，于是属性改名这条链路
+// 从没被端到端跑过。它是静默算错的高发区：定义面与访问面一旦不同面（`this.n=`
+// 改了名、解构 `{n}` 没改），读回的是 undefined 而不是报错，单元断言抓不到。
+// 2026-10-16 就是这么漏掉两个缺陷的（解构键、以及属性定义形态）。
+//
+// 用例单列、只跑 low/medium/max × 2 seed，总时长可控。
+const PROP_CASES = [
+  ['this.x= 与成员读', 'function C(n){this.n=n;this.m=n*2;}var c=new C(3);console.log(c.n,c.m);'],
+  ['this.x= 与解构读', 'function C(n){this.n=n;}var c=new C(3);const {n}=c;console.log(n);'],
+  ['this.x= 与重命名解构读', 'function C(n){this.n=n;}var c=new C(3);const {n:q}=c;console.log(q);'],
+  ['解构形参', 'function C(n){this.n=n;}function g({n}){return n;}console.log(g(new C(5)));'],
+  ['嵌套解构', 'var o={a:{b:4}};const {a:{b}}=o;console.log(b);'],
+  ['命名空间对象挂属性', 'var NS={};NS.tag="t";NS.n=1;console.log(NS.tag,NS.n,NS.n+1);'],
+  ['命名空间别名链', 'var A={p:1};var B=A;B.q=2;console.log(A.p,A.q,B.p,B.q);'],
+  ['对象字面量与方法简写', 'var o={v:1,m(){return this.v;},get d(){return this.v*2;}};console.log(o.m(),o.d);'],
+  ['类字段与方法/静态', 'class C{v=1;m(){return this.v;}static s(){return "S";}}console.log(new C().m(),C.s());'],
+  ['计算键定义与读', 'var k="dyn";var o={[k]:1};o[k]=2;console.log(o.dyn,o["dyn"]);'],
+  ['继承里的 this.x=', 'class A{constructor(){this.a=1;}}class B extends A{constructor(){super();this.b=2;}}var x=new B();console.log(x.a,x.b);'],
+  ['读写混合与自增', 'var ns={c:0};ns.c++;ns.c+=5;console.log(ns.c);'],
+];
+{
+  const propOpts = { low: 20000, medium: 30000, max: 90000 };
+  const presets = opts.presets.filter((p) => propOpts[p]);
+  const seeds = Math.min(2, opts.seeds);
+  console.log('\n属性名重命名档（' + presets.join('/') + ' × ' + seeds + ' seed）：');
+  let pChecked = 0, pBad = 0;
+  for (const [name, src] of PROP_CASES) {
+    const code = src + '\n';
+    const expected = runCode(code, 'prop-plain');
+    if (expected.startsWith('<抛错>')) continue;
+    const marks = [];
+    for (const preset of presets) {
+      for (let seed = 1; seed <= seeds; seed++) {
+        let got;
+        try {
+          const r = obfuscate(code, resolveOptions({
+            preset, seed, consoleStub: false, renameProperties: true,
+          }));
+          got = runCode(r.code, 'prop-obf', propOpts[preset]);
+        } catch (e) {
+          got = '<混淆抛错> ' + e.message.split('\n')[0].slice(0, 50);
+        }
+        pChecked++;
+        if (got === expected) { marks.push('·'); continue; }
+        pBad++;
+        marks.push('X');
+        console.log('  - ' + name + ' [' + preset + ' seed=' + seed + '] 期望 '
+          + JSON.stringify(expected) + ' 实得 ' + JSON.stringify(got));
+      }
+    }
+    console.log('  ' + (marks.includes('X') ? '❌' : '✅') + ' ' + name.padEnd(24) + marks.join(' '));
+  }
+  console.log(pBad === 0
+    ? '  ✅ 属性改名档全部通过：' + pChecked + ' 次比对'
+    : '  ❌ 属性改名档有 ' + pBad + '/' + pChecked + ' 次不一致');
+  bad += pBad;
+  checked += pChecked;
 }
 
 fs.rmSync(TMP, { recursive: true, force: true });

@@ -459,11 +459,22 @@ const targets = rootBody.filter((s) => s.type === 'FunctionDeclaration' && s.id 
     // 改了它这里的偏移立刻非零。
     // `if(REF)` 守卫是必需的：校验器的**早带**先于池声明执行，那时访问器变量
     // 还没赋值（var 已提升但为 undefined），不加守卫会 TypeError。
-    for (const d of deferred) {
-      const pr = d.ref + '["' + couple.prop + '"]';
-      verifierLines.push('if(' + d.ref + '){' + pr + '=(((' + pr + '|0)+(' + nHashA + '^' + nEA + ')+('
-        + nHashB + '^' + nEB + '))|0);}');
-    }
+    //
+    // **本地累加已搬出校验器体（2026-10-15 修 P0）**：原来在这里对**每个**
+    // deferred 绑定发一条 `if(d.ref){d.ref[prop]+=delta}`，而校验器会被机层
+    // 预注册循环在任何用户代码之前调用 —— 程序里只要有 `const f = () => {}`
+    // 这类**块级作用域**绑定，`if(f)` 就是 TDZ 访问（`typeof f` 同样抛，守卫
+    // 救不了），产物必挂。实测一行样本 `const Wp=WM=>String(WM);
+    // process.stdout.write(Wp(7));` 在 medium 档下产物 ReferenceError:
+    // Cannot access 'Wp' before initialization —— 而这是现代 JS 最常见的写法。
+    //
+    // 现在校验器只**返回**偏移量，写入交给下面那个注入块去做：那个块按构造
+    // 就插在声明之后（它本来就是为此存在的），拿到的绑定必然已初始化。
+    // 写入目标与累加语义都不变，读取端（stringArray 的 `selfName[prop]`）也不用动。
+    const nDelta = uniqueName(ctx.usedNames, '_0x');
+    verifierLines.push('var ' + nDelta + '=((' + nHashA + '^' + nEA + ')+('
+      + nHashB + '^' + nEB + '))|0;');
+    verifierLines.push('return ' + nDelta + ';');
   }
   verifierLines.push('if((' + nHashA + '>>>0)!==(' + nEA + '>>>0)' +
     '||(' + nHashB + '>>>0)!==(' + nEB + '>>>0)){' +
@@ -545,10 +556,26 @@ const targets = rootBody.filter((s) => s.type === 'FunctionDeclaration' && s.id 
       // 不加闩锁守卫：块就在根体里、随装载跑一次；而闩锁表是校验器块里的
       // var，vm 的顶层搬移会把根级语句重排，延迟块有可能排到它前面，那时读到的是
       // undefined
+      //
+      // 载荷本地通道的写入放在**这里**而不是校验器体里（见上面 couple 分支的注释）：
+      // 本块按构造插在这些声明之后，绑定必然已初始化；校验器体里引用它们则是 TDZ。
+      // 校验器改为返回偏移量，这里接收后累加到各绑定自己的属性上——写入目标与
+      // 累加语义都与旧形态一致，读取端（stringArray 的 `selfName[prop]`）不动。
+      const localWrite = couple
+        ? (() => {
+          const nDk = uniqueName(ctx.usedNames, '_0x');
+          // 写入形状必须是 `X[p]=((X[p]|0)+d)|0` —— **累加**而不是覆盖。
+          // 覆盖式会让后一次调用的 0 抹掉前一次的偏移（passes-defense 有断言按这个
+          // 形状判「累加而非覆盖」，所以别为了少一个临时变量改形状）。
+          return 'var ' + nDk + '=' + verifierName + '(' + nDf + '[' + nDi + '][0],' + nDf + '[' + nDi + '][1]);'
+            + 'if(' + nDf + '[' + nDi + '][0]){' + nDf + '[' + nDi + '][0]["' + couple.prop + '"]='
+            + '(((' + nDf + '[' + nDi + '][0]["' + couple.prop + '"]|0)+(' + nDk + '|0))|0);}';
+        })()
+        : verifierName + '(' + nDf + '[' + nDi + '][0],' + nDf + '[' + nDi + '][1]);';
       const block = parse(
-        '(function(){var ' + nDf + '=[' + pairs.join(',') + '];' +
-        'for(var ' + nDi + '=0;' + nDi + '<' + nDf + '.length;' + nDi + '++){' +
-        verifierName + '(' + nDf + '[' + nDi + '][0],' + nDf + '[' + nDi + '][1]);}})();',
+        '(function(){var ' + nDf + '=[' + pairs.join(',') + '];'
+        + 'for(var ' + nDi + '=0;' + nDi + '<' + nDf + '.length;' + nDi + '++){'
+        + localWrite + '}})();',
         { sourceType: 'script' }).program.body;
       rootBody.splice(at + 1, 0, ...block);
       deferredInjected = deferred.length;

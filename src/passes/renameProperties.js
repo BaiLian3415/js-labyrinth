@@ -233,13 +233,21 @@ function collect(node, parent, defs, uses, nsMembers) {
       uses.add(prop.name);
     }
   } else if (ty === 'ObjectProperty') {
-    // 解构 pattern 里的 ObjectProperty 是绑定名（const {foo} = obj），不是属性名
-    if (!parent || parent.type !== 'ObjectPattern') {
-      if (node.computed) {
-        if (node.key && node.key.type === 'StringLiteral') defs.add(node.key.value);
-      } else if (node.key && node.key.type === 'Identifier') {
-        defs.add(node.key.name);
-      }
+    // 解构 pattern（`const {x: v} = obj`）里的 ObjectProperty：**值**是绑定名，
+    // 但**键**仍然是被取出的属性名——它是访问面，不是定义面。
+    //
+    // 原先整条跳过（"解构里的 ObjectProperty 是绑定名"），于是同一属性会一边在
+    // `this.x=` 那种定义形态上被改名、一边在解构处保持原名，读回 undefined。
+    // 2026-10-16 实测：`function C(n){this.n=n;} var c=new C(3);
+    // const {n:kn}=c;` 混淆后 kn === undefined；解构形参 `function g({n})`、
+    // 简写 `{n}` 同样。AGENTS「定义面认得而访问面认不得 → 直接跑炸」那条铁律，
+    // 解构就是它的反例。
+    const inPattern = !!parent && parent.type === 'ObjectPattern';
+    const bag = inPattern ? uses : defs;
+    if (node.computed) {
+      if (node.key && node.key.type === 'StringLiteral') bag.add(node.key.value);
+    } else if (node.key && node.key.type === 'Identifier') {
+      bag.add(node.key.name);
     }
   } else if (ty === 'ObjectMethod' || ty === 'ClassMethod' || ty === 'ClassProperty') {
     if (node.computed) {
@@ -310,21 +318,21 @@ function rewrite(node, parent, map) {
       prop.name = map.get(prop.name);
     }
   } else if (ty === 'ObjectProperty') {
-    if (!parent || parent.type !== 'ObjectPattern') {
-      if (node.computed) {
-        if (node.key && node.key.type === 'StringLiteral' && map.has(node.key.value)) {
-          node.key.value = map.get(node.key.value);
-        }
-      } else if (node.key && node.key.type === 'Identifier' && map.has(node.key.name)) {
-        if (node.shorthand) {
-          // {foo} → {_0xabc: foo}：key 与 value 可能指向同一节点，先取旧名再分离
-          const oldName = node.key.name;
-          node.key = t.identifier(map.get(oldName));
-          node.value = t.identifier(oldName);
-          node.shorthand = false;
-        } else {
-          node.key.name = map.get(node.key.name);
-        }
+    // 解构里的键也要改（见 collect 里那段注释）。简写 `{n}` 必须拆成 `{新名: n}`：
+    // 键是被取出的属性名（要改），值是绑定名（归 mangle 管，保持原样）。
+    if (node.computed) {
+      if (node.key && node.key.type === 'StringLiteral' && map.has(node.key.value)) {
+        node.key.value = map.get(node.key.value);
+      }
+    } else if (node.key && node.key.type === 'Identifier' && map.has(node.key.name)) {
+      if (node.shorthand) {
+        // {foo} → {_0xabc: foo}：key 与 value 可能指向同一节点，先取旧名再分离
+        const oldName = node.key.name;
+        node.key = t.identifier(map.get(oldName));
+        node.value = t.identifier(oldName);
+        node.shorthand = false;
+      } else {
+        node.key.name = map.get(node.key.name);
       }
     }
   } else if (ty === 'ObjectMethod' || ty === 'ClassMethod' || ty === 'ClassProperty') {

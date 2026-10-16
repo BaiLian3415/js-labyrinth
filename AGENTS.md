@@ -741,6 +741,56 @@ npm run build:web:cloud  # 云端执行形态（核心不进产物，Vercel 部�
    指标却不动——因为 3-gram 的窗口大量**跨形态边界**（`try {`、`} catch ( e ) {`、
    `) { return 1 ; }` 这些在 24 种形态里全都一样）。**多态化要变的是语句结构，不是表达式写法。**
 
+## 两个 P0 级语义缺陷与它们的覆盖洞（2026-10-16 实测）
+
+一次"宽语法样本 × 预设矩阵"扫描（2.4 KB、覆盖类/生成器/异步/解构/可选链/Proxy/
+模板/标签语句…，逐配置真实执行比对输出）把两个**产物照跑不报错、但结果错**的缺陷
+翻了出来。两个都不是新引入的，都活过了整套 1281 项断言。
+
+### 1. `integrityCheck` 在校验器体里裸露引用用户绑定 → TDZ（一行样本必挂）
+
+- 症状：`const Wp=WM=>String(WM);process.stdout.write(Wp(7));` 在 **medium 档**
+  产物加载即 `ReferenceError: Cannot access 'Wp' before initialization`。
+- 机理：校验器体里对**每个** deferred 绑定发一条 `if(REF){REF[prop]+=delta}`
+  （载荷本地通道的写入端），而校验器会被**机层预注册循环在任何用户代码之前**调用。
+  `const`/`let` 绑定在那一刻处于 TDZ。**`typeof` 救不了**：TDZ 上 `typeof` 同样抛
+  ReferenceError，`if(REF)` 这种守卫在这里是无效的。
+- 命中面：任何含 `const f = () => {}` / `let f = function(){}` 的程序——现代 JS
+  最常见的写法。隔离到单 pass 是积分表式的：`integrityCheck` 单独开就挂，其余
+  每个 pass 单独开都正常，关掉 `integrityCheck` 就正常。
+- 修法（`integrityCheck.js`）：校验器改为**返回**偏移量，写入搬到那个按构造插在
+  **声明之后**的注入块（`rootBody.splice(at+1, ...)`）。写入目标与累加语义不变，
+  读取端（`stringArray` 的 `selfName[prop]`）一行没动。写入形状必须保持
+  `X[p]=((X[p]|0)+d)|0` —— 累加而非覆盖，`passes-defense` 按这个形状判。
+
+### 2. `renameProperties` 不认解构里的键 → 属性一边改名、一边原名
+
+- 症状：`function C(n){this.n=n;} var c=new C(3); const {n}=c;` 混淆后读到
+  `undefined`。`const {n:q}`、解构形参 `function g({n})`、嵌套解构同样中招。
+- 机理：`collect` 与 `rewrite` 都把 `ObjectPattern` 里的 `ObjectProperty` **整条跳过**
+  （注释写的是"解构里的 ObjectProperty 是绑定名"）。但那是**值**的性质：**键**仍然是被
+  取出的属性名，是**访问面**。跳过它 → 定义面认得 `this.n=` 而访问面认不得 ——
+  AGENTS「定义面认得而访问面认不得 → 赋值点改名而读取点没改 → 直接跑炸」那条铁律，
+  解构就是它的反例。
+- 修法：`collect` 里 pattern 内的键进 **uses** 而非 defs；`rewrite` 里照样改键，
+  简写 `{n}` 拆成 `{新名: n}`（键改、值不动——值归 mangle）。
+- 顺带确认一条**已记录的局限不是缺陷**：`spread[key]=9` 这种**动态键**写入，若 key
+  运行时命中一个被改名的属性，就会写成一个字面名的新属性（文档里"动态键访问会失配"
+  那条）。样本要避开它，别把它当 bug 修。
+
+### 覆盖洞：`test/semantics.js` 的用例集缺两类写法
+
+两个缺陷能活下来，是因为那份"输出必须逐字符相同"的扫描**几乎全是 `var` + 函数声明**，
+且跑的是预设默认选项（不含 `renameProperties`）。已补：
+
+- 「块级作用域的函数绑定」6 条：`const`/`let` 的箭头函数、函数表达式、类表达式、
+  互相引用、闭包与默认参数。这是 TDZ 那条的直接守门人。
+- **属性名重命名档**：新增 `PROP_CASES`（12 条：`this.x=` 与解构/计算键/继承/
+  自增混合）× low/medium/max × 2 seed，显式带 `renameProperties: true`。
+  属性改名正是静默算错的高发区——读写不同面时得到的是 `undefined` 而不是异常，
+  单元断言抓不到，必须真跑产物比对输出。
+- 两条都验证过双向判别：只 stash 实现文件时各报 2~6 处 X，新码全过。
+
 ## 提交前自检
 
 ```bash

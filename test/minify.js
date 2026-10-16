@@ -1189,6 +1189,31 @@ process.stdout.write(a + '|' + b + '\\n');`;
         '边界：内层形参遮蔽外层命名空间时**不得**改名');
     }
 
+    // 解构里的键是**访问面**，不是绑定名（2026-10-16 修）。
+    // 原先整条跳过，于是同一属性会一边在 `this.x=` 上被改名、一边在解构处保持原名，
+    // 读回 undefined。`const {x} = obj` / `function f({x})` / 嵌套解构都中招。
+    // 这是 AGENTS「定义面认得而访问面认不得 → 直接跑炸」那条铁律的反例。
+    {
+      const DR = { preset: 'low', shell: false, mangle: false, renameProperties: true,
+        objectKeyEncoding: false, stringArray: false, seed: 7 };
+      const cases = [
+        ['const {n:v} 读 this.n', 'function C(n){this.n=n;}var c=new C(3);const {n:kn}=c;process.stdout.write(String(kn));', '3'],
+        ['解构简写 {n}', 'function C(n){this.n=n;}var c=new C(3);const {n}=c;process.stdout.write(String(n));', '3'],
+        ['解构形参 {n}', 'function C(n){this.n=n;}function g({n}){return n;}process.stdout.write(String(g(new C(5))));', '5'],
+        ['嵌套解构', 'var o={a:{b:4}};const {a:{b}}=o;process.stdout.write(String(b));', '4'],
+        ['对照组：成员访问', 'function C(n){this.n=n;}var c=new C(3);process.stdout.write(String(c.n));', '3'],
+      ];
+      let bad = '';
+      for (const [label, src, want] of cases) {
+        const code = obfuscate(src, DR).code;
+        let got = '';
+        try { got = runNode(code, 'rp-destr-' + label.length + '.js'); }
+        catch (e) { got = 'THROWS ' + String((e && e.message) || e).slice(0, 60); }
+        if (String(got).trim() !== want) { bad = label + ' → ' + JSON.stringify(String(got).slice(0, 60)); break; }
+      }
+      ok(!bad, '解构读取的属性名跟着一起改（this.n= 与 const {n} 必须同面）', bad);
+    }
+
     // 解析/生成往返：自混淆要解析自己的产物，吐不回去就是整条链断掉。
     // 只比"能再解析"（compact 去空白后不可能逐字相同）。
     {
