@@ -791,6 +791,68 @@ npm run build:web:cloud  # 云端执行形态（核心不进产物，Vercel 部�
   单元断言抓不到，必须真跑产物比对输出。
 - 两条都验证过双向判别：只 stash 实现文件时各报 2~6 处 X，新码全过。
 
+## 宽语法矩阵是找 P0 的最有效手段（2026-10-16，第二组又挖出四个）
+
+第一组样本（2.4 KB 单文件）挖出两个 P0 后，按**领域拆成小样本**跑了第二组（异步/生成器/
+Proxy/正则/标签模板/迭代协议/属性描述符/`super`+`new.target`/私有字段与静态块/可选链/
+解构默认值/异常/原型链/BigInt/Unicode/`with`，共 17 个 × 7 个配置 = 119 次比对）。
+**又挖出四个真缺陷**，其中一个是构建期直接抛错。结论：**这类扫描的命中率远高于读配置**，
+而且样本按领域拆开时失败能直接落到语法族，不用二分。
+
+### 1. 无替换的标签模板让构建直接抛错（全部预设）
+
+- 症状：``String.raw`x\ty` `` / ``tag`plain` `` → `Cannot read properties of undefined
+  (reading 'length')`，**用户拿不到产物**。
+- 根因一（`stringArray.js`）：`TemplateLiteral` 访问器把**标签模板的 quasi** 也当普通
+  模板收进了候选，替换后 `node.quasi` 不再是 TemplateLiteral，生成期 `_templateLiteral`
+  读 `node.quasis.length` 崩。`templateToConcat` 早就有 `parentPath.isTaggedTemplateExpression()`
+  守卫，这里漏了同一个。
+- 根因二（`types.js` + `parser.js`）：`TemplateElement` 工厂只有一个 value 参数，
+  **raw 与 cooked 被填成同一个**；词法层明明分开算了（`tok.raw`/`tok.cooked`），解析器却
+  只传 cooked。于是 tag 收到的 `strings.raw` 是解码后的文本 —— ``String.raw`x\ty` ``
+  输出真制表符。生成器回写时也只剩 cooked，无法还原。修法是工厂改成
+  `templateElement(raw, cooked, tail)`，生成器对标签模板走 `_rawTemplate`（raw 原样写、
+  不转义；多转一个字符就改了 raw）。**代价：raw 场景下不套 `escapeNonAscii`**——语义必需，
+  `\u4e2d` 的 raw 是六个字符，写成汉字就只剩一个。普通模板与字符串字面量的承诺不变。
+
+### 2. 属性描述符键被当普通属性名改了（`renameProperties`）
+
+- 症状：`Object.defineProperty(o,'v',{value:1,writable:false,enumerable:false})` 之后
+  `d.writable` 读回 `undefined`，产物照跑不报错。三个键都中招。
+- 机理：描述符字面量给 `defs`、`d.writable` 给 `uses` → 命中 defs∩uses 被改名 →
+  `Object.defineProperty` 按规范找不到 `writable` 就取默认值。
+- 修法：`writable`/`enumerable`/`configurable` 进 `RESERVED_PROPS`。这三个**不能**指望
+  defs∩uses 保护——读它们最常见的方式就是配 `getOwnPropertyDescriptor`，那正好提供 uses。
+  （`value`/`get`/`set` 早就在白名单里，属于同一个"规范按字面名读"的集合。）
+
+### 3. Proxy 陷阱名 / Reflect 方法名同类
+
+- 症状：`new Proxy(t,{ownKeys(o){return Reflect.ownKeys(o);}})` 运行期
+  `TypeError: Reflect[<随机名>] is not a function`。
+- 机理同上：`ownKeys` 既是处理器对象的定义、又出现在 `Reflect.ownKeys` 的访问里。
+- 修法：`ownKeys`/`construct`/`deleteProperty`/`defineProperty`/
+  `getOwnPropertyDescriptor`/`getPrototypeOf`/`setPrototypeOf`/`isExtensible`/
+  `preventExtensions` 进白名单。
+- **要与一条已记录局限区分开**：文档里"不做跨对象数据流关联——同名属性一半是内部对象、
+  一半是外部库会被一起改"说的是**用户自己的两个对象**同名，那个无解（要数据流分析）。
+  这里是**规范钉死的固定名字集合**（引擎与内建按字面名读），可以列穷举，列进白名单即可。
+
+### 4. `{p=1}` 展开简写时丢了默认值（`renameProperties` 自身引入）
+
+- 症状：`function f({p=1}={}){...}` 无参调用算出 `NaN`（`p` 变 undefined）。
+- 机理：`{p=1}` 是"简写 + 默认值"，此时的 `value` 是 `AssignmentPattern`（`left` 才是绑定名）。
+  展开简写时把 `node.value` 整个换成裸 `Identifier` 就等于删掉默认值。
+- 修法：`AssignmentPattern` 时只换 `value.left`。**这条是第一组修复（解构键进访问面）的
+  直接后果**——原先 pattern 整条跳过，所以这段代码从没被走到过。改访问面/定义面时要把
+  同一语法族的**所有形态**过一遍。
+
+### 顺带确认两条"不是缺陷"
+
+- `with(...)`：混淆器的绑定自检会判 `with` 作用域里的自由名"未绑定"并**明确报错**，
+  还给出 `--no-self-check` 出路。这是响亮的拒绝，不是静默算错。矩阵里按"预期被拒"处理。
+- `renameProperties` 打开时，`Object.keys`/`Proxy` 陷阱/`JSON` 观测到的是**改名后**的键名。
+  那是反射可见的既定行为（与"动态键失配"同源），样本要避开，别当 bug 修。
+
 ## 提交前自检
 
 ```bash

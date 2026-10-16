@@ -631,21 +631,36 @@ if (process.env.JSLB_SKIP_LIVE === '1') {
           got && got[0] !== undefined ? JSON.stringify(got[0]) : '');
       }
 
-      // --- 带标签的模板：项目既有缺陷，不因本功能而恶化 ---
+      // --- 带标签的模板：2026-10-16 已修，这里反过来钉住 ---
       {
-        // 实测 `html\`…\`` 在开不开 htmle 时都抛同一个错（generator._taggedTemplate
-        // 读 node.quasis 时 undefined），是混淆器本来就有的问题，不在这里顺手修。
-        const src = 'var t = html`<div class="a">x</div>`;';
+        // 原先这里钉的是"既有的崩溃"（generator._taggedTemplate 读 node.quasis 抛错），
+        // 并把"开不开 htmle 都一样"当作"没引入新问题"的证据。两处根因都修了：
+        //   ① stringArray 的 TemplateLiteral 访问器把标签模板的 quasi 也当普通模板收了，
+        //      替换后 node.quasi 不再是 TemplateLiteral，生成期崩；
+        //   ② TemplateElement 工厂把 raw 与 cooked 填成同一个值，tag 拿到的 strings.raw
+        //      是解码后的文本（`` String.raw`x\ty` `` 会输出真制表符）。
+        // 现在断言的是"不崩 + raw 正确还原"。
+        const src = 'var tag=function(s){return s.raw.join("<")+"#"+s[1];};'
+          + 'process.stdout.write(tag`<div class="a">\\n&lt;${1}</div>`);';
+        const plain = runNode(src, 'tpl-plain.js').trim();
         let offErr = null;
         let onErr = null;
-        try { obfuscate(src, { preset: 'low', seed: 5, selfCheck: false }); } catch (e) { offErr = e; }
+        let gotOff = '';
+        let gotOn = '';
         try {
-          obfuscate(src, { preset: 'low', seed: 5, htmle: true, selfCheck: false });
+          gotOff = runNode(obfuscate(src, { preset: 'low', seed: 5, selfCheck: false }).code, 'tpl-off.js').trim();
+        } catch (e) { offErr = e; }
+        try {
+          gotOn = runNode(obfuscate(src, { preset: 'low', seed: 5, htmle: true, selfCheck: false }).code, 'tpl-on.js').trim();
         } catch (e) { onErr = e; }
-        ok(!!offErr, 'JS 侧：带标签模板的崩溃是既有的（不开 htmle 也一样）');
-        ok(!!onErr && !!offErr && String(onErr.message) === String(offErr.message),
-          'JS 侧：开 htmle 抛的是同一个错（未引入新问题）',
-          onErr ? String(onErr.message).slice(0, 70) : '没抛');
+        ok(!offErr, '标签模板不再让构建/运行崩溃（原先是 generator 读 node.quasis 抛错）',
+          offErr ? String(offErr.message).slice(0, 80) : '');
+        ok(!onErr, '开 htmle 时同样不崩', onErr ? String(onErr.message).slice(0, 80) : '');
+        ok(gotOff === plain && plain.indexOf('&lt;') >= 0,
+          'JS 侧：标签模板的 raw 逐字还原（反斜杠转义不被解码）',
+          '期望 ' + JSON.stringify(plain) + ' 实得 ' + JSON.stringify(gotOff));
+        ok(gotOn === plain, '开 htmle 时标签模板语义不变',
+          '期望 ' + JSON.stringify(plain) + ' 实得 ' + JSON.stringify(gotOn));
       }
     }
 // 档位闸门：htmle 是 Plus 及以上的能力（Free 不给）。

@@ -25,8 +25,18 @@ const regexpLiteral = (pattern, flags) => node('RegExpLiteral', { pattern, flags
 const directiveLiteral = (value) => node('DirectiveLiteral', { value });
 const directive = (value) => node('Directive', { value: directiveLiteral(value) });
 
-const templateElement = (value, tail) =>
-  node('TemplateElement', { value: { raw: value, cooked: value }, tail: !!tail });
+/**
+ * 模板段。`raw` 与 `cooked` 是**两个不同的东西**：raw 是源文本原样（`\n` 两个字符），
+ * cooked 是解码后的值（一个换行）。2026-10-16 前这里只有一个 value 参数、raw 与 cooked
+ * 被填成同一个，于是 tagged template 里 tag 拿到的 `strings.raw` 全是 cooked 值 ——
+ * `` String.raw`x\ty` `` 会输出真制表符、以及 `tag`a\nb`` 会输出真换行。生成器回写时
+ * 也只能拿到 cooked，无法还原。
+ */
+const templateElement = (raw, cooked, tail) =>
+  node('TemplateElement', {
+    value: { raw, cooked: cooked === undefined ? raw : cooked },
+    tail: !!tail,
+  });
 const templateLiteral = (quasis, expressions) => node('TemplateLiteral', { quasis, expressions });
 const taggedTemplateExpression = (tag, quasi) => node('TaggedTemplateExpression', { tag, quasi });
 

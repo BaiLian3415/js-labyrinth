@@ -36,7 +36,26 @@ const { uniqueName } = rand;
  * 仍是干净的 Identifier / StringLiteral。
  */
 
-// 高风险属性名白名单（safe 模式保守排除）
+// 高风险属性名白名单（safe 模式保守排除）。
+//
+// 判据是"这个名字被改名会改变**宿主或规范**读它的行为，而那个读点不在本 pass 的
+// 访问面里"。`value`/`get`/`set`/`then`/`next`/`done` 这些早就在；2026-10-16 补三个
+// **属性描述符键**：`writable`/`enumerable`/`configurable`。
+//   实测症状：`Object.defineProperty(o,'v',{value:1,writable:false,enumerable:false})`
+//   的描述符字面量给了 defs、`d.writable` 给了 uses → 命中 defs∩uses 被改名 →
+//   `Object.defineProperty` 按规范找不到 `writable` 就取默认值，读回 `d.writable`
+//   变成 undefined。产物照跑不报错，只是属性特性静默变了。
+//   这三个键**必须**进白名单，不能指望 defs∩uses 保护它们——读它们最常见的方式就是
+//   配 `Object.getOwnPropertyDescriptor`，而那正好提供了 uses。
+// `toJSON` 同理：JSON.stringify 按规范名读它，读点同样不在访问面里。
+//
+// 2026-10-16 再补 Proxy 陷阱与 Reflect/Object 方法名。实测症状：
+//   `new Proxy(t,{ownKeys(o){return Reflect.ownKeys(o);}})` —— `ownKeys` 既是处理器
+//   对象的**定义**，又出现在 `Reflect.ownKeys` 这个**访问**里，命中 defs∩uses 被改名，
+//   运行期 `Reflect.<随机名>` 不是函数，TypeError。与描述符键同一类：读它的是**引擎或
+//   内建**，那个读点不在本 pass 的访问面里，`defs∩uses` 保护不了它。
+//   注意这与"一半内部一半外部库"那条**已记录局限**不同：那条说的是用户自己的两个对象
+//   同名（无解，要数据流）；这里是**规范钉死的固定名字集合**，可以列穷举。
 const RESERVED_PROPS = new Set((
   'constructor prototype __proto__ length name arguments caller callee ' +
   'call apply bind toString valueOf toLocaleString hasOwnProperty isPrototypeOf propertyIsEnumerable ' +
@@ -47,7 +66,12 @@ const RESERVED_PROPS = new Set((
   'startsWith endsWith charAt charCodeAt substring substr padStart padEnd repeat test exec source flags lastIndex ' +
   'state status statusText body headers url method ok json text blob type target currentTarget ' +
   'preventDefault stopPropagation message data origin source parent children firstChild lastChild ' +
-  'nodeType nodeName textContent innerHTML className id classList style attributes'
+  'nodeType nodeName textContent innerHTML className id classList style attributes ' +
+  // 属性描述符键（规范按字面名读，读点不在访问面里）+ JSON 序列化钩子
+  'writable enumerable configurable toJSON ' +
+  // Proxy 陷阱名与 Reflect/Object 方法名（引擎与内建按字面名读）
+  'ownKeys construct deleteProperty defineProperty getOwnPropertyDescriptor ' +
+  'getPrototypeOf setPrototypeOf isExtensible preventExtensions'
 ).trim().split(/\s+/));
 
 /**
@@ -326,10 +350,19 @@ function rewrite(node, parent, map) {
       }
     } else if (node.key && node.key.type === 'Identifier' && map.has(node.key.name)) {
       if (node.shorthand) {
-        // {foo} → {_0xabc: foo}：key 与 value 可能指向同一节点，先取旧名再分离
+        // {foo} → {_0xabc: foo}：key 与 value 可能指向同一节点，先取旧名再分离。
+        //
+        // **`{foo = 1}` 这种"简写 + 默认值"不能把 value 换成裸 Identifier**：
+        // 那时的 value 是 AssignmentPattern（left 才是绑定名），整块换掉就等于把
+        // 默认值删了 —— 2026-10-16 实测 `function f({p=1}={})` 无参调用算出 NaN
+        // （p 变 undefined）。默认值留在原节点上，只把它的 left 换成旧名。
         const oldName = node.key.name;
         node.key = t.identifier(map.get(oldName));
-        node.value = t.identifier(oldName);
+        if (node.value && node.value.type === 'AssignmentPattern') {
+          node.value.left = t.identifier(oldName);
+        } else {
+          node.value = t.identifier(oldName);
+        }
         node.shorthand = false;
       } else {
         node.key.name = map.get(node.key.name);

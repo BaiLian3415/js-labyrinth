@@ -784,7 +784,10 @@ class Generator {
   _templateLiteral(node) {
     this._s('`');
     for (let i = 0; i < node.quasis.length; i++) {
-      this._s(this._escapeTemplate(node.quasis[i].value.cooked));
+      const q = node.quasis[i].value;
+      // 标签模板必须按 **raw** 回写（见 _taggedTemplate）。普通模板只有 cooked
+      // 可观测，按 cooked 写、escaped 重新转义即可。
+      this._s(node.__taggedRaw ? this._rawTemplate(q) : this._escapeTemplate(q.cooked));
       if (i < node.expressions.length) {
         this._s('${');
         this._node(node.expressions[i]);
@@ -792,6 +795,24 @@ class Generator {
       }
     }
     this._s('`');
+  }
+
+  /**
+   * 把模板段的 raw 原样写回。raw 就是源码文本，**不做任何转义**——多转一个字符
+   * 就改变了 tag 收到的 strings.raw。
+   *
+   * 为什么必须区分 cooked/raw（2026-10-16 实测）：原先一律按 cooked 回写、再按
+   * 普通模板转义，于是 ``tag`a\nb` ``（raw 是反斜杠+n）被写成真正的换行，
+   * ``String.raw`x\ty` `` 被写成真制表符——tag 拿到的 raw 全变样。
+   * 普通模板字面量不受影响（它只暴露 cooked）。
+   *
+   * 代价：raw 场景下不套 `escapeNonAscii`。那是语义必需——`\u4e2d` 的 raw 是
+   * 六个字符，写成汉字就只剩一个，raw 变了。escapeNonAscii 的承诺在
+   * **字符串字面量**与**普通模板**上不变，标签模板的 raw 以语义优先。
+   */
+  _rawTemplate(q) {
+    if (typeof q.raw === 'string') return q.raw;
+    return this._escapeTemplate(q.cooked);
   }
 
   // 把模板段的 cooked 文本写回源码，反斜杠、反引号和 ${ 都要重新转义，
@@ -826,7 +847,13 @@ class Generator {
 
   _taggedTemplate(node) {
     this._str(node.tag, PREC.Member);
-    this._templateLiteral(node.quasi);
+    // 标记 quasi 让 _templateLiteral 走 raw 路径（tag 能观测到 strings.raw）。
+    // 打标记而不是传参：_node/_str 的优先级分派会再进 _templateLiteral，传参传不进去。
+    const had = node.quasi.__taggedRaw;
+    node.quasi.__taggedRaw = true;
+    try { this._templateLiteral(node.quasi); } finally {
+      if (had === undefined) delete node.quasi.__taggedRaw; else node.quasi.__taggedRaw = had;
+    }
   }
 
   _arrayExpression(node) {

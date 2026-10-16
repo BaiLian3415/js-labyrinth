@@ -228,9 +228,16 @@ class Lexer {
         return;
       }
       if (ch === '\\') {
-        raw += this.code.slice(this.pos, this.pos + 2);
-        cooked += this._tplEscape(this.code[this.pos + 1]);
+        // raw 必须取**整个转义序列**的源码。`_tplEscape` 会为 `\x`/`\u`/`\u{…}`
+        // 推进 this.pos（跳过多字符转义体），所以切片要在调用**之后**按推进后的
+        // 位置取，不能预先写死两个字符 —— 2026-10-16 实测：
+        // ``String.raw`a\u0041b` `` 的 raw 只剩 `a\ub`（`0041` 被漏掉），
+        // 标签模板的 strings.raw 因此少字符。`\n`/`\t` 这类两字符转义照旧。
+        const escStart = this.pos;
+        const cookedPart = this._tplEscape(this.code[this.pos + 1]);
         this.pos += 2;
+        raw += this.code.slice(escStart, this.pos);
+        cooked += cookedPart;
         continue;
       }
       if (ch === '$' && this.code[this.pos + 1] === '{') {
@@ -1772,7 +1779,7 @@ class Parser {
     for (;;) {
       const tok = this.next();
       if (tok.type !== 'tpl') this._err(msg('parseTemplateTokenError'), tok);
-      quasis.push(t.templateElement(tok.cooked, tok.tail));
+      quasis.push(t.templateElement(tok.raw, tok.cooked, tok.tail));
       if (tok.tail) break;
       expressions.push(this.parseExpression());
       const close = this.next();

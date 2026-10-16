@@ -252,6 +252,15 @@ export default function stringArray(ast, options, ctx) {
       candidates.push({ path, value: path.node.value, parts: null });
     },
     TemplateLiteral(path) {
+      // 标签模板的 quasi **不是**普通字符串：tag 收到的是模板对象（cooked/raw 两个数组），
+      // 把 quasi 换成池解码调用既丢语义、也不是合法语法——替换后 `node.quasi` 不再是
+      // TemplateLiteral，生成期直接崩，实测 `Cannot read properties of undefined
+      // (reading 'length')`（_templateLiteral 读 node.quasis.length）。
+      // 2026-10-16 实测：`function tag(s){return s[0];} tag`plain`` 在**全部**预设下
+      // 构建抛错——即用户只要有无替换的标签模板（`` String.raw`...` `` 最常见），
+      // 就拿不到产物。templateToConcat 早就有这道守卫，这里是漏了同一个。
+      if (path.parentPath && path.parentPath.isTaggedTemplateExpression
+        && path.parentPath.isTaggedTemplateExpression()) return;
       if (path.node.expressions.length > 0) return;
       const quasis = path.node.quasis;
       if (quasis.length !== 1) return;

@@ -109,6 +109,43 @@ const CASES = [
   ['const 箭头函数互相引用', 'const a=(n)=>n*3;const b=(n)=>a(n)+1;console.log(b(14));'],
   ['const 箭头函数闭包与默认参数', 'const mk=(k)=>(v=2)=>v*k;console.log(mk(3)(),mk(3)(4));'],
   ['立即返回对象', 'function f(){return {a:1,b:function(){return 2;}};}console.log(f().a,f().b());'],
+  // ---- 宽语法矩阵第二组挖出的四类（2026-10-16）----
+  // 这一批原先全没有：标签模板（含 String.raw）、属性描述符、Proxy 陷阱、
+  // 解构默认值。它们各自对应一个真缺陷，详见 AGENTS「宽语法矩阵」一节。
+  // 每条都在 script 模式下可跑（本文件用 .js 跑，不能用 top-level await / with）。
+  ['标签模板 raw 不被解码', 'function tag(s,...v){return s.raw.join("<")+"#"+v.join("+");}'
+    + 'console.log(tag`a\\nb${1}c\\td${2}`);'],
+  ['String.raw 原样', 'console.log(String.raw`x\\ty\\n`, JSON.stringify(String.raw`a\\u0041b`));'],
+  ['标签模板无替换', 'function tag(s){return s.raw[0]+"/"+s.length;}console.log(tag`plain`);'],
+  ['标签是成员/调用结果', 'var o={t:(s)=>s[0]};console.log(o.t`m`,(function(){return (s)=>s[1]})()`p${9}q`);'],
+  ['属性描述符键', 'var o={};Object.defineProperty(o,"v",{value:1,writable:false,enumerable:false,configurable:true});'
+    + 'var d=Object.getOwnPropertyDescriptor(o,"v");'
+    + 'console.log(o.v,d.writable,d.enumerable,d.configurable,Object.keys(o).length);'],
+  ['Proxy 陷阱与 Reflect', 'var log=[];var p=new Proxy({a:1},{get(o,k,r){log.push("g");return Reflect.get(o,k,r);},'
+    + 'set(o,k,v,r){log.push("s");return Reflect.set(o,k,v,r);},'
+    + 'has(o,k){return k==="ghost"||Reflect.has(o,k);},ownKeys(o){return Reflect.ownKeys(o);}});'
+    + 'p.b=2;console.log(p.a,p.b,("ghost" in p),log.join(","),Reflect.ownKeys(p).length);'],
+  ['解构简写带默认值', 'function f({p=1,q=2}={}){return p+q;}console.log(f(),f({p:5}),f({p:5,q:7}));'],
+  ['解构带默认值 + 剩余', 'var {a=1,b=2,c:{d=3}={}}={a:9,c:{}};'
+    + 'var [x=1,y=2,...rest]=[7,undefined,3,4];console.log(a,b,d,x,y,rest.join(","));'],
+  ['私有字段与静态块', 'var C=class D{#s=1;static #n=0;static{D.#n=10;D.extra="E";}constructor(n){this.#s=n;}'
+    + 'get v(){return this.#s+1;}static get c(){return D.#n;}static has(o){return #s in o;}};'
+    + 'var c=new C(4);console.log(c.v,C.c,C.extra,C.has(c),C.has({}));'],
+  ['可选链与空值合并', 'var o={a:{b:{c:5}},f(){return "F";}};var u=null;'
+    + 'console.log(o?.a?.b?.c,o?.z?.y??"d1",o.f?.(),u?.x?.y??"d2",(u?.f)?.()??"d3",0??"z");'],
+  ['super 与 new.target', 'class A{m(){return "A";}get g(){return "ga";}}'
+    + 'class B extends A{m(){return super.m()+"B";}get g(){return super.g+"b";}}'
+    + 'function F(){return new.target===F?"direct":"called";}'
+    + 'console.log(new B().m(),new B().g,F(),new F().constructor===F);'],
+  ['异步与 Promise 组合', 'var p=function(v,d){return new Promise(function(r){setTimeout(function(){r(v*d);},d);});};'
+    + '(async function(){(async function(){var a=await p(2,1);var b=await Promise.all([p(3,1),p(4,1)]);'
+    + 'var c=await Promise.race([p(5,1),p(6,9)]);var d=await Promise.any([Promise.reject(new Error("x")),p(7,1)]);'
+    + 'console.log(a,b.join(","),c,d);})();})();'],
+  ['生成器委托与异步生成器', 'function* i(){yield 1;yield 2;return "ir";}'
+    + 'function* o(){var r=yield* i();yield r;}'
+    + 'async function* ag(){yield 1;yield 2;}'
+    + '(async function(){var acc=[];for await(var v of ag())acc.push(v*3);'
+    + 'console.log([...o()].join(","),acc.join(","));})();'],
 ];
 
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'jslb-sem-'));
@@ -246,6 +283,17 @@ const PROP_CASES = [
   ['计算键定义与读', 'var k="dyn";var o={[k]:1};o[k]=2;console.log(o.dyn,o["dyn"]);'],
   ['继承里的 this.x=', 'class A{constructor(){this.a=1;}}class B extends A{constructor(){super();this.b=2;}}var x=new B();console.log(x.a,x.b);'],
   ['读写混合与自增', 'var ns={c:0};ns.c++;ns.c+=5;console.log(ns.c);'],
+  // 规范按字面名读、读点不在本 pass 访问面里的那批（2026-10-16 补白名单）
+  ['属性描述符键', 'var o={};Object.defineProperty(o,"v",{value:1,writable:false,enumerable:false,configurable:true});'
+    + 'var d=Object.getOwnPropertyDescriptor(o,"v");'
+    + 'console.log(o.v,d.writable,d.enumerable,d.configurable,Object.keys(o).length);'],
+  ['Proxy 陷阱名与 Reflect 方法', 'var log=[];var p=new Proxy({a:1},{get(o,k,r){log.push("g");return Reflect.get(o,k,r);},'
+    + 'set(o,k,v,r){log.push("s");return Reflect.set(o,k,v,r);},'
+    + 'ownKeys(o){return Reflect.ownKeys(o);},'
+    + 'getOwnPropertyDescriptor(o,k){log.push("d");return Object.getOwnPropertyDescriptor(o,k);}});'
+    + 'p.b=2;console.log(p.a,p.b,log.join(","),Reflect.ownKeys(p).length,Object.keys(p).length);'],
+  ['toJSON 钩子', 'var o={v:1,toJSON(){return "J"+this.v;}};console.log(JSON.stringify(o),o.v);'],
+  ['解构简写带默认值', 'function f({p=1,q=2}={}){return p+q;}console.log(f(),f({p:5}),f({p:5,q:7}));'],
 ];
 {
   const propOpts = { low: 20000, medium: 30000, max: 90000 };
