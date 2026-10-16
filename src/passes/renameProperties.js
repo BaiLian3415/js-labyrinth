@@ -70,9 +70,158 @@ function thisSideName(member, out) {
   }
 }
 
-function collect(node, parent, defs, uses) {
+/** 绑定形态（解构）里全部名字。解构的成员是绑定名，不参与属性判定（另见 collect）。 */
+function patternNames(node, out) {
+  if (!node || typeof node !== 'object') return out;
+  if (node.type === 'Identifier') { out.push(node.name); return out; }
+  if (node.type === 'ObjectPattern' || node.type === 'ArrayPattern') {
+    for (const el of node.properties || []) {
+      if (el.type === 'RestElement') patternNames(el.argument, out);
+      else patternNames(el.type === 'Property' ? el.value : el, out);
+    }
+    if (node.type === 'ArrayPattern') for (const el of node.elements || []) patternNames(el, out);
+    return out;
+  }
+  if (node.type === 'AssignmentPattern') return patternNames(node.left, out);
+  if (node.type === 'RestElement') return patternNames(node.argument, out);
+  return out;
+}
+
+/**
+ * 标出「对象名解析到本程序内建的命名空间」的成员访问节点。
+ *
+ * 为什么必须有出处分析：`NS.x = 1` 里的 `NS` 可能压根不是本程序的对象——它可以是
+ * 函数形参（外部传进来的实例）、`var B = 外部对象` 的别名、或者一个没绑定的全局。
+ * 不做出处就改名，改的是**调用方**的属性，直接跑炸。所以判据是：
+ *
+ *   一个名字在当前位置算「命名空间绑定」，当且仅当**可见作用域链上把它绑定的每一层
+ *   都把它标成命名空间**；只要有一层是普通绑定（形参 / 非对象字面量初始化 /
+ *   函数类声明 / catch / import / 解构 / 嵌套函数形参…），就一律不算。
+ *
+ * 命名空间绑定的定义只有两种：`var|let|const X = <对象字面量>`，以及
+ * `var|let|const X = Y`（Y 在外层是命名空间）——就是 AGENTS 里点名的别名那条。
+ *
+ * 两条刻意的保守取舍，方向都是"少改名"而不是"改错名"：
+ *   1. 作用域的绑定集按**整棵子树**扫（嵌套函数的形参也算进外层）。于是
+ *      `var NS={}; function f(NS){NS.x=1}` 里外层的 NS 被内层形参遮蔽，整条都不改。
+ *   2. 不做流分析：`var NS={}; NS.x=1; NS=外部对象;` 这种先建后换绑定的写法，改名
+ *      可能改到后半个对象上。safe 模式本来就不做数据流关联（见文件头"明确不做的事"），
+ *      这里与它保持同一条口径。
+ *
+ * @param {object} program Program 节点
+ * @returns {Set<object>} 被标出的 MemberExpression 节点集合
+ */
+function namespaceMembers(program) {
+  const marked = new Set();
+  const scopes = [{ bound: new Set(), ns: new Set() }];
+
+  const isNsInParent = (name) => {
+    for (let i = scopes.length - 1; i >= 0; i--) {
+      if (scopes[i].bound.has(name)) return scopes[i].ns.has(name);
+    }
+    return false;   // 没绑定 → 全局/外部，绝不当成命名空间
+  };
+
+  // 一个作用域的绑定集：整棵子树扫一遍，嵌套函数的绑定也收进来（保守遮蔽）。
+  function scanScope(body) {
+    const bound = new Set();
+    const ns = new Set();
+    const other = new Set();
+    const bind = (names, isNs) => {
+      for (const nm of names) { bound.add(nm); (isNs ? ns : other).add(nm); }
+    };
+    const visit = (n) => {
+      if (!n || typeof n !== 'object') return;
+      if (Array.isArray(n)) { for (const c of n) visit(c); return; }
+      if (typeof n.type !== 'string') return;
+      switch (n.type) {
+        case 'VariableDeclarator': {
+          // 别名 `var B = A` 的判定顺序：先看**本作用域正在累积的**绑定，再看外层。
+          // 顺序不能反——顶层作用域是在 scanScope 的调用**之后**才挂进 scopes 的，
+          // 只查外层的话 `var A={}; var B=A;` 在顶层永远解析不出来（2026-10-15 实测：
+          // 别名那条正例 renamed 一直是 1，少改一个）。
+          const fromLocal = ns.has(n.init && n.init.name) && bound.has(n.init && n.init.name);
+          const isNs = !!n.init && (n.init.type === 'ObjectExpression'
+            || (n.init.type === 'Identifier' && (fromLocal || isNsInParent(n.init.name))));
+          bind(patternNames(n.id, []), isNs);
+          break;
+        }
+        case 'FunctionDeclaration':
+        case 'ClassDeclaration':
+          if (n.id && n.id.name) bind([n.id.name], false);
+          // 形参一律普通绑定。FunctionDeclaration 与另两种必须**一起**处理：
+          // scanScope 收的是整个函数节点，形参是 FunctionDeclaration 的直接子节点，
+          // 只处理函数表达式那两种会漏掉声明式的形参（2026-10-15 实测：
+          // `var NS={a:1}; function f(NS){NS.b=2}` 的遮蔽判不出来，多改了 b）。
+          for (const p of n.params || []) bind(patternNames(p, []), false);
+          break;
+        case 'FunctionExpression':
+        case 'ArrowFunctionExpression': {
+          for (const p of n.params || []) bind(patternNames(p, []), false);
+          if (n.id && n.id.name) bind([n.id.name], false);
+          break;
+        }
+        case 'CatchClause':
+          bind(patternNames(n.param, []), false);
+          break;
+        case 'ImportSpecifier': case 'ImportDefaultSpecifier':
+        case 'ImportNamespaceSpecifier':
+          if (n.local && n.local.name) bind([n.local.name], false);
+          else if (n.id && n.id.name) bind([n.id.name], false);
+          break;
+        case 'AssignmentExpression':
+          // 赋值给标识符在 sloppy 模式下也会建绑定，按普通绑定处理
+          if (n.left && n.left.type === 'Identifier') bind([n.left.name], false);
+          break;
+        default: break;
+      }
+      for (const k of Object.keys(n)) {
+        if (k === 'loc' || k === 'start' || k === 'end' || k === 'extra') continue;
+        const v = n[k];
+        if (Array.isArray(v)) { for (const c of v) visit(c); }
+        else if (v && typeof v.type === 'string') visit(v);
+      }
+    };
+    visit(body);
+    for (const nm of other) ns.delete(nm);
+    return { bound, ns };
+  }
+
+  // 第二遍：带着作用域栈走，标出对象解析到命名空间的成员访问。
+  const walk = (n) => {
+    if (!n || typeof n !== 'object') return;
+    if (Array.isArray(n)) { for (const c of n) walk(c); return; }
+    if (typeof n.type !== 'string') return;
+    const ty = n.type;
+    if (ty === 'MemberExpression' || ty === 'OptionalMemberExpression') {
+      if (n.object && n.object.type === 'Identifier' && isNsInParent(n.object.name)) marked.add(n);
+    }
+    let pushed = false;
+    if (ty === 'FunctionDeclaration' || ty === 'FunctionExpression'
+      || ty === 'ArrowFunctionExpression') {
+      // 必须传**整个函数节点**而不是 n.body：形参是 body 的兄弟节点，只扫 body
+      // 就把形参整个漏掉，`function f(NS){NS.x=1}` 的遮蔽判不出来（2026-10-15 实测：
+      // 遮蔽那条反例多改了 1 个属性）。
+      scopes.push(scanScope(n));
+      pushed = true;
+    }
+    for (const k of Object.keys(n)) {
+      if (k === 'loc' || k === 'start' || k === 'end' || k === 'extra') continue;
+      const v = n[k];
+      if (Array.isArray(v)) { for (const c of v) walk(c); }
+      else if (v && typeof v.type === 'string') walk(v);
+    }
+    if (pushed) scopes.pop();
+  };
+  // 顶层作用域必须先建好，否则顶层 `var NS = {…}` 在 walk 时解析不到
+  scopes[0] = scanScope(program);
+  walk(program);
+  return marked;
+}
+
+function collect(node, parent, defs, uses, nsMembers) {
   if (!node || typeof node !== 'object') return;
-  if (Array.isArray(node)) { for (const c of node) collect(c, node, defs, uses); return; }
+  if (Array.isArray(node)) { for (const c of node) collect(c, node, defs, uses, nsMembers); return; }
   if (typeof node.type !== 'string') return;
   const ty = node.type;
 
@@ -109,18 +258,41 @@ function collect(node, parent, defs, uses) {
     //
     // `super.foo = v` **不算定义**：它走原型链上的 setter，不在本类上建属性。
     thisSideName(node.left, defs);
+    // `NS.foo = v`（对象名解析到本程序内建命名空间时）同样是定义形式。少了它，
+    // "先建空对象再挂方法/常量" 这种写法一个属性都改不了——2026-10-15 实测：
+    // 40 个 seed 上 namespace 形态的属性全部原样残留。
+    // 出处判定在 namespaceMembers 里（形参 / 外部别名 / 未绑定全局一律不算），
+    // 见那里的说明。
+    if (nsMembers && nsMembers.has(node.left)) {
+      const prop = node.left.property;
+      if (node.left.computed) {
+        if (prop && prop.type === 'StringLiteral') defs.add(prop.value);
+      } else if (prop && prop.type === 'Identifier') {
+        defs.add(prop.name);
+      }
+    }
   } else if (ty === 'UpdateExpression' && node.argument
     && (node.argument.type === 'MemberExpression' || node.argument.type === 'OptionalMemberExpression')) {
     // `this.n++` 读改写，既是访问也是定义，两边都收。
     thisSideName(node.argument, defs);
     thisSideName(node.argument, uses);
+    if (nsMembers && nsMembers.has(node.argument)) {
+      const prop = node.argument.property;
+      if (node.argument.computed) {
+        if (prop && prop.type === 'StringLiteral') defs.add(prop.value);
+      } else if (prop && prop.type === 'Identifier') {
+        defs.add(prop.name);
+      }
+    }
   }
 
   for (const k of Object.keys(node)) {
     if (k === 'loc' || k === 'start' || k === 'end' || k === 'extra') continue;
     const v = node[k];
-    if (Array.isArray(v)) { for (const c of v) collect(c, node, defs, uses); }
-    else if (v && typeof v === 'object' && typeof v.type === 'string') collect(v, node, defs, uses);
+    if (Array.isArray(v)) { for (const c of v) collect(c, node, defs, uses, nsMembers); }
+    else if (v && typeof v === 'object' && typeof v.type === 'string') {
+      collect(v, node, defs, uses, nsMembers);
+    }
   }
 }
 
@@ -201,7 +373,9 @@ export default function renameProperties(ast, options, ctx) {
 
   const defs = new Set();
   const uses = new Set();
-  collect(program, null, defs, uses);
+  // 出处分析必须在 collect 之前跑完：它要看到整棵 AST 才能判作用域
+  const nsMembers = namespaceMembers(program);
+  collect(program, null, defs, uses, nsMembers);
 
   // 只以**字符串形态**出现的属性名（`o['x']`、`{'x': 1}`）不在 ctx.usedNames 里：
   // 那个集合的种子来自 Identifier 节点（obfuscate.js 的收集），而字符串形态的属性名

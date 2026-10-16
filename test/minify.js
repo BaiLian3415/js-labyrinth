@@ -1120,26 +1120,73 @@ process.stdout.write(a + '|' + b + '\\n');`;
     ok(sbSawStatic, '静态块形态在产物里保留（生成器没把它丢掉）', '');
     ok(!sbLeft, '静态属性名在属性位零残留', sbLeft);
 
-    // 顺带钉住两条**已知不覆盖**的边界，防止将来有人以为它们是 bug 去"修"，
-    // 或者反过来以为它们已经覆盖了：
+    // 顺带钉住一条**已知不覆盖**的边界，防止将来有人以为它是 bug 去修：
     //  ① 高风险白名单内的属性名原样保留（value/state/type…）——刻意行为。
-    //  ② `类名.属性 = v` / `对象名.属性 = v` **不算定义**：`obj` 可能是函数形参
-    //     （外部传入的对象），也可能有别名（var B = A; B.x = 1），不做出处分析就改名
-    //     会改坏调用方。要覆盖它得先做别名分析，那是另一件事。
     {
       const wl = 'var o = { value: 3 };\nprocess.stdout.write(String(o.value));';
       const rWl = obfuscate(wl, { preset: 'low', shell: false, mangle: false, renameProperties: true,
         objectKeyEncoding: false, stringArray: false, seed: 7 });
       ok(/\.value\b/.test(rWl.code) && runNode(rWl.code, 'rp-wl.js').trim() === '3',
         '高风险白名单内的属性名原样保留（value 不改名，刻意行为）');
-      const ns = 'var NS = {};\nNS.tag = "t";\nfunction read(){ return NS.tag; }\nprocess.stdout.write(read());';
-      const rNs = obfuscate(ns, { preset: 'low', shell: false, mangle: false, renameProperties: true,
-        objectKeyEncoding: false, stringArray: false, seed: 7 });
-      const stNs = rNs.stats.find((s) => s.pass === 'renameProperties');
-      ok(!!stNs && stNs.result.renamed === 0 && /\.tag\b/.test(rNs.code)
-        && runNode(rNs.code, 'rp-ns.js').trim() === 't',
-        '对象名.属性 = v 不算定义（改动需要别名分析，当前明确不覆盖）',
-        JSON.stringify(stNs && stNs.result));
+    }
+
+    // `对象名.属性 = v`：出处分析（renameProperties 的 namespaceMembers）落地后
+    // **算定义面**了。判据是"对象名在当前位置解析到的每一层绑定都是命名空间"，
+    // 命名空间只有两种：`var|let|const X = <对象字面量>` 与它的别名。
+    // 2026-10-15 落地前这一整块被列为"已知不覆盖"；下面把它换成真覆盖 + 四条
+    // **不得改**的边界（形参 / 外部别名 / 未绑定全局 / 内层遮蔽）。
+    {
+      const RP = { preset: 'low', shell: false, mangle: false, renameProperties: true,
+        objectKeyEncoding: false, stringArray: false, seed: 7 };
+      const build = (src) => obfuscate(src, RP);
+      const renamedOf = (r) => {
+        const st = r.stats.find((s) => s.pass === 'renameProperties');
+        return st ? st.result.renamed : -1;
+      };
+      // 语义与原样执行一致，是这一整组的前提：属性被合并或改错都会在这里露出来
+      const same = (src, file, want) => runNode(build(src).code, file).trim() === want;
+
+      // ① 正例：命名空间对象（含点访问、计算键形态与读改写）
+      const p1 = 'var NS={alpha:1,beta:2};NS.gamma=3;NS["delta"]=4;NS.alpha+=10;'
+        + 'process.stdout.write(NS.alpha+","+NS.beta+","+NS.gamma+","+NS["delta"]);';
+      const r1 = build(p1);
+      ok(renamedOf(r1) >= 4 && !/\balpha\b|\bgamma\b|\bdelta\b/.test(r1.code)
+        && same(p1, 'rp-ns1.js', '11,2,3,4'),
+        '对象名.属性 = v 计入定义面（命名空间对象：点访问/计算键/读改写全改到）',
+        'renamed=' + renamedOf(r1));
+
+      // ② 正例：别名链 var B = A —— AGENTS 点名的「不做出处分析就会改坏调用方」那条
+      const p2 = 'var A={p:1};var B=A;B.q=2;process.stdout.write(A.p+","+A.q+","+B.p+","+B.q);';
+      const r2 = build(p2);
+      ok(renamedOf(r2) >= 2 && !/\bq\b/.test(r2.code) && same(p2, 'rp-ns2.js', '1,2,1,2'),
+        '别名 var B = A 的 B.p = v 也计入定义面', 'renamed=' + renamedOf(r2));
+
+      // ③ 反例：对象是**函数形参**（外部传进来的实例）—— 改名就改坏调用方
+      const n3 = 'function setup(cfg){cfg.retries=3;return cfg.retries;}'
+        + 'var external={tag:"keep"};process.stdout.write(setup(external)+"|"+external.tag+"|"+external.retries);';
+      const r3 = build(n3);
+      ok(/\.retries\b/.test(r3.code) && same(n3, 'rp-ns3.js', '3|keep|3'),
+        '边界：对象名解析到形参时**不得**改名（外部实例）');
+
+      // ④ 反例：别名指向外部对象 —— 名字看着像命名空间，出处不是
+      const n4 = 'function reg(o){var alias=o;alias.w=9;return alias.w;}'
+        + 'var ext={v:1};process.stdout.write(reg(ext)+"|"+ext.v+"|"+ext.w);';
+      const r4 = build(n4);
+      ok(/\.w\b/.test(r4.code) && same(n4, 'rp-ns4.js', '9|1|9'),
+        '边界：别名指向外部对象时**不得**改名');
+
+      // ⑤ 反例：未绑定标识符（全局）
+      const n5 = 'globalThis.__zz={k:1};globalThis.__zz.j=2;process.stdout.write(String(globalThis.__zz.j));';
+      const r5 = build(n5);
+      ok(renamedOf(r5) === 0 && /\.j\b/.test(r5.code) && same(n5, 'rp-ns5.js', '2'),
+        '边界：未绑定标识符（全局）**不得**当成命名空间', 'renamed=' + renamedOf(r5));
+
+      // ⑥ 反例：内层形参**遮蔽**外层命名空间 —— 遮蔽必须生效，否则改到调用方的对象上
+      const n6 = 'var NS={a:1};function f(NS){NS.b=2;return NS.b;}'
+        + 'process.stdout.write(NS.a+"|"+f({a:0}));';
+      const r6 = build(n6);
+      ok(/\.b\b/.test(r6.code) && same(n6, 'rp-ns6.js', '1|2'),
+        '边界：内层形参遮蔽外层命名空间时**不得**改名');
     }
 
     // 解析/生成往返：自混淆要解析自己的产物，吐不回去就是整条链断掉。
