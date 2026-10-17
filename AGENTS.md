@@ -28,6 +28,10 @@ npm run build:web        # 界面 + 自混淆核心进 dist（浏览器本地执
 npm run build:web:cloud  # 云端执行形态（核心不进产物，Vercel 部署走这支）
 ```
 
+**测试按改动面选跑**（见文末「提交前自检」的映射表）：改 `vm.js` 只跑 `node test/vm.js`，
+改选项只跑 `node test/minify.js` + `node test/fingerprint.js`……`npm test` 留给发版/跨模块
+重构。`node test/selftest.js <关键字>` 是按文件名过滤的快捷方式（会跑完所有匹配的文件）。
+
 **不要手动部署，也不用为部署预生成 `dist/`**（2026-10-11 定）：仓库已绑定 GitHub
 （`origin` = `BaiLian3415/js-labyrinth`，主分支 `main`），**push 到 `main` 即自动部署**；
 `vercel.json` 的 `buildCommand` 就是 `npm run build:web:cloud`，`outputDirectory` 是
@@ -931,14 +935,33 @@ Proxy/正则/标签模板/迭代协议/属性描述符/`super`+`new.target`/私�
   Hobby）。线上段：`JSLB_LIVE_ORIGIN=https://jsobf.codeworld.dpdns.org npm test`；
   部署验收：`npm run verify -- <域名>`（**注意 `npm test` 的线上段与它都会真打线上**）。
 
-## 提交前自检
+## 提交前自检（按改动面选测，**不默认跑全套**）
 
-```bash
-JSLB_SKIP_LIVE=1 npm test        # 全绿才收工
-node test/passes-basic.js        # 改 pass 时先跑这组
-node test/vm.js                  # 改 vm 时先跑这组
-npm run build:web && npm run verify:enc   # 改 shell / 加密层 / tools/build 后必跑
-```
+**默认只跑与改动文件对应的那一组。** 全套 `npm test` 要 ~20 分钟，且大半时间花在
+自防御/域名锁定的中毒样本 60s 超时上——日常提交不需要它。按下面的映射表挑：
+
+| 改了什么 | 跑什么（单个文件，分钟级） |
+| --- | --- |
+| `src/passes/vm.js` | `node test/vm.js`（动到嵌套/分桶时再加 `node test/vmp.js`） |
+| `src/passes/<其它 pass>.js` | `node test/passes-basic.js`；防御类另加 `node test/passes-defense.js` |
+| `src/ast/*`、parser、生成器 | `node test/passes-basic.js` + `node test/core-obfuscate.js` |
+| `src/obfuscate.js` / `options*.js` / `presets.js` / `i18n.js` / `plans.js` | `node test/minify.js` + `node test/fingerprint.js`（三处同步的断言都在这） |
+| `src/passes/shell*.js` / `rtgen.js` / `rtlib.js` / `shellemit.js` | `node test/shell-bytecode.js` + `node test/shell-wasm.js` |
+| `src/passes/stringArray.js` / `integrityCheck.js` / `antiCDP.js` / `banner.js` | `node test/passes-defense.js` + `node test/anti-analysis.js` |
+| `src/index.js` 导出面 / `server/*` / `api/*` / `web/*` | `node test/web-pipeline.js`（改 API 再加 `node test/orders-api.js`） |
+| `tools/build/*`、模块体加密层 | `npm run build:web && npm run verify:enc`（**必跑**，见下） |
+| `test/<x>.js` 自身 | `node test/<x>.js`（只跑改的那一个） |
+| 只改注释/文档/文案（行为不变） | 不跑测试；最多 `node --check <改过的 js>` |
+
+- **只有这几种情况才跑全套**：发版前、跨模块重构、改公共基建（`ast/*`、`platform.js`、
+  `utils/rand.js`、`pipeline.js`、`rtlib.js`），或确实拿不准改动会波及哪些 pass。
+  命令：`JSLB_SKIP_LIVE=1 npm test`（线上段另加 `JSLB_LIVE_ORIGIN=<域名> npm test`）。
+- **新加回归要小而准**：单样本 + 必要的少量 seed（只有"统计型结论"才扫 ≥8 seed），
+  不要为一个改动新增多配置矩阵——矩阵留给"专门找 P0"的排查轮，日常提交只钉住这次的行为。
+- **否定结论才需要多形态/多 seed**；正向回归用最小样本即可（反向也成立：单 seed 的
+  "都好"不能证明没问题）。
+- **深/贵档位只构建、不执行**：像 `vmLayers >= 4` 这类分钟到小时级的配置，回归只核对
+  `stats` 与产物结构，别拿"跑通"当门槛（也不要把时间花在等它跑完上）。
 
 `verify:enc` 那一条不是可选项：`npm test` 只覆盖 `src/` 的明文源码，碰不到 `dist/`，
 而模块体加密层的静默失败模式（导出名枚举漏一个、相对说明符改写漏一种形态）在构建期
