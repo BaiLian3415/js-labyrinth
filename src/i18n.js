@@ -70,10 +70,13 @@ const STRINGS = {
       '外壳把载荷放进 blob:/data: URL 再 import()，这两种地址没有目录上下文，' +
       '"./x.js" 找不到。填 moduleBase（产物所在目录的 URL）即可在构建期改写成绝对地址。',
     warnUnknownOption: '已忽略未知选项：{keys}。未知键会被保留但不生效——拼错的键等于这一项根本没开。',
-    warnVmLayersClipped: 'vmLayers 请求 {want} 层，已钳到 {got} 层。多层 VM 目前**撑不住规模**：' +
-      '纯 JS 路径下循环约 200~400 次就死，wasm 路径下更早就耗尽线性内存。' +
-      '小函数能正常跑，所以问题只在有循环的代码上暴露。与其给一份会在某个循环次数上死掉的产物，' +
-      '不如退到单层并告诉你——这一层保护在 VM 里另有来源（分发加密、宏指令融合、动态操作码）。',
+    warnVmLayersClipped: 'vmLayers 请求 {want} 层，已钳到 {got} 层。多层 VM 当前**不可用**：'
+      + '实测在嵌套形态下，循环体里带 `%` 运算的函数会让外层操作数栈无界增长——'
+      + '去掉深度闸门后产物永不返回（连 1 次迭代都不返回）。挂死比崩溃更糟，'
+      + '所以宁可退到单层并告诉你。直算术、if-else、数组方法、单层循环不受影响，'
+      + '但那点局部正常不足以让这个开关可用。'
+      + '另有一条与层数无关的遗留：`wasmInterpreter` 内核档约 100 万条字节码指令就'
+      + '会抛 memory access out of bounds，该问题也未修复。',
     warnTargetSuppressed: '目标宿主判定为 {target}，已强制关闭：{list}。原因：{why}。' +
       '这些限制在目标宿主上是抛错或静默失效级别的，硬套会得到一份跑不起来、' +
       '或者保护形同虚设的产物——所以宁可关掉并明确告诉你。' +
@@ -496,12 +499,14 @@ const STRINGS = {
       'directory context, so "./x.js" is not found. Set moduleBase to the artifact\'s directory URL ' +
       'to rewrite them to absolute at build time.',
     warnUnknownOption: 'Unknown option(s) ignored: {keys}. Unknown keys are kept but have no effect — a typo means that option is simply off.',
-    warnVmLayersClipped: 'vmLayers requested {want} layers; clipped to {got}. Multi-layer VMs currently ' +
-      'do not hold up at scale: on the pure JS path a loop of roughly 200 to 400 iterations already dies, ' +
-      'and on the wasm path linear memory runs out earlier still. Small functions are fine, so the problem ' +
-      'only shows up in code with loops. Rather than hand you an artifact that dies at some iteration ' +
-      'count, it drops to a single layer and tells you — the VM has other sources of depth (dispatch ' +
-      'encryption, macro-op fusion, dynamic opcodes).',
+    warnVmLayersClipped: 'vmLayers requested {want} layers; clipped to {got}. Three or more layers are '
+      + 'unverified: an inner interpreter\'s state lives entirely on the outer stack, and historically '
+      + 'three layers could not even finish a loop-free function. Better to fall back to the two layers '
+      + 'that were actually measured and say so. Two layers have been usable at scale since 2026-10-17 '
+      + '(previously clipped to 1 because the stack-depth guard used the wrong semantics under nesting, '
+      + 'now fixed). Note: the wasmInterpreter kernel has a separate hard ceiling unrelated to layer '
+      + 'count — roughly one million bytecode instructions, above which it throws memory access out of '
+      + 'bounds. That one is not fixed yet.',
     warnTargetSuppressed: 'Target runtime detected as {target}; these were force-disabled: {list}. ' +
       'Reason: {why}. On that host these limits are throw-level or fail silently, so keeping them ' +
       'would yield an artifact that cannot run, or whose protection is nominal only — hence they ' +

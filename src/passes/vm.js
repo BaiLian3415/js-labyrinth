@@ -737,6 +737,16 @@ function compileFunction(fn, ctx) {
   const stepLimit = (opts.vmStepLimit === undefined || opts.vmStepLimit === null)
     ? 100000000
     : (opts.vmStepLimit > 0 ? opts.vmStepLimit | 0 : 0);
+  // 操作数栈深度上限（固定常数）：病态深嵌套的表达式不允许无界撑爆 S。
+  //
+  // **别动这一条（2026-10-17 实测）**：它在嵌套形态（ctx.__vmDepth > 0）下的**语义确实
+  // 是错的**——那时 S 的深度随已执行的内层指令数增长、与表达式嵌套深度无关，4096 于是
+  // 成了天花板而不是护栏。但它同时是**唯一**把嵌套形态的"无界增长"变成显式报错的闸门：
+  // 实测 `vmLayers=2` 下，循环体里带 `%` 的函数（`s += (i*7+n)%13`）会让外层 S 无界增长，
+  // 护栏在 4096 处抛 `vmOverrun`（历史上被记成"循环约 200~400 次就死"）；把护栏去掉
+  // 之后，同一个缺陷变成**永久挂死**（连 1 次迭代都不返回）。
+  // 也就是说：在真正修掉那个增长缺陷之前，这道"语义错但有界"的闸门是承重的。
+  // 要放开层数，顺序必须是：先修增长 → 再谈这道护栏的语义 → 最后才去掉它。
   const stackDepthCap = 4096;
 
   // 编译期密钥（vmCompileKey）。给了密钥时，本函数的密钥材料不再取自 randInt，
@@ -2871,6 +2881,7 @@ function compileFunction(fn, ctx) {
         t.identifier('Error'), [t.stringLiteral(msg('vmOverrun'))]))]))] : []),
     // 操作数栈深度护栏：正常编译产物的栈深由编译期就可推出上界，
     // 远低于该值；撞到这条说明字节码/解释器状态已损坏，显式抛错优于在坏状态下继续。
+    // 嵌套形态下这道界是"语义错但有界"的承重闸门（把无界增长变成报错），别去掉。
     t.ifStatement(
       morph.relCmp('>',
         morph.memberDot(S, 'length'),
