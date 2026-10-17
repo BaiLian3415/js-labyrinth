@@ -299,9 +299,11 @@ export default {
     "vmThreshold": 1,
     "vmDecoyOps": 1024,
     "vmDispatchEnc": true,
-    // 2026-10-10：这里曾设 vmLayers: 2，已撤回。多层 VM 在**规模**上是坏的——见
-    // obfuscate.js 里 vmLayers 钳位注释：2 层在纯 JS 路径下循环约 200~400 次就死，
-    // wasm 路径下更早就线性内存耗尽。小函数能过，所以只测小样本会全绿。
+    // 2026-10-10：这里曾设 vmLayers: 2，已撤回；2026-10-17 定位到"挂死"真因（分桶
+    // 哈希退化让部分构建的分发退化成线性扫描，见 obfuscate.js 的钳位注释）并修好后，
+    // 层 2 才真正可用。预设仍不设 2：嵌套解释器的每步开销约为单层的百倍以上
+    // （实测 f(4) 三行函数 ~16ms、20000 次循环 ~44s），属于用户按热点函数自己权衡的
+    // 选项，不该替所有人默认打开。3 层仍钳到 2。
     // 2026-10-01 由 true 改为 false。max 档的 wasmInterpreter 为 true，而分块自解密
     // 在 WASM 解释器内核档没有对应物（模块内的解释器按绝对下标硬编码，块边界不存在），
     // 那一处 vm.js 的 `!!opts.vmBlockDecrypt && !ctx.__vmWasmShared && enc` 会把它整项

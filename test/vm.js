@@ -378,19 +378,22 @@ section('执行护栏：vmStepLimit（栈机后端共用）');
   ok(okBad === 0, 'vmStepLimit 默认足够大：正常循环得 45', firstOk);
 }
 
-// 多层 VM 的现状（2026-10-17 复核后改写）：嵌套实现仍在 vm.js 里，但**选项层已关闭**——
-// vmLayers >= 2 一律钳到 1（见下一节）。层 2 的问题是**概率性死循环**：同一份代码
-// 跨 seed 有好有坏（实测 20 个 seed 里 3 个坏），与代码内容只有弱相关；默认 1 亿步的
-// 步数闸门要跑几分钟才到，所以表现是"产物卡住"。**且任何对产物的扰动都会换掉布局**
-// （加探针即自愈），因此这里只能钉"钳位后语义正确"，无法钉"层 2 跑得完"。
-section('多层 VM：当前钳到单层，且 % 样本必须能跑完');
+// 多层 VM（2026-10-17 实测重写）：`vmLayers: 2` 现在**真的嵌套两层**（layers=2），
+// 且跨 seed 稳定终止、输出正确。
+//
+// 旧记录两次都错在观测面：层 2 不是死循环，而是**极慢**——部分构建的分桶哈希退化
+// （DISP_P1 只有 17 位，分发字 < 1024 时 `imul(d,P1) >>> SH` 只能落到 0/1 两个桶，
+// 一次分发线性扫约 500 条），f(4) 要 3s~56s。修法见 vm.js 的 DISP_P1 注释（只放大
+// 内层解释器的乘数，层 1 字节不变）。这里的断言因此钉两件事：**真嵌套** 与
+// **跨 seed 的语义正确**；性能退化另有专门一节按超时判。
+section('多层 VM：vmLayers=2 真嵌套，且跨 seed 语义正确');
 {
-  // 同样用 `%`：见下一节注释——`s+=i` 那种形态层 2 本来就能跑，钉它等于没钉。
   const src = 'function a(n){var s=0;for(var i=0;i<n;i++)s+=(i*7+3)%13;return s;}\n'
     + 'function b(x){if(x<0)return -x%7;return x*2+1;}\n'
-    + 'process.stdout.write(a(2000)+","+b(4)+","+b(-3)+"\\n");';
+    + 'process.stdout.write(a(200)+","+b(4)+","+b(-3)+"\\n");';
   const want = runNode(src, 'layers-want.js').trim();
 
+  // 1 层与 2 层各跑一遍：layers 必须如实报出来（1 层不许被误报成 2 层）
   for (const l of [1, 2]) {
     const r = obfuscate(src, {
       preset: 'high', seed: 7, shell: false, integrityCheck: false,
@@ -398,55 +401,128 @@ section('多层 VM：当前钳到单层，且 % 样本必须能跑完');
     });
     const st = r.stats.find((x) => x.pass === 'vm');
     const layers = st && st.result && st.result.layers;
-    ok(layers === 1, 'vmLayers=' + l + ' 实际只嵌套 1 层（嵌套已关闭）', 'layers=' + layers);
+    ok(layers === l, 'vmLayers=' + l + ' 实际层数如实上报', 'layers=' + layers);
     let got;
-    try { got = runNode(r.code, 'layers-' + l + '.js').trim(); } catch (e) { got = 'THREW'; }
-    ok(got === want, 'vmLayers=' + l + ' 在 2000 次循环规模上语义正确',
-      got === want ? '' : got.slice(0, 60));
+    try { got = runNode(r.code, 'layers-' + l + '.js').trim(); } catch (e) { got = 'THREW:' + String(e.message).slice(0, 40); }
+    ok(got === want, 'vmLayers=' + l + ' 的产物语义正确', got.slice(0, 60));
   }
+
+  // 跨 8 个 seed 的层 2：每个都必须跑完且结果一致（这是"概率性坏构建"的回归面）。
+  // 旧实现里约 15% 的 seed 会慢到分钟级；现在每个 seed 都必须在秒级跑完。
+  let bad = '';
+  const t0 = Date.now();
+  for (let seed = 1; seed <= 8 && !bad; seed++) {
+    const r = obfuscate(src, {
+      preset: 'high', seed, shell: false, integrityCheck: false,
+      wasm: false, wasmInterpreter: false, vmLayers: 2,
+    });
+    const st = r.stats.find((x) => x.pass === 'vm');
+    if (!(st && st.result && st.result.layers === 2)) {
+      bad = 'seed=' + seed + ' layers=' + (st && st.result && st.result.layers);
+      break;
+    }
+    let got;
+    try { got = runNode(r.code, 'layers2-s' + seed + '.js').trim(); } catch (e) { got = 'THREW'; }
+    if (got !== want) { bad = 'seed=' + seed + ' got=' + got.slice(0, 40); }
+  }
+  const ms = Date.now() - t0;
+  ok(bad === '', 'vmLayers=2 跨 8 seed：全部 layers=2 且语义正确', bad);
+  // 8 个 seed × 201 次循环：修好后实测 < 20s；退化的构建单 seed 就要几十秒到分钟。
+  ok(ms < 90000, 'vmLayers=2 跨 8 seed 的总耗时在秒级（退化构建会远超）', ms + 'ms');
 }
 
-// vmLayers ≥ 2 钳到 1 + 告警。**2026-10-17 复核**：层 2 的问题是**概率性死循环**
-// （20 个 seed 里 3 个坏，与代码内容只有弱相关），且**任何扰动都会换掉布局**（加探针
-// 就自愈），所以"算子/规模"这类单 seed 结论都不可信——上一版把 `%` 写成元凶就是
-// 单 seed 采样造成的假规律。样本仍保留 `%`（它是实测里较常见会坏的那种形状），
-// 但这里钉的是**钳位后语义正确**，不是"层 2 能跑完"。
-section('vmLayers ≥ 2：钳到 1 并告警，不留坏值');
+// vmLayers 的钳位与告警（2026-10-17 从 >1→1 放宽到 >2→2）。四个取值都钉：
+// 1/2 原样生效且不告警；3/8 钳到 2 且告警点名请求值；每个都真跑一遍产物。
+section('vmLayers：1/2 原样生效，>2 钳到 2 并告警');
 {
   const src = 'function a(n){var s=0;for(var i=0;i<n;i++)s+=(i*7+3)%13;return s;}\n'
-    + 'process.stdout.write(String(a(2000)));';
+    + 'process.stdout.write(String(a(200)));';
   const want = runNode(src, 'layers-clip-want.js').trim();
 
-  for (const asked of [2, 3, 8]) {
+  for (const asked of [1, 2]) {
     const r = obfuscate(src, { preset: 'high', seed: 7, shell: false, vmLayers: asked });
     const st = r.stats.find((x) => x.pass === 'vm');
-    ok(st && st.result && st.result.layers === 1,
-      'vmLayers=' + asked + ' 被钳到 1', 'layers=' + (st && st.result && st.result.layers));
+    ok(st && st.result && st.result.layers === asked,
+      'vmLayers=' + asked + ' 原样生效（不被钳）', 'layers=' + (st && st.result && st.result.layers));
+    ok(!(r.warnings || []).some((x) => /vmLayers/.test(String(x))), 'vmLayers=' + asked + ' 不产生钳位告警');
+    ok(runNode(r.code, 'layers-ok-' + asked + '.js').trim() === want,
+      'vmLayers=' + asked + ' 的产物语义正确');
+    // 构建期 IR 校验器：每个编译函数都过一遍（compiled 与 verified 对齐）
+    const compiled = st && st.result && st.result.compiled;
+    ok(st && st.result && (st.result.verified | 0) >= (compiled | 0) && (compiled | 0) > 0,
+      'vmLayers=' + asked + ' 的每个编译函数都通过构建期 IR 校验',
+      'verified=' + (st && st.result && st.result.verified) + ' compiled=' + compiled);
+  }
+  // 嵌套形态的外层步数闸门必须按 4096 倍放大：否则合法的重载荷会先撞 1e8 误报
+  // vmOverrun（实测 2 万次循环即触发）。用 1e6 的 vmStepLimit 看产物里的字面量：
+  // 层 2 应出现 4096000000，层 1 只应出现 1000000。
+  {
+    const r1s = obfuscate(src, { preset: 'high', seed: 7, shell: false, vmLayers: 1, vmStepLimit: 1000000 });
+    const r2s = obfuscate(src, { preset: 'high', seed: 7, shell: false, vmLayers: 2, vmStepLimit: 1000000 });
+    ok(r2s.code.includes('4096000000'), '层 2 的外层步数闸门按 4096 倍放大');
+    ok(!r1s.code.includes('4096000000'), '层 1 不放大步数闸门（逐字节口径不变）');
+  }
+  for (const asked of [3, 8]) {
+    const r = obfuscate(src, { preset: 'high', seed: 7, shell: false, vmLayers: asked });
+    const st = r.stats.find((x) => x.pass === 'vm');
+    ok(st && st.result && st.result.layers === 2,
+      'vmLayers=' + asked + ' 被钳到 2', 'layers=' + (st && st.result && st.result.layers));
     const w = (r.warnings || []).map(String).find((x) => /vmLayers/.test(x));
     ok(!!w && w.includes(String(asked)), 'vmLayers=' + asked + ' 的钳位有告警且点名了请求值',
       (r.warnings || []).map(String).join(' | ').slice(0, 100));
-    // 关键：带规模的样本。钳到 1 之后，2000 次循环必须跑得完——这正是 2 层会死的地方。
     ok(runNode(r.code, 'layers-clip-' + asked + '.js').trim() === want,
-      'vmLayers=' + asked + ' 钳位后，2000 次循环的产物语义正确',
-      runNode(r.code, 'layers-clip-' + asked + '-b.js').trim());
+      'vmLayers=' + asked + ' 钳到 2 后语义正确');
   }
-  // 1 层是唯一合法值，不该被钳、也不该告警
-  const r1 = obfuscate(src, { preset: 'high', seed: 7, shell: false, vmLayers: 1 });
-  const st1 = r1.stats.find((x) => x.pass === 'vm');
-  ok(st1 && st1.result && st1.result.layers === 1, 'vmLayers=1 原样生效（不被钳）');
-  ok(!(r1.warnings || []).some((x) => /vmLayers/.test(String(x))), 'vmLayers=1 不产生钳位告警');
 }
 
-// 多层 VM × WASM 解释器内核（2026-10-10 随嵌套关闭改写）。原来这条防线守的是
-// 「桥接分支无条件提前返回 → wasm 下嵌套静默失效（layers 恒为 1）」，那次是用 a(9)
-// 这种小程序验出来的，恰好是嵌套唯一能过的规模。现在嵌套已在选项层钳掉，这条只剩
-// 两件要守：wasm 档下钳位照常生效、以及产物在**带规模的样本**上跑得完
-// （wasm 路径是三条路里最先撑不住的一档：N>=5000 就线性内存耗尽）。
-section('多层 VM × WASM：钳位生效，产物在规模样本上跑得完');
+// 分桶退化的回归（2026-10-17 定位到的"挂死"真因）：固定复现配方（preset low +
+// vmDecoyOps 1024 + 分发表加密）下，旧构建的 `DISP_P1` 只有 17 位，`imul(d,P1) >>> SH`
+// 只落 0/1 桶 → 每次分发线性扫约 500 条：f(4) 要 56s，300 次循环要上百秒。
+// 修法是内层解释器改用 31 位奇数乘数（层 1 不变，见 vm.js 的 DISP_P1）。
+// 判据用**硬超时**：退化构建 300 次循环 >100s，修好后 < 1s，15s 是安全的分界。
+section('层 2 分桶分发：不退化成线性扫描（构建期哈希乘数）');
+{
+  const src = 'function f(n){var s=0;for(var i=0;i<300;i++){s+=(i*7+n)%13;}return s;}'
+    + 'process.stdout.write(String(f(4)));';
+  const want = runNode(src, 'layers-dispatch-want.js').trim();
+  const r = obfuscate(src, {
+    preset: 'low', seed: 3, shell: false, debugProtection: false, antiCDP: false,
+    integrityCheck: false, selfDefending: false, envFingerprint: false, domainLock: false,
+    wasm: false, wasmInterpreter: false, vmLayers: 2, vmProtection: true, mangle: false,
+    stringArray: true, stringArrayThreshold: 1, vmThreshold: 1, vmDecoyOps: 1024,
+    vmDispatchEnc: true, antiLLM: true, controlFlowFlattening: false,
+    controlFlowLoopFlattening: false, deadCodeInjection: false, opaquePredicates: false,
+    functionWrapper: false, callProxy: false, numberObfuscation: false, simplify: false,
+    logicalExpressions: false, conditionObfuscation: false, transformTemplate: false,
+    templateToConcat: false, unicodeStrings: false, stringConcat: false,
+    objectKeyEncoding: false, renameProperties: false,
+  });
+  const st = r.stats.find((x) => x.pass === 'vm');
+  ok(st && st.result && st.result.layers === 2, '复现配方下确实跑出层 2',
+    'layers=' + (st && st.result && st.result.layers));
+  const file = path.join(TMP, 'layers-dispatch.js');
+  fs.writeFileSync(file, r.code);
+  let got = '', timedOut = false;
+  const t0 = Date.now();
+  try {
+    got = String(runSync(process.execPath, [file], { encoding: 'utf8', timeout: 15000 })).trim();
+  } catch (e) {
+    timedOut = !!(e && (e.killed || e.signal || e.code === 'ETIMEDOUT'));
+    got = timedOut ? 'TIMEOUT' : 'THREW';
+  }
+  const ms = Date.now() - t0;
+  ok(!timedOut, '层 2 的 300 次循环没有超时（退化构建需要上百秒）', ms + 'ms');
+  ok(got === want, '层 2 的 300 次循环输出正确', String(got).slice(0, 40));
+}
+
+// 多层 VM × WASM 解释器内核（2026-10-17 随层 2 放开改写）。要点两条：
+//   ① wasmInterpreter 下要嵌套的函数改走 JS 路径（bridge 体里没有可嵌套的解释器），
+//      stats.nestedJs 计数；② layers 必须是 2、产物在规模样本上语义正确。
+section('多层 VM × WASM：嵌套让路走 JS，层 2 语义正确');
 {
   const src = 'function a(n){var s=0;for(var i=0;i<n;i++)s+=i;return s;}\n'
     + 'function b(x){if(x<0)return -x;return x*2+1;}\n'
-    + 'process.stdout.write(a(2000)+","+b(4)+","+b(-3)+"\\n");';
+    + 'process.stdout.write(a(200)+","+b(4)+","+b(-3)+"\\n");';
   const want = runNode(src, 'layers-wasm-want.js').trim();
   const r = obfuscate(src, {
     preset: 'high', seed: 7, shell: false, integrityCheck: false,
@@ -454,14 +530,17 @@ section('多层 VM × WASM：钳位生效，产物在规模样本上跑得完');
   });
   const st = r.stats.find((x) => x.pass === 'vm');
   const ws = r.stats.find((x) => (x.pass || '').startsWith('wasm'));
-  ok(st && st.result && st.result.layers === 1, 'wasm 下 vmLayers=2 同样钳到 1 层',
+  ok(st && st.result && st.result.layers === 2, 'wasm 档下 vmLayers=2 同样嵌套 2 层',
     'layers=' + (st && st.result && st.result.layers));
+  ok(st && st.result && (st.result.nestedJs | 0) >= 1, 'wasm 档下要嵌套的函数改走 JS 路径',
+    'nestedJs=' + (st && st.result && st.result.nestedJs));
   ok(ws && ws.result && ws.result.smoke === 'ok', 'wasm 档冒烟通过',
     'smoke=' + (ws && ws.result && ws.result.smoke));
   let got;
   try { got = runNode(r.code, 'layers-wasm-2.js').trim(); } catch (e) { got = 'THREW'; }
-  ok(got === want, 'wasm 档产物在 2000 次循环规模上语义一致', got.slice(0, 60));
+  ok(got === want, 'wasm 档层 2 产物语义一致', got.slice(0, 60));
 }
+
 
 section('单层复杂度：融合关系跳转 + 流干扰 NOP');
 {

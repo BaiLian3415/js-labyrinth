@@ -731,22 +731,26 @@ function compileFunction(fn, ctx) {
 
   // 执行护栏（原嵌套内层档的可信内核特性，现并入本解释器）：
   //   · 指令步数上限：单次调用里解释器最多执行多少条字节码指令，超了抛错。
-  //     0 = 关闭检查。默认给得很大，只在真正失控（死循环）时触发，
-  //     正常业务负载不会撞到这条线。
+  //     0 = 关闭检查。默认给得很大，只在真正失控（死循环）时触发。
   //   · 操作数栈深度上限（固定常数）：病态深嵌套的表达式不允许无界撑爆 S。
   const stepLimit = (opts.vmStepLimit === undefined || opts.vmStepLimit === null)
     ? 100000000
     : (opts.vmStepLimit > 0 ? opts.vmStepLimit | 0 : 0);
+  // 嵌套形态（ctx.__vmDepth > 0）要把**外层**步数闸门放大：这一层数的"指令"是解释器
+  // 自身的字节码，每执行 1 条用户字节码要跑数千条外层指令（实测 2000~5000，随分桶与
+  // 干扰项规模变化）。沿用同一个 1e8 会让**合法**的重载荷先撞外层闸门——实测 2 万次
+  // 循环的内层迭代就会误报 vmOverrun，那不是防护，是把功能关掉。
+  // 语义护栏是内层（用户字节码）自己的闸门，它的计数与单层完全一致、**不放大**；
+  // 外层闸门只兜"外层解释器自己打转"这类构建缺陷，放大后仍是有界失败。
+  const outerGateLimit = (ctx.__vmDepth | 0) > 0 ? stepLimit * 4096 : stepLimit;
   // 操作数栈深度上限（固定常数）：病态深嵌套的表达式不允许无界撑爆 S。
   //
-  // **别动这一条（2026-10-17 实测）**：它在嵌套形态（ctx.__vmDepth > 0）下的**语义确实
-  // 是错的**——那时 S 的深度随已执行的内层指令数增长、与表达式嵌套深度无关，4096 于是
-  // 成了天花板而不是护栏。但它同时是**唯一**把嵌套形态的"无界增长"变成显式报错的闸门：
-  // 实测 `vmLayers=2` 下，循环体里带 `%` 的函数（`s += (i*7+n)%13`）会让外层 S 无界增长，
-  // 护栏在 4096 处抛 `vmOverrun`（历史上被记成"循环约 200~400 次就死"）；把护栏去掉
-  // 之后，同一个缺陷变成**永久挂死**（连 1 次迭代都不返回）。
-  // 也就是说：在真正修掉那个增长缺陷之前，这道"语义错但有界"的闸门是承重的。
-  // 要放开层数，顺序必须是：先修增长 → 再谈这道护栏的语义 → 最后才去掉它。
+  // 2026-10-17 更正：旧记录说"嵌套形态下 S 的深度随已执行的内层指令数增长"，**实测
+  // 不成立**——嵌套产物单次调用执行 15 万条以上外层指令、S 始终远低于该值（否则每次
+  // 都会在 4096 处抛错）。当年那条"循环 200~400 次就死"的真因是分桶退化导致极慢
+  // （见 DISP_P1 的注释），被步数/超时误读成了栈闸门在报错。
+  // 这道闸门保留为**便宜的兜底**（真正的病态深嵌套表达式仍然要挡住），但不要再把它
+  // 当成嵌套形态的关键约束；改动前先量 S 的实际长度。
   const stackDepthCap = 4096;
 
   // 编译期密钥（vmCompileKey）。给了密钥时，本函数的密钥材料不再取自 randInt，
@@ -1588,7 +1592,18 @@ function compileFunction(fn, ctx) {
   // t === d。静态能看到的只有 switch 标签（桶号，本身没有语义）和 if 的比较常数 d。
   // 想知道 d 与语义的对应关系，必须先解出字节码流密文（含位置散列与掩码轮换）拿到实际
   // 的 d 序列，直接读 case 表已经得不到编号到语义的映射。
-  const DISP_P1 = (krand(1, 0xffff) * 2 + 1) | 0;
+  // 桶号仿射参数。**乘数必须让「高位」真正随分发字变化**：桶号取的是乘积的高位
+  // （见 dispBucket 的 >>> DISP_SH），而分发字 d 落在 0..totalSlots-1（1024 档时 < 2^10）。
+  // 乘数若只有 17 位（旧写法 krand(1,0xffff)*2+1），imul(d,P1) < 2^27，右移 26 位后
+  // 只可能得到 0 或 1 —— 所有条目挤进一两个桶，分桶分发退化成**每次分发线性扫几百条**
+  // （实测 seed 3：152662 步、7531 万次比较，f(4) 要 56s）。
+  //
+  // 修法：内层解释器（ctx.__vmDepth > 0，即 vmLayers>=2 的 B2）用 31 位奇数乘数，
+  // imul 回绕后高位真正散开。**这是逐字节敏感项**：层 1（depth 0）刻意保持旧取值，
+  // 否则所有既有产物的字节都会变（硬约束：层 1 产物逐字节不变）。
+  const DISP_P1 = (ctx.__vmDepth | 0) > 0
+    ? (krand(0x10001, 0x7ffffffe) | 1)
+    : (krand(1, 0xffff) * 2 + 1) | 0;
   const DISP_Q1 = krand(1, 0xffff);
 
   // 指令集编号空间。真实操作码与干扰项共用一个稠密编号空间 0..N-1，编号来自一次全排列
@@ -1666,6 +1681,10 @@ function compileFunction(fn, ctx) {
     : Math.max(2, Math.min(6, Math.ceil(opKinds.length / 3)));
   let nbuckets = 1;
   while (nbuckets < nbRaw) nbuckets <<= 1;
+  if (platform.env('DSH_VM_DEBUG')) {
+    console.error('[vm] dispatch buckets=' + nbuckets + ' kinds=' + opKinds.length +
+      ' decoys=' + decoys.length + ' totalSlots=' + totalSlots);
+  }
   // 桶数取 2 的幂，按高位取桶，非负模退化成一次无符号右移，省掉整数除法。
   // 桶号是解释器每条指令都要算的项，这一步对热路径有实际意义。取高位还消除了
   // 桶号只由分发字低位决定的下位相关性，位与和取模都只反映 d 的低位，右移形不泄露 d mod nb。
@@ -1804,6 +1823,77 @@ function compileFunction(fn, ctx) {
       c = words[z];
     }
   }
+
+  // ------------------------------------------------------------ 构建期 IR 校验
+  //
+  // 为什么必须放在构建期：坏产物的失败形态是「能出包、能跑、结果错 / 卡住」，而运行期
+  // 打点又会改变字节码布局（多一条语句就换一套布局，加探针即自愈），所以观测面只能是
+  // 这里——求解完成后、生成产物之前，只读地重验运行期解密所依赖的不变量。校验不消费
+  // 随机数、不改 AST，因而**不改变产物字节**。
+  //
+  // 验的两条是求解器的定义式，自洽时恒成立；一旦不成立，运行期必然解出乱码：
+  //   ① 跳转携带的链值字明文 === 目标 opcode 字的前一字明文。运行时跳转后 nCHAIN
+  //      就是链值字明文，而目标字的解密要的是 chainAt[tz] = words[tz - 1]。
+  //   ② 动态操作码字 === (规范编号 − rot(前一字明文)) & rotMask。取指后加回轮换量
+  //      必须还原成规范编号，否则分发到别的动作。
+  // 顺带把操作数下标与跳转目标边界一起验掉（同类的「解出垃圾后级联」源头）。
+  //
+  // DSH_VM_VERIFY=0 可关（只给排查用；默认开，失败即构建失败，宁可不出包）。
+  if (platform.env('DSH_VM_VERIFY') !== '0') {
+    const problems = [];
+    const note = (why, detail) => { if (problems.length < 6) problems.push(why + ' ' + detail); };
+    for (let i = 0; i < code.length; i++) {
+      const e = code[i];
+      if (JUMP_KINDS.has(e.op)) {
+        const t = e.a | 0;
+        if (!(t >= 0 && t < code.length)) {
+          note('jump-target-range', 'i=' + i + ' op=' + e.op + ' t=' + t);
+        } else {
+          const tz = opZ.get(t);
+          if (tz === undefined) {
+            note('jump-target-not-opcode', 'i=' + i + ' op=' + e.op + ' t=' + t);
+          } else {
+            const cp = pos[i] + opWordWidth(e) - 1;
+            const want = tz === 0 ? CHAIN_SEED : words[tz - 1];
+            if (words[cp] !== want) {
+              note('chain-word', 'i=' + i + ' op=' + e.op + ' chainZ=' + cp +
+                ' got=' + words[cp] + ' want=' + want + ' targetZ=' + tz);
+            }
+          }
+        }
+      }
+      if (e.op === 'LDC' || e.op === 'FRAG' || e.op === 'EXEC') {
+        if (!(e.a >= 0 && e.a < consts.length)) note('const-index', 'i=' + i + ' op=' + e.op + ' a=' + e.a + ' n=' + consts.length);
+      } else if (e.op === 'LOD' || e.op === 'STR') {
+        if (!(e.a >= 0 && e.a < slotOf.size)) note('slot-index', 'i=' + i + ' op=' + e.op + ' a=' + e.a + ' n=' + slotOf.size);
+      } else if (e.op === 'GET') {
+        if (!(e.a >= 0 && e.a < getterNodes.length)) note('getter-index', 'i=' + i + ' a=' + e.a + ' n=' + getterNodes.length);
+      } else if (e.op === 'SET') {
+        if (!(e.a >= 0 && e.a < setterNodes.length)) note('setter-index', 'i=' + i + ' a=' + e.a + ' n=' + setterNodes.length);
+      } else if (e.op === 'MKS') {
+        if (!(e.a >= 0 && e.a < stringsEnc.length)) note('string-index', 'i=' + i + ' a=' + e.a + ' n=' + stringsEnc.length);
+      } else {
+        const m = MACRO_KINDS.get(e.op);
+        if (m !== undefined) {
+          const lim = [consts.length, slotOf.size, getterNodes.length, consts.length];
+          for (const w of e.args) {
+            const idx = w >> 2;
+            if (!(idx >= 0 && idx < lim[w & 3])) note('macro-operand', 'i=' + i + ' op=' + e.op + ' w=' + w + ' lim=' + lim[w & 3]);
+          }
+        }
+      }
+    }
+    if (dynOps) {
+      for (const z of opWordZ) {
+        const prev = z === 0 ? CHAIN_SEED : words[z - 1];
+        const want = (opCanon[z] - rotOf(prev)) & rotMask;
+        if (words[z] !== want) note('dyn-opcode', 'z=' + z + ' got=' + words[z] + ' want=' + want);
+      }
+    }
+    if (problems.length) throw new Error(msg('vmIrVerify', { detail: problems.join('; ') }));
+    ctx.__vmVerified = (ctx.__vmVerified | 0) + 1;
+  }
+
 
   // ---- WASM 解释器内核档：函数体降级成一句桥接调用，解释循环在共享模块内 ----
   //
@@ -2873,10 +2963,11 @@ function compileFunction(fn, ctx) {
     // 每执行一条字节码指令就 ++STEP，超过 vmStepLimit 直接抛错。
     // 死循环/失控执行不再只能靠宿主挂死兜底，而是有条可定位的失败路径。
     // vmStepLimit=0 时不生成这道闸门（产物逐字节仍只差这一项）。
-    ...(stepLimit > 0 ? [t.ifStatement(
+    // 嵌套形态用放大后的 outerGateLimit（见 stepLimit 的注释）：这一层数的是外层指令。
+    ...(outerGateLimit > 0 ? [t.ifStatement(
       t.binaryExpression('>',
         t.updateExpression('++', STEP, true),
-        t.numericLiteral(stepLimit)),
+        t.numericLiteral(outerGateLimit)),
       t.blockStatement([t.throwStatement(t.newExpression(
         t.identifier('Error'), [t.stringLiteral(msg('vmOverrun'))]))]))] : []),
     // 操作数栈深度护栏：正常编译产物的栈深由编译期就可推出上界，
@@ -3574,6 +3665,9 @@ function vm(ast, options, ctx) {
     // wasm 下为嵌套让路、改走 JS 路径的函数数（仍受 WASM 模块保护的是最内层，
     // 它以桥接形态进模块，见桥接分支的说明）。
     nestedJs: ctx.__vmNestJs | 0,
+    // 构建期 IR 校验器实际校验过的函数数（默认开启，DSH_VM_VERIFY=0 关闭）。
+    // 与 compiled 对不上就说明有函数绕过了校验路径——回归断言据此守住。
+    verified: ctx.__vmVerified | 0,
     forms: formCount,
     // WASM 内核档屏蔽掉的选项（配了但在本档不生效的）。空数组 = 没有静默失效的项。
     suppressed: suppressedByWasm,
