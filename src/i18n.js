@@ -71,10 +71,10 @@ const STRINGS = {
       '"./x.js" 找不到。填 moduleBase（产物所在目录的 URL）即可在构建期改写成绝对地址。',
     warnUnknownOption: '已忽略未知选项：{keys}。未知键会被保留但不生效——拼错的键等于这一项根本没开。',
     warnVmLayersClipped: 'vmLayers 请求 {want} 层，已钳到 {got} 层。多层 VM 当前**不可用**：'
-      + '实测在嵌套形态下，循环体里带 `%` 运算的函数会让外层操作数栈无界增长——'
-      + '去掉深度闸门后产物永不返回（连 1 次迭代都不返回）。挂死比崩溃更糟，'
-      + '所以宁可退到单层并告诉你。直算术、if-else、数组方法、单层循环不受影响，'
-      + '但那点局部正常不足以让这个开关可用。'
+      + '实测约 15% 的构建会陷进死循环（同一份代码换一个种子就好、换一个就坏），'
+      + '默认 1 亿步的护栏要跑好几分钟才到，表现就是产物卡住。'
+      + '更麻烦的是任何对产物的改动都会换掉那套字节码布局，加个探针就"自愈"，'
+      + '所以暂时无法稳定复现与修复。'
       + '另有一条与层数无关的遗留：`wasmInterpreter` 内核档约 100 万条字节码指令就'
       + '会抛 memory access out of bounds，该问题也未修复。',
     warnTargetSuppressed: '目标宿主判定为 {target}，已强制关闭：{list}。原因：{why}。' +
@@ -499,14 +499,13 @@ const STRINGS = {
       'directory context, so "./x.js" is not found. Set moduleBase to the artifact\'s directory URL ' +
       'to rewrite them to absolute at build time.',
     warnUnknownOption: 'Unknown option(s) ignored: {keys}. Unknown keys are kept but have no effect — a typo means that option is simply off.',
-    warnVmLayersClipped: 'vmLayers requested {want} layers; clipped to {got}. Three or more layers are '
-      + 'unverified: an inner interpreter\'s state lives entirely on the outer stack, and historically '
-      + 'three layers could not even finish a loop-free function. Better to fall back to the two layers '
-      + 'that were actually measured and say so. Two layers have been usable at scale since 2026-10-17 '
-      + '(previously clipped to 1 because the stack-depth guard used the wrong semantics under nesting, '
-      + 'now fixed). Note: the wasmInterpreter kernel has a separate hard ceiling unrelated to layer '
-      + 'count — roughly one million bytecode instructions, above which it throws memory access out of '
-      + 'bounds. That one is not fixed yet.',
+    warnVmLayersClipped: 'vmLayers requested {want} layers; clipped to {got}. Multi-layer VMs are '
+      + 'currently unusable: about 15% of builds get stuck in an infinite loop (the same code passes '
+      + 'with one seed and fails with the next), and the default 100M-step guard takes minutes to '
+      + 'fire, so the artifact just looks hung. Worse, any change to the emitted code re-rolls that '
+      + 'layout — adding a probe makes it "heal" — so it cannot be reproduced or fixed reliably yet. '
+      + 'Separately: the wasmInterpreter kernel has a hard ceiling around one million bytecode '
+      + 'instructions and throws memory access out of bounds past it; that one is not fixed either.',
     warnTargetSuppressed: 'Target runtime detected as {target}; these were force-disabled: {list}. ' +
       'Reason: {why}. On that host these limits are throw-level or fail silently, so keeping them ' +
       'would yield an artifact that cannot run, or whose protection is nominal only — hence they ' +
