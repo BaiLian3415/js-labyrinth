@@ -101,6 +101,51 @@ section('卡密与令牌');
   ok(ht.includes('全部通过'), 'hash 实现与 node:crypto 逐位一致', ht.trim().split('\n').pop());
 }
 
+section('卡密形状判定');
+{
+  // 2026-10-17：tools/build/verify-deploy.js 原先自己写了一条
+  // `/^JSLB-[0-9A-V]{8}-[0-9A-V]{16}-[0-9A-V]{4}$/`，而字母表是
+  // `0123456789ABCDEFGHJKMNPQRSTVWXYZ` —— **W/X/Y/Z 被自己的正则判成非法**。
+  // 线上签出的 `JSLB-EX943WAZ-4SFF3T0W44FFA071-ZWJY` 完全合法却被判失败，
+  // 而 28 个字符里只要出现一个 W/X/Y/Z 就命中，那条断言约 97% 的概率假红。
+  // 现在形状判据在 codec 里（matchesCodeShape），字母表只有 ALPHABET 一个真源。
+  if (typeof codec.matchesCodeShape !== 'function') {
+    // 旧码上没有这个函数：干净地失败一条，别让整份文件崩掉（后面的断言还要跑）
+    ok(false, 'codec.matchesCodeShape 存在（部署验收的卡密形状判据）');
+  } else {
+    const key = TEST_CODE_KEY;
+    const code = codec.issueCode(key, 'plus', 30, '12345');
+    // 触发过线上假红的那条真样本（形状合法，含 W/X/Y/Z）
+    ok(codec.matchesCodeShape('JSLB-EX943WAZ-4SFF3T0W44FFA071-ZWJY'),
+      '含 W/X/Y/Z 的合法卡密被接受（旧正则 [0-9A-V] 判它非法）');
+    ok(codec.matchesCodeShape(code), '签发出的卡密形状合法', code);
+    ok(codec.matchesCodeShape(code.toLowerCase().replace(/-/g, ' ')),
+      '形状判定与 parseCode 同样容错小写与分隔符');
+    ok(!codec.matchesCodeShape('XSLB' + '0'.repeat(28)), '前缀不对被拒');
+    ok(!codec.matchesCodeShape('JSLB' + '0'.repeat(27)), '段长不足被拒（少一位）');
+    ok(!codec.matchesCodeShape('JSLB' + '0'.repeat(29)), '段长超出被拒（多一位）');
+    // I/L/O/U 不在 ALPHABET 里，但先被 deskew 归正（I/L→1、O→0、U→V），所以形状
+    // 判定必须**接受**它们——这是抄写容错，与 parseCode 同口径。判字母表是归正之后的事。
+    ok(codec.matchesCodeShape('JSLB' + 'I'.repeat(28)),
+      '易混字符 I/L/O/U 走抄写容错，形状判定接受（与 parseCode 同口径）');
+    ok(!codec.matchesCodeShape('JSLB' + '@'.repeat(28)),
+      '非字母数字字符被归一化剥掉，剩段长不足被拒');
+    ok(!codec.matchesCodeShape(''), '空串被拒');
+    ok(!codec.matchesCodeShape(null), 'null 被拒');
+    // 不漂移：形状判定不许比 parseCode 更严（parse 通过而形状不通过 = 两条规则漂移）
+    let drift = 0;
+    for (const p of ['free', 'plus', 'team', 'business']) {
+      for (const days of [0, 7, 30, 365]) {
+        const c = codec.issueCode(key, p, days, '12345');
+        if (c === null) continue;
+        if (codec.parseCode(key, c).ok !== codec.matchesCodeShape(c)) drift++;
+      }
+    }
+    ok(drift === 0, '形状判定与 parseCode 对全部签发组合一致（防两条规则漂移）',
+      '不一致 ' + drift + ' 处');
+  }
+}
+
 if (process.argv[1] && process.argv[1].endsWith('license-codec.js')) {
   const bad = report();
   cleanTmp();

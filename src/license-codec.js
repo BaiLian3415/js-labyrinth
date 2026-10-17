@@ -417,6 +417,44 @@ function issueCode(keyB64, planName, days, id, issueDay) {
 }
 
 /**
+ * 拆出卡密正文，同时给出形状判定（前缀 / 段长 / 字母表）。
+ *
+ * 这是"卡密长什么样"的**唯一实现处**：parseCode 与 matchesCodeShape 都走它，
+ * 免得两处各写一遍、漂移出两条互相不一致的规则。字母表同理，只认 ALPHABET。
+ *
+ * @param {string} raw 用户输入
+ * @returns {{ok:boolean, reason?:string, body?:string}} reason 取值与 parseCode 一致
+ */
+function splitCodeBody(raw) {
+  const flat = normalizeCode(raw);
+  if (!flat.startsWith(PREFIX)) return { ok: false, reason: 'prefix' };
+  const body = deskew(flat.slice(PREFIX.length));
+  if (body.length !== BODY_LEN) return { ok: false, reason: 'length' };
+  if (!isB32Text(body.slice(0, ID_LEN))
+    || !isB32Text(body.slice(ID_LEN, ID_LEN + INFO_LEN))
+    || !isB32Text(body.slice(ID_LEN + INFO_LEN))) return { ok: false, reason: 'alphabet' };
+  return { ok: true, body };
+}
+
+/**
+ * 卡密的**形状**判定：前缀、段长、字母表。不看校验码，也不需要密钥。
+ *
+ * 与 parseCode 的分工：parseCode 要密钥、能验真伪；本函数只回答"这串看起来是不是
+ * 我们的格式"，给"手里没有密钥、也不该拿密钥去验"的场景用（部署验收脚本、
+ * 界面上的即时格式提示）。
+ *
+ * 为什么要放在 codec 里，而不是让调用方自己写一条正则（2026-10-17 实测）：
+ * tools/build/verify-deploy.js 原先写死 `/^JSLB-[0-9A-V]{8}-…/`，而字母表是
+ * `0123456789ABCDEFGHJKMNPQRSTVWXYZ`——**W/X/Y/Z 被自己的正则判成非法**。
+ * 线上签出的 `JSLB-EX943WAZ-…-ZWJY` 完全合法却被判失败：28 个字符里只要出现
+ * 一个 W/X/Y/Z 就命中，那条断言因此约 97% 的概率假红。字母表只能有一个真源。
+ *
+ * @param {string} raw 用户输入
+ * @returns {boolean} 形状是否合法（不代表卡密真实有效）
+ */
+const matchesCodeShape = (raw) => splitCodeBody(raw).ok;
+
+/**
  * 解析并校验卡密。
  *
  * ok 为真时给出 plan、days、id、issueDay 与归一化后的 code。id 固定为十进制
@@ -431,16 +469,12 @@ function issueCode(keyB64, planName, days, id, issueDay) {
  * @returns {{ok:boolean, reason?:string, plan?:string, days?:number, id?:string, issueDay?:number, bound?:boolean, bindSeg?:string, code?:string}} 解析结果
  */
 function parseCode(keyB64, raw) {
-  const flat = normalizeCode(raw);
-  if (!flat.startsWith(PREFIX)) return { ok: false, reason: 'prefix' };
-  const body = deskew(flat.slice(PREFIX.length));
-  if (body.length !== BODY_LEN) return { ok: false, reason: 'length' };
+  const shape = splitCodeBody(raw);
+  if (!shape.ok) return { ok: false, reason: shape.reason };
+  const body = shape.body;
   const idSeg = body.slice(0, ID_LEN);
   const infoSeg = body.slice(ID_LEN, ID_LEN + INFO_LEN);
   const crcSeg = body.slice(ID_LEN + INFO_LEN);
-  if (!isB32Text(idSeg) || !isB32Text(infoSeg) || !isB32Text(crcSeg)) {
-    return { ok: false, reason: 'alphabet' };
-  }
   if (b64ToBytesSafe(keyB64) === null) return { ok: false, reason: 'key' };
   const idBig = b32ToBigInt(idSeg);
   if (idBig === null) return { ok: false, reason: 'alphabet' };
@@ -568,6 +602,7 @@ export default {
   crc20,
   issueCode,
   parseCode,
+  matchesCodeShape,
   timingSafeEqualText,
   makeToken,
   verifyToken,

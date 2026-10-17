@@ -853,6 +853,37 @@ Proxy/正则/标签模板/迭代协议/属性描述符/`super`+`new.target`/私�
 - `renameProperties` 打开时，`Object.keys`/`Proxy` 陷阱/`JSON` 观测到的是**改名后**的键名。
   那是反射可见的既定行为（与"动态键失配"同源），样本要避开，别当 bug 修。
 
+## 卡密形状判据只有一个真源（2026-10-17）
+
+- **事故**：`tools/build/verify-deploy.js` 自己写了一条
+  `/^JSLB-[0-9A-V]{8}-[0-9A-V]{16}-[0-9A-V]{4}$/` 来判"签出来的卡密像不像卡密"，
+  而卡密字母表是 `0123456789ABCDEFGHJKMNPQRSTVWXYZ`——**含 W/X/Y/Z**。
+  线上签出的 `JSLB-EX943WAZ-4SFF3T0W44FFA071-ZWJY` 完全合法却被判非法；28 个字符里
+  只要出现一个 W/X/Y/Z 就命中，那条断言每次约 **97.6% 的概率假红**
+  （`(1-4/32)^28 ≈ 0.024`）。字母表 32 个字符里有 **WXYZ 共 4 个**落在旧正则之外。
+- **为什么长期没被发现**：`npm run verify` 是**手工**工具、不进 `npm test`；而这段时间
+  这台机器连不上线上域名（域名从 `jslb.lllm.dpdns.org` 换成了
+  `jsobf.codeworld.dpdns.org`）。"手工工具 + 摸不到的线上"这个组合会让假红沉底很久。
+- **修法**：形状判据搬进 `src/license-codec.js`（`matchesCodeShape`），字母表只认
+  `ALPHABET`；`parseCode` 与它共用同一个 `splitCodeBody`（前缀/段长/字母表），
+  两条规则不可能漂移。**工具不许自己写正则**——字母表只有一个真源。
+- **判据分层要守住**：`matchesCodeShape` 回答"**格式像不像**"（不要密钥）；
+  `parseCode` 回答"**真伪**"（要密钥、验校验码）。部署验收手里没有密钥，只能用前者
+  ——别为了"更严"把密钥塞进验收脚本（本机密钥与部署的 `JSLB_CODE_KEY` 未必同源，
+  塞进去会换来一种更难归因的假红）。
+- **一条易踩的断言写法**：`I/L/O/U` 不在 `ALPHABET` 里，但 `deskew` 会先做抄写容错
+  （I/L→1、O→0、U→V），所以形状判定**必须接受**它们。想写"字母表外字符被拒"时拿 `I`
+  当样本，得到的是一条恒假断言（本条就是踩了才发现的）。真正的字母表失败分支在
+  归一化+归正之后基本不可达（`normalizeCode` 只留 `[0-9A-Z]`），留着是防御。
+- **域名这类"只写在注释/默认值里"的东西同样会漂**：`test/webfp.js` 内置过一个域名
+  默认值，迁站后就只能稳定报"站点不可达"，把**环境问题伪装成部署问题**。
+  `live-verify.js` 的做法是**不留默认值**（必须显式给）；`webfp.js` 留了默认值取便利，
+  但探活失败时会先说"这个域名来自内置默认值、可能已过期"，再给
+  `JSLB_LIVE_ORIGIN=` 的出路。
+- **当前线上域名**：`https://jsobf.codeworld.dpdns.org`（`/api/health` 报 Vercel
+  Hobby）。线上段：`JSLB_LIVE_ORIGIN=https://jsobf.codeworld.dpdns.org npm test`；
+  部署验收：`npm run verify -- <域名>`（**注意 `npm test` 的线上段与它都会真打线上**）。
+
 ## 提交前自检
 
 ```bash

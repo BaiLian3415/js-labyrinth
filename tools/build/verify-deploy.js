@@ -33,6 +33,7 @@
 import { randomBytes } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import plan from '../../src/plan.js';
+import codec from '../../src/license-codec.js';
 import { VERSION } from '../../src/version.js';
 import { ensureProxy } from '../lib/proxy.js';
 
@@ -278,7 +279,9 @@ console.log('6) POST /api/free-key');
   let okJ = null;
   try { okJ = JSON.parse(ok.text); } catch (e) { /* 非 JSON */ }
   report(ok.status === 200 && okJ && okJ.ok === true && okJ.plan === 'free' && okJ.days === 7
-    && /^JSLB-[0-9A-V]{8}-[0-9A-V]{16}-[0-9A-V]{4}$/.test(okJ.key || ''),
+    // 形状判据交给 codec（原先这里自己写 `/^JSLB-[0-9A-V]{8}-…/`，而字母表含 W/X/Y/Z，
+    // 于是合法卡密被判非法——2026-10-17 实测，约 97% 概率假红）。见 codec.matchesCodeShape。
+    && codec.matchesCodeShape(okJ.key),
     '随机机器码可签发 7 天 Free 卡',
     '实得 ' + ok.status + (okJ && okJ.key ? '  ' + String(okJ.key).slice(0, 12) + '…' : ''));
 }

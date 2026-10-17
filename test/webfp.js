@@ -29,7 +29,13 @@ import { fileURLToPath } from 'node:url';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const CHROME = process.env.JSLB_CHROME || 'C:/Program Files/Google/Chrome/Application/chrome.exe';
-const ORIGIN = (process.env.JSLB_LIVE_ORIGIN || 'https://jslb.lllm.dpdns.org').replace(/\/+$/, '');
+// 站点域名换过一次（2026-10-17：jslb.lllm.dpdns.org → jsobf.codeworld.dpdns.org），
+// 所以下面的默认值**随时可能过期**。live-verify.js 的做法是不留默认值、强制显式给
+// （理由见那里的注释）；本脚本是单机手工跑的浏览器探针，留默认值省事，代价用下面
+// 那条 ORIGIN_IS_DEFAULT 提示兜住：探活失败时先怀疑域名，再怀疑部署。
+const DEFAULT_ORIGIN = 'https://jsobf.codeworld.dpdns.org';
+const ORIGIN = (process.env.JSLB_LIVE_ORIGIN || DEFAULT_ORIGIN).replace(/\/+$/, '');
+const ORIGIN_IS_DEFAULT = !process.env.JSLB_LIVE_ORIGIN;
 
 const { chromium } = await import('playwright-core');
 
@@ -50,7 +56,13 @@ const health = await probe(ORIGIN + '/api/health');
 if (!health.ok) {
   console.error('[FAIL] 线上站点不可达：' + ORIGIN + '/api/health -> '
     + (health.status || health.err || 'unknown'));
-  console.error('       本脚本依赖线上部署，请确认网络与域名后重试。');
+  if (ORIGIN_IS_DEFAULT) {
+    console.error('       这个域名来自**脚本内置的默认值**，站点换过域名时它就过期了。');
+    console.error('       先在浏览器里确认站点是否活着，再重跑：'
+      + 'JSLB_LIVE_ORIGIN=https://<当前域名> node test/webfp.js');
+  } else {
+    console.error('       本脚本依赖线上部署，请确认网络与域名后重试。');
+  }
   process.exit(1);
 }
 console.log('线上站点：' + ORIGIN + '（health ' + health.status + '）');
