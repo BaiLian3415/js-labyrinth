@@ -431,13 +431,28 @@ section('多层 VM：vmLayers=2 真嵌套，且跨 seed 语义正确');
   ok(ms < 90000, 'vmLayers=2 跨 8 seed 的总耗时在秒级（退化构建会远超）', ms + 'ms');
 }
 
-// vmLayers 的钳位与告警（2026-10-17 从 >1→1 放宽到 >2→2）。四个取值都钉：
-// 1/2 原样生效且不告警；3/8 钳到 2 且告警点名请求值；每个都真跑一遍产物。
-section('vmLayers：1/2 原样生效，>2 钳到 2 并告警');
+// vmLayers 的钳位与告警（2026-10-17 放开到 1~8）：1/2/3 原样生效且不告警，9/16 钳到 8
+// 且告警点名请求值。运行期只用**极小**函数跑 1~3 层：每多一层，执行一条用户字节码要跑的
+// 外层指令数再乘约 175~3000（同一份 g(2)：层 2 = 11.7K 步 / 21ms，层 3 = 2.05M 步 /
+// 158ms）。4 层起是分钟到小时级，所以只验证**构建与层数上报**，绝不执行——深层的可用性
+// 由构建期闸门与代价说明兜住，不靠跑完来证明。
+section('vmLayers：1~3 原样生效，>8 钳到 8 并告警');
 {
   const src = 'function a(n){var s=0;for(var i=0;i<n;i++)s+=(i*7+3)%13;return s;}\n'
     + 'process.stdout.write(String(a(200)));';
   const want = runNode(src, 'layers-clip-want.js').trim();
+  // 小样本：只做一次加法，层 3 实测约 0.16s（vmDecoyOps=128）。
+  const tiny = 'function g(x){return x+1;}\nprocess.stdout.write(String(g(41)));';
+  const tinyOpts = {
+    preset: 'low', seed: 3, shell: false, vmProtection: true, vmThreshold: 1,
+    vmDecoyOps: 128, vmDispatchEnc: true, mangle: false, integrityCheck: false,
+    debugProtection: false, antiCDP: false, controlFlowFlattening: false,
+    controlFlowLoopFlattening: false, deadCodeInjection: false, opaquePredicates: false,
+    functionWrapper: false, callProxy: false, numberObfuscation: false, simplify: false,
+    logicalExpressions: false, conditionObfuscation: false, templateToConcat: false,
+    transformTemplate: false, unicodeStrings: false, stringConcat: false,
+    objectKeyEncoding: false, renameProperties: false,
+  };
 
   for (const asked of [1, 2]) {
     const r = obfuscate(src, { preset: 'high', seed: 7, shell: false, vmLayers: asked });
@@ -453,25 +468,52 @@ section('vmLayers：1/2 原样生效，>2 钳到 2 并告警');
       'vmLayers=' + asked + ' 的每个编译函数都通过构建期 IR 校验',
       'verified=' + (st && st.result && st.result.verified) + ' compiled=' + compiled);
   }
-  // 嵌套形态的外层步数闸门必须按 4096 倍放大：否则合法的重载荷会先撞 1e8 误报
-  // vmOverrun（实测 2 万次循环即触发）。用 1e6 的 vmStepLimit 看产物里的字面量：
-  // 层 2 应出现 4096000000，层 1 只应出现 1000000。
+
+  // 层 3：真嵌套三层 + 语义正确（极小函数）。
   {
-    const r1s = obfuscate(src, { preset: 'high', seed: 7, shell: false, vmLayers: 1, vmStepLimit: 1000000 });
-    const r2s = obfuscate(src, { preset: 'high', seed: 7, shell: false, vmLayers: 2, vmStepLimit: 1000000 });
-    ok(r2s.code.includes('4096000000'), '层 2 的外层步数闸门按 4096 倍放大');
-    ok(!r1s.code.includes('4096000000'), '层 1 不放大步数闸门（逐字节口径不变）');
+    const r3 = obfuscate(tiny, { ...tinyOpts, vmLayers: 3 });
+    const st3 = r3.stats.find((x) => x.pass === 'vm');
+    ok(st3 && st3.result && st3.result.layers === 3, 'vmLayers=3 真嵌套三层',
+      'layers=' + (st3 && st3.result && st3.result.layers));
+    let got3;
+    try { got3 = runNode(r3.code, 'layers3-tiny.js').trim(); } catch (e) { got3 = 'THREW'; }
+    ok(got3 === '42', 'vmLayers=3 的产物语义正确', String(got3).slice(0, 40));
   }
-  for (const asked of [3, 8]) {
-    const r = obfuscate(src, { preset: 'high', seed: 7, shell: false, vmLayers: asked });
+
+  // 层 4~8：只构建、只核层数（运行代价是分钟到小时级，见本节的说明）。
+  for (const asked of [4, 8]) {
+    const r = obfuscate(tiny, { ...tinyOpts, vmLayers: asked });
     const st = r.stats.find((x) => x.pass === 'vm');
-    ok(st && st.result && st.result.layers === 2,
-      'vmLayers=' + asked + ' 被钳到 2', 'layers=' + (st && st.result && st.result.layers));
+    ok(st && st.result && st.result.layers === asked,
+      'vmLayers=' + asked + ' 真嵌套并如实上报', 'layers=' + (st && st.result && st.result.layers));
+    ok(!(r.warnings || []).some((x) => /vmLayers/.test(String(x))),
+      'vmLayers=' + asked + ' 在 1~8 内不需要钳位告警');
+  }
+
+  // 超过上限：9/16 钳到 8，告警点名请求值。
+  for (const asked of [9, 16]) {
+    const r = obfuscate(tiny, { ...tinyOpts, vmLayers: asked });
+    const st = r.stats.find((x) => x.pass === 'vm');
+    ok(st && st.result && st.result.layers === 8,
+      'vmLayers=' + asked + ' 被钳到 8', 'layers=' + (st && st.result && st.result.layers));
     const w = (r.warnings || []).map(String).find((x) => /vmLayers/.test(x));
     ok(!!w && w.includes(String(asked)), 'vmLayers=' + asked + ' 的钳位有告警且点名了请求值',
       (r.warnings || []).map(String).join(' | ').slice(0, 100));
-    ok(runNode(r.code, 'layers-clip-' + asked + '.js').trim() === want,
-      'vmLayers=' + asked + ' 钳到 2 后语义正确');
+  }
+
+  // 嵌套形态的外层步数闸门按 4096^depth 放大：否则合法的重载荷会先撞 1e8 误报
+  // vmOverrun（实测 2 万次循环在 2 层即触发）。用 1e6 的 vmStepLimit 看产物里的字面量：
+  // 层 2 → 4096000000，层 3 → 16777216000000，层 4 起按 2^53-1 封顶。只查字面量、不运行。
+  {
+    const r1s = obfuscate(src, { preset: 'high', seed: 7, shell: false, vmLayers: 1, vmStepLimit: 1000000 });
+    const r2s = obfuscate(src, { preset: 'high', seed: 7, shell: false, vmLayers: 2, vmStepLimit: 1000000 });
+    const r3s = obfuscate(src, { preset: 'high', seed: 7, shell: false, vmLayers: 3, vmStepLimit: 1000000 });
+    const r4s = obfuscate(tiny, { ...tinyOpts, vmLayers: 4, vmStepLimit: 1000000 });
+    ok(r2s.code.includes('4096000000'), '层 2 的外层步数闸门按 4096 倍放大');
+    ok(r3s.code.includes('16777216000000'), '层 3 的外层步数闸门按 4096^2 倍放大');
+    ok(r4s.code.includes('9007199254740991'), '层 4+ 的闸门按 2^53-1 封顶（再高就数不准了）');
+    ok(!r1s.code.includes('4096000000') && !r1s.code.includes('16777216000000'),
+      '层 1 不放大步数闸门（逐字节口径不变）');
   }
 }
 

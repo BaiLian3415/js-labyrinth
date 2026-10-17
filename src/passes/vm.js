@@ -716,16 +716,20 @@ function compileFunction(fn, ctx) {
   const asyncFn = !!fn.async;
 
   // 层数（vmLayers）。默认 1 = 当今形态（外层函数体就是 VM 解释器）；
-  // 2 = 「解释器循环本身作为一个新函数体再 VM 编译一次」。判定必须放在 WASM
-  // 桥接分支之前：wasmInterpreter 开启时 bridge 路径会丢弃 JS 解释器（解释循环
-  // 在模块里），没有可嵌套的东西；要嵌套的函数改走 JS 解释器路径（见桥接分支
-  // 的条件），嵌套失败则回退单层 JS 解释器。async 函数不嵌套（await 要求内联
-  // 形态 A/C，而嵌套要求形态 C 且循环体含返回穿透——两者叠加语义不明，保守起见
-  // 整函数走原路径）。
+  // 2 = 「解释器循环本身作为一个新函数体再 VM 编译一次」；3 = 再把第二层解释器
+  // 循环编译一次。判定必须放在 WASM 桥接分支之前：wasmInterpreter 开启时 bridge
+  // 路径会丢弃 JS 解释器（解释循环在模块里），没有可嵌套的东西；要嵌套的函数改走
+  // JS 解释器路径（见桥接分支的条件），嵌套失败则回退单层 JS 解释器。async 函数
+  // 不嵌套（await 要求内联形态 A/C，而嵌套要求形态 C 且循环体含返回穿透——两者
+  // 叠加语义不明，保守起见整函数走原路径）。
   // depth 由外层 compileFunction 递归时推进（见文件末尾组装段）。
+  // 上限 8：每多一层，执行一条用户字节码要跑的外层指令数再乘 1000~3000（实测 2 层
+  // ≈1400~3000，3 层 ≈2e6~9e6）。这个上限只是**构建/递归的硬边界**，不是"可用"承诺：
+  // 4 层起单次调用就要分钟到小时级，见 options-meta 的提示与 i18n 告警。
+  const VM_MAX_LAYERS = 8;
   const layersWanted = (() => {
     const v = opts.vmLayers === undefined || opts.vmLayers === null ? 1 : opts.vmLayers | 0;
-    return v < 1 ? 1 : (v > 3 ? 3 : v);
+    return v < 1 ? 1 : (v > VM_MAX_LAYERS ? VM_MAX_LAYERS : v);
   })();
   const wantNestingHere = (ctx.__vmDepth | 0) + 1 < layersWanted && !asyncFn;
 
@@ -737,12 +741,17 @@ function compileFunction(fn, ctx) {
     ? 100000000
     : (opts.vmStepLimit > 0 ? opts.vmStepLimit | 0 : 0);
   // 嵌套形态（ctx.__vmDepth > 0）要把**外层**步数闸门放大：这一层数的"指令"是解释器
-  // 自身的字节码，每执行 1 条用户字节码要跑数千条外层指令（实测 2000~5000，随分桶与
-  // 干扰项规模变化）。沿用同一个 1e8 会让**合法**的重载荷先撞外层闸门——实测 2 万次
-  // 循环的内层迭代就会误报 vmOverrun，那不是防护，是把功能关掉。
+  // 自身的字节码，每执行 1 条用户字节码要跑千百条外层指令（实测 1400~3000），
+  // **每多一层再乘一次**（3 层的膨胀约 2e6~9e6）。沿用同一个 1e8 会让**合法**的重载荷
+  // 先撞外层闸门——实测 2 万次循环的内层迭代就会误报 vmOverrun，那不是防护，是把功能关掉。
   // 语义护栏是内层（用户字节码）自己的闸门，它的计数与单层完全一致、**不放大**；
-  // 外层闸门只兜"外层解释器自己打转"这类构建缺陷，放大后仍是有界失败。
-  const outerGateLimit = (ctx.__vmDepth | 0) > 0 ? stepLimit * 4096 : stepLimit;
+  // 外层闸门只兜"外层解释器自己打转"这类构建缺陷。
+  // 上限取 2^53-1：超过它 `++STEP` 在 float64 上不再精确递增，闸门会永远不触发
+  // （4 层起实际就是这个高水位，挡得住失控但耗时会很长——这正是深层的代价）。
+  const gateDepth = ctx.__vmDepth | 0;
+  const outerGateLimit = gateDepth > 0
+    ? Math.min(stepLimit * 4096 ** gateDepth, 9007199254740991)
+    : stepLimit;
   // 操作数栈深度上限（固定常数）：病态深嵌套的表达式不允许无界撑爆 S。
   //
   // 2026-10-17 更正：旧记录说"嵌套形态下 S 的深度随已执行的内层指令数增长"，**实测

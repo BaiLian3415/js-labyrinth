@@ -542,7 +542,7 @@ function obfuscate(code, userOptions) {
     if (options.antiCDP) { options.antiCDP = false; suppressedByTarget.push('antiCDP'); }
   }
 
-  // vmLayers 钳到 2。**2026-10-17 用构建期转储 + 运行时步数计数定位到真因**，整段重写：
+  // vmLayers 钳到 8。**2026-10-17 用构建期转储 + 运行时步数计数定位到真因**，整段重写：
   //
   // 旧记录两次都写错了方向（"循环体里的 % 让外层 S 无界增长"→ 单 seed 假规律；
   // "约 15% 的构建陷进死循环"→ 其实是**极慢**）。实测结论：
@@ -558,16 +558,13 @@ function obfuscate(code, userOptions) {
   //     嵌套产物跑十几万步，S 远低于 4096；当年那条"循环 200~400 次就死"是上面
   //     那个慢因被超时误读。闸门保留为便宜的兜底，见 vm.js 的同名注释。
   //
-  // 因此钳位从 `>1 → 1` 放宽到 `>2 → 2`：2 层可用（实测 seed 3 从 56s 降到 16ms，
-  // 跨 8 seed 语义正确），3 层没有实测样本、耗时不可控，仍然钳掉并告警。
-  //
-  // 另有一条遗留（与层数无关，层 1 就有）：`wasmInterpreter` 内核档单层就有一条**约
-  // 100 万条字节码指令**的硬上限（线性内存 `RCCAP = 1<<20` 句柄表，无 memory.grow），
-  // 撞上抛 `memory access out of bounds`。三条不同循环形态二分出的指令上限收敛到
-  // 1,052,800~1,063,350 ≈ 1<<20，与 seed 无关（8/8 全崩）。修它要动 wasmvm.js 的
-  // 句柄/栈容量模型，本轮不在范围内。
-  const clippedVmLayers = options.vmLayers > 2 ? options.vmLayers : 0;
-  if (clippedVmLayers) options.vmLayers = 2;
+  // 因此钳位现在是 >8 → 8（`vm.js` 的 VM_MAX_LAYERS 同样是 8）。层数只是**构建/递归**
+  // 的边界，不是"可用"承诺：每多一层，执行一条用户字节码要跑的外层指令数再乘
+  // 1400~3000（实测 2 层 ≈1400~3000，3 层 ≈2e6~9e6）。2 层实测 seed 3 从 56s 降到
+  // 16ms、跨 8 seed 语义正确；3 层可用但已是秒级；4 层起单次调用就是分钟到小时级，
+  // 只适合"几行、调用极少"的微型函数——告警把代价说清楚，但不阻止你选。
+  const clippedVmLayers = options.vmLayers > 8 ? options.vmLayers : 0;
+  if (clippedVmLayers) options.vmLayers = 8;
 
   const tNames = platform.nowMs();
   const usedNames = new Set();

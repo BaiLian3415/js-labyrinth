@@ -70,8 +70,9 @@ const STRINGS = {
       '外壳把载荷放进 blob:/data: URL 再 import()，这两种地址没有目录上下文，' +
       '"./x.js" 找不到。填 moduleBase（产物所在目录的 URL）即可在构建期改写成绝对地址。',
     warnUnknownOption: '已忽略未知选项：{keys}。未知键会被保留但不生效——拼错的键等于这一项根本没开。',
-    warnVmLayersClipped: 'vmLayers 请求 {want} 层，已钳到 {got} 层。当前只支持 1~2 层：层 2 把解释器循环本身再编译一次，'
-      + '每条用户字节码的开销约为单层的百倍以上，更深的嵌套没有实测样本、耗时不可控。'
+    warnVmLayersClipped: 'vmLayers 请求 {want} 层，已钳到 {got} 层。支持 1~8 层：每多一层，'
+      + '执行一条用户字节码要跑的外层指令数再乘约 1000~3000（2 层已明显变慢，3 层是秒级，'
+      + '4 层起只适合「几行、调用极少」的微型函数）。'
       + '另有一条与层数无关的遗留：`wasmInterpreter` 内核档约 100 万条字节码指令就会抛'
       + 'memory access out of bounds，该问题也未修复。',
     warnTargetSuppressed: '目标宿主判定为 {target}，已强制关闭：{list}。原因：{why}。' +
@@ -497,9 +498,10 @@ const STRINGS = {
       'directory context, so "./x.js" is not found. Set moduleBase to the artifact\'s directory URL ' +
       'to rewrite them to absolute at build time.',
     warnUnknownOption: 'Unknown option(s) ignored: {keys}. Unknown keys are kept but have no effect — a typo means that option is simply off.',
-    warnVmLayersClipped: 'vmLayers requested {want} layers; clipped to {got}. Only 1-2 layers are supported: '
-      + 'layer 2 recompiles the interpreter loop itself, which costs hundreds of times more per user '
-      + 'instruction, and deeper nesting has no measured sample and no bounded runtime. '
+    warnVmLayersClipped: 'vmLayers requested {want} layers; clipped to {got}. 1-8 layers are supported: '
+      + 'each extra layer multiplies the outer instructions per user instruction by roughly '
+      + '1000-3000 (layer 2 is already slower, layer 3 is seconds, and 4+ only suits tiny, '
+      + 'rarely called functions). '
       + 'Separately: the wasmInterpreter kernel has a hard ceiling around one million bytecode '
       + 'instructions and throws memory access out of bounds past it; that one is not fixed either.',
     warnTargetSuppressed: 'Target runtime detected as {target}; these were force-disabled: {list}. ' +
